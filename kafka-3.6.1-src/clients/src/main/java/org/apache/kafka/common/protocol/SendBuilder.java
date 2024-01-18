@@ -181,7 +181,9 @@ public class SendBuilder implements Writable {
     }
 
     public static Send buildRequestSend(
+            // header: request head
         RequestHeader header,
+            // apiRequest:  request body
         Message apiRequest
     ) {
         return buildSend(

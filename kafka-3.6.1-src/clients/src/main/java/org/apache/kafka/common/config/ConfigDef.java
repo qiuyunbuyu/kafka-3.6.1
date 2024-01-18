@@ -725,6 +725,7 @@ public class ConfigDef {
                     else
                         throw new ConfigException(name, value, "Expected a comma separated list.");
                 case CLASS:
+                    // so you can use both xxxPartitioner.class and both xxxPartitioner.class.getName() to set "partitioner.class" in construct producer
                     if (value instanceof Class)
                         return value;
                     else if (value instanceof String) {

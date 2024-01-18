@@ -411,6 +411,13 @@ public final class ProducerBatch {
         return "ProducerBatch(topicPartition=" + topicPartition + ", recordCount=" + recordCount + ")";
     }
 
+    /**
+     * Determine whether delivery has timed out
+     * now - createdMs
+     * @param deliveryTimeoutMs
+     * @param now
+     * @return
+     */
     boolean hasReachedDeliveryTimeout(long deliveryTimeoutMs, long now) {
         return deliveryTimeoutMs <= now - this.createdMs;
     }

@@ -102,25 +102,37 @@ public class Selector implements Selectable, AutoCloseable {
     }
 
     private final Logger log;
+    // original selector in nio
     private final java.nio.channels.Selector nioSelector;
+    // collections of KafkaChannels
     private final Map<String, KafkaChannel> channels;
     private final Set<KafkaChannel> explicitlyMutedChannels;
     private boolean outOfMemory;
+    // completed NetworkSend
     private final List<NetworkSend> completedSends;
+    // completed NetworkReceive
     private final LinkedHashMap<String, NetworkReceive> completedReceives;
+    // immediately Connected SelectionKey
     private final Set<SelectionKey> immediatelyConnectedKeys;
+    // closing KafkaChannel
     private final Map<String, KafkaChannel> closingChannels;
     private Set<SelectionKey> keysWithBufferedRead;
+    // disconnected
     private final Map<String, ChannelState> disconnected;
+    // connected channels, String is channel id
     private final List<String> connected;
+    // failedSend channels, String is channel id
     private final List<String> failedSends;
     private final Time time;
     private final SelectorMetrics sensors;
+    // util class to build KafkaChannel
     private final ChannelBuilder channelBuilder;
     private final int maxReceiveSize;
     private final boolean recordTimePerConnection;
+    // Idle timeout connection manager
     private final IdleExpiryManager idleExpiryManager;
     private final LinkedHashMap<String, DelayedAuthenticationFailureClose> delayedClosingChannels;
+    // MemoryPool to manage ByteBuffer
     private final MemoryPool memoryPool;
     private final long lowMemThreshold;
     private final int failedAuthenticationDelayMs;
@@ -251,14 +263,19 @@ public class Selector implements Selectable, AutoCloseable {
         SocketChannel socketChannel = SocketChannel.open();
         SelectionKey key = null;
         try {
+            // set socketChannel
             configureSocketChannel(socketChannel, sendBufferSize, receiveBufferSize);
+            // connect broker
             boolean connected = doConnect(socketChannel, address);
+            // register OP_CONNECT on selector
             key = registerChannel(id, socketChannel, SelectionKey.OP_CONNECT);
 
+            // if connected immediately
             if (connected) {
                 // OP_CONNECT won't trigger for immediately connected channels
                 log.debug("Immediately connected to node {}", id);
                 immediatelyConnectedKeys.add(key);
+                // remove OP_CONNECT on selector
                 key.interestOps(0);
             }
         } catch (IOException | RuntimeException e) {
@@ -280,15 +297,26 @@ public class Selector implements Selectable, AutoCloseable {
         }
     }
 
+    /**
+     * SocketChannel set
+     * @param socketChannel
+     * @param sendBufferSize
+     * @param receiveBufferSize
+     * @throws IOException
+     */
     private void configureSocketChannel(SocketChannel socketChannel, int sendBufferSize, int receiveBufferSize)
             throws IOException {
+        // no blocking model
         socketChannel.configureBlocking(false);
+        // create socket from socketChannel
         Socket socket = socketChannel.socket();
+        // enable long connection detection mechanism
         socket.setKeepAlive(true);
         if (sendBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
             socket.setSendBufferSize(sendBufferSize);
         if (receiveBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
             socket.setReceiveBufferSize(receiveBufferSize);
+        // enable tcp delay
         socket.setTcpNoDelay(true);
     }
 
@@ -324,17 +352,38 @@ public class Selector implements Selectable, AutoCloseable {
             throw new IllegalStateException("There is already a connection for id " + id + " that is still being closed");
     }
 
+    /**
+     * Bind socketChannel to nioSelector and add attention events
+     * @param id
+     * @param socketChannel
+     * @param interestedOps
+     * @return SelectionKey [SocketChannel, nioSelector, interestedOps]
+     * @throws IOException
+     */
     protected SelectionKey registerChannel(String id, SocketChannel socketChannel, int interestedOps) throws IOException {
+        // 1. Bind socketChannel to nioSelector and add attention events
         SelectionKey key = socketChannel.register(nioSelector, interestedOps);
+        // 2. build KafkaChannel and bind SelectionKey
         KafkaChannel channel = buildAndAttachKafkaChannel(socketChannel, id, key);
+        // 3. <id : KafkaChannel>
         this.channels.put(id, channel);
         if (idleExpiryManager != null)
+            // 4. update idleExpiryManager active time
             idleExpiryManager.update(channel.id(), time.nanoseconds());
         return key;
     }
 
+    /**
+     * Bind socketChannel to SelectionKey
+     * @param socketChannel
+     * @param id
+     * @param key
+     * @return KafkaChannel
+     * @throws IOException
+     */
     private KafkaChannel buildAndAttachKafkaChannel(SocketChannel socketChannel, String id, SelectionKey key) throws IOException {
         try {
+            // build kafkaChannel
             KafkaChannel channel = channelBuilder.buildChannel(id, key, maxReceiveSize, memoryPool,
                 new SelectorChannelMetadataRegistry());
             key.attach(channel);
@@ -381,22 +430,28 @@ public class Selector implements Selectable, AutoCloseable {
 
     /**
      * Queue the given request for sending in the subsequent {@link #poll(long)} calls
+     * Ready to send
      * @param send The request to send
      */
     public void send(NetworkSend send) {
+        // get id
         String connectionId = send.destinationId();
+        // get channel from id
         KafkaChannel channel = openOrClosingChannelOrFail(connectionId);
+        // if closingChannels contains the channel
         if (closingChannels.containsKey(connectionId)) {
             // ensure notification via `disconnected`, leave channel in the state in which closing was triggered
             this.failedSends.add(connectionId);
         } else {
             try {
+                // Ready to send: Add attention to the write event
                 channel.setSend(send);
             } catch (Exception e) {
                 // update the state for consistency, the channel will be discarded after `close`
                 channel.state(ChannelState.FAILED_SEND);
                 // ensure notification via `disconnected` when `failedSends` are processed in the next poll
                 this.failedSends.add(connectionId);
+                // close connect
                 close(channel, CloseMode.DISCARD_NO_NOTIFY);
                 if (!(e instanceof CancelledKeyException)) {
                     log.error("Unexpected exception during send, closing connection {} and rethrowing exception {}",
@@ -442,6 +497,7 @@ public class Selector implements Selectable, AutoCloseable {
             throw new IllegalArgumentException("timeout should be >= 0");
 
         boolean madeReadProgressLastCall = madeReadProgressLastPoll;
+        // Clear last result
         clear();
 
         boolean dataInBuffers = !keysWithBufferedRead.isEmpty();
@@ -462,11 +518,14 @@ public class Selector implements Selectable, AutoCloseable {
 
         /* check ready keys */
         long startSelect = time.nanoseconds();
+        // Get ready event
         int numReadyKeys = select(timeout);
         long endSelect = time.nanoseconds();
+        // record consume time = endSelect - startSelect
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds(), false);
 
         if (numReadyKeys > 0 || !immediatelyConnectedKeys.isEmpty() || dataInBuffers) {
+            // get ready keys
             Set<SelectionKey> readyKeys = this.nioSelector.selectedKeys();
 
             // Poll from channels that have buffered data (but nothing more from the underlying socket)
@@ -481,7 +540,7 @@ public class Selector implements Selectable, AutoCloseable {
             pollSelectionKeys(readyKeys, false, endSelect);
             // Clear all selected keys so that they are excluded from the ready count for the next select
             readyKeys.clear();
-
+            // handle immediately Connected Keys
             pollSelectionKeys(immediatelyConnectedKeys, true, endSelect);
             immediatelyConnectedKeys.clear();
         } else {
@@ -510,13 +569,16 @@ public class Selector implements Selectable, AutoCloseable {
                            boolean isImmediatelyConnected,
                            long currentTimeNanos) {
         for (SelectionKey key : determineHandlingOrder(selectionKeys)) {
+            // get channel
             KafkaChannel channel = channel(key);
             long channelStartTimeNanos = recordTimePerConnection ? time.nanoseconds() : 0;
             boolean sendFailed = false;
+            // get node id
             String nodeId = channel.id();
 
             // register all per-connection metrics at once
             sensors.maybeRegisterConnectionMetrics(nodeId);
+            // update idleExpiryManager
             if (idleExpiryManager != null)
                 idleExpiryManager.update(nodeId, currentTimeNanos);
 
@@ -526,7 +588,7 @@ public class Selector implements Selectable, AutoCloseable {
                     if (channel.finishConnect()) {
                         this.connected.add(nodeId);
                         this.sensors.connectionCreated.record();
-
+                        // if finishConnect, get channel
                         SocketChannel socketChannel = (SocketChannel) key.channel();
                         log.debug("Created socket with SO_RCVBUF = {}, SO_SNDBUF = {}, SO_TIMEOUT = {} to node {}",
                                 socketChannel.socket().getReceiveBufferSize(),
@@ -573,6 +635,7 @@ public class Selector implements Selectable, AutoCloseable {
                 //previous completed receive then read from it
                 if (channel.ready() && (key.isReadable() || channel.hasBytesBuffered()) && !hasCompletedReceive(channel)
                         && !explicitlyMutedChannels.contains(channel)) {
+                    // * attempt handle read
                     attemptRead(channel);
                 }
 
@@ -590,6 +653,7 @@ public class Selector implements Selectable, AutoCloseable {
 
                 long nowNanos = channelStartTimeNanos != 0 ? channelStartTimeNanos : currentTimeNanos;
                 try {
+                    // * attempt handle write
                     attemptWrite(key, channel, nowNanos);
                 } catch (Exception e) {
                     sendFailed = true;
@@ -630,6 +694,11 @@ public class Selector implements Selectable, AutoCloseable {
     }
 
     private void attemptWrite(SelectionKey key, KafkaChannel channel, long nowNanos) throws IOException {
+        // 4 conditions need to be met:
+        // 1. channel have bytebuffer to send
+        // 2. channel connect ready
+        // 3. write event ready
+        // 4. no authentication
         if (channel.hasSend()
                 && channel.ready()
                 && key.isWritable()
@@ -641,10 +710,15 @@ public class Selector implements Selectable, AutoCloseable {
     // package-private for testing
     void write(KafkaChannel channel) throws IOException {
         String nodeId = channel.id();
+        // actual write
         long bytesSent = channel.write();
+        // Verify whether sending is complete
+        // if is complete -> remove OP_WRITE event
+        // if not complete -> NetworkSend will be set null && next client poll() will send again
         NetworkSend send = channel.maybeCompleteSend();
         // We may complete the send with bytesSent < 1 if `TransportLayer.hasPendingWrites` was true and `channel.write()`
         // caused the pending writes to be written to the socket channel buffer
+        // "send != null" means "send complete"
         if (bytesSent > 0 || send != null) {
             long currentTimeMs = time.milliseconds();
             if (bytesSent > 0)
@@ -669,14 +743,15 @@ public class Selector implements Selectable, AutoCloseable {
     }
 
     private void attemptRead(KafkaChannel channel) throws IOException {
+        // get channel id
         String nodeId = channel.id();
-
+        // actual read
         long bytesReceived = channel.read();
         if (bytesReceived != 0) {
             long currentTimeMs = time.milliseconds();
             sensors.recordBytesReceived(nodeId, bytesReceived, currentTimeMs);
             madeReadProgressLastPoll = true;
-
+            // Determine whether complete read
             NetworkReceive receive = channel.maybeCompleteReceive();
             if (receive != null) {
                 addToCompletedReceives(channel, receive, currentTimeMs);

@@ -98,7 +98,7 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
         short apiVersion = requestHeader.apiVersion();
 
         ResponseHeader responseHeader = ResponseHeader.parse(buffer, apiKey.responseHeaderVersion(apiVersion));
-
+        // Compare request.correlationId and response.correlationId to see if they are consistent
         if (requestHeader.correlationId() != responseHeader.correlationId()) {
             throw new CorrelationIdMismatchException("Correlation id for response ("
                 + responseHeader.correlationId() + ") does not match request ("

@@ -112,24 +112,30 @@ public class KafkaChannel implements AutoCloseable {
         THROTTLE_STARTED,
         THROTTLE_ENDED
     }
-
+    // the channel id
     private final String id;
+    // Enhance SocketChannel
     private final TransportLayer transportLayer;
     private final Supplier<Authenticator> authenticatorCreator;
     private Authenticator authenticator;
     // Tracks accumulated network thread time. This is updated on the network thread.
     // The values are read and reset after each response is sent.
     private long networkThreadTimeNanos;
+    // max size can receive
     private final int maxReceiveSize;
+    // memoryPool to allocate bytebuffer
     private final MemoryPool memoryPool;
     private final ChannelMetadataRegistry metadataRegistry;
+    // Enhance ByteBuffer Read
     private NetworkReceive receive;
+    // Enhance ByteBuffer Write
     private NetworkSend send;
     // Track connection and mute state of channels to enable outstanding requests on channels to be
     // processed after the channel is disconnected.
     private boolean disconnected;
     private ChannelMuteState muteState;
     private ChannelState state;
+    // remote broker address
     private SocketAddress remoteAddress;
     private int successfulAuthentications;
     private boolean midWrite;
@@ -174,8 +180,10 @@ public class KafkaChannel implements AutoCloseable {
     public void prepare() throws AuthenticationException, IOException {
         boolean authenticating = false;
         try {
+            // channel not ready
             if (!transportLayer.ready())
                 transportLayer.handshake();
+            // channel ready but not auth
             if (transportLayer.ready() && !authenticator.complete()) {
                 authenticating = true;
                 authenticator.authenticate();
@@ -192,7 +200,9 @@ public class KafkaChannel implements AutoCloseable {
             throw e;
         }
         if (ready()) {
+            // add successfulAuthentications
             ++successfulAuthentications;
+            // change state: ready
             state = ChannelState.READY;
         }
     }
@@ -214,6 +224,11 @@ public class KafkaChannel implements AutoCloseable {
         return this.state;
     }
 
+    /**
+     * Determine whether the connection is established
+     * @return
+     * @throws IOException
+     */
     public boolean finishConnect() throws IOException {
         //we need to grab remoteAddr before finishConnect() is called otherwise
         //it becomes inaccessible if the connection was refused.
@@ -376,16 +391,28 @@ public class KafkaChannel implements AutoCloseable {
         return socket.getInetAddress().toString();
     }
 
+    /**
+     * Ready to send
+     * @param send
+     */
     public void setSend(NetworkSend send) {
         if (this.send != null)
+            // in maybeCompleteSend() can know that send will be set null when wrote completed
+            // so when send != null means " not wrote completed "
             throw new IllegalStateException("Attempt to begin a send operation with prior send operation still in progress, connection id is " + id);
         this.send = send;
+        // Add attention to the write event
         this.transportLayer.addInterestOps(SelectionKey.OP_WRITE);
     }
 
+    /**
+     * Determine whether the data wrote completed
+     * @return  null
+     */
     public NetworkSend maybeCompleteSend() {
         if (send != null && send.completed()) {
             midWrite = false;
+            // remove attention to the write event when complete Send
             transportLayer.removeInterestOps(SelectionKey.OP_WRITE);
             NetworkSend result = send;
             send = null;
@@ -393,12 +420,17 @@ public class KafkaChannel implements AutoCloseable {
         }
         return null;
     }
-
+    /**
+     * first save to NetworkReceive, then read
+     * @return sum of bytes read
+     * @throws IOException
+     */
     public long read() throws IOException {
+        // "receive == null" means the "last read" data has been read finish and the NetworkReceive needs to be re-instantiated.
         if (receive == null) {
             receive = new NetworkReceive(maxReceiveSize, id, memoryPool);
         }
-
+        // "last read" data has not been read finish, so Continue reading the original NetworkReceive
         long bytesReceived = receive(this.receive);
 
         if (this.receive.requiredMemoryAmountKnown() && !this.receive.memoryAllocated() && isInMutableState()) {
@@ -412,21 +444,34 @@ public class KafkaChannel implements AutoCloseable {
         return receive;
     }
 
+    /**
+     * Determine whether the data has been read completed
+     * @return NetworkReceive with rewind bytebuffer(if read completed) or null
+     */
     public NetworkReceive maybeCompleteReceive() {
         if (receive != null && receive.complete()) {
+            // when finished read to call rewind to reset
             receive.payload().rewind();
             NetworkReceive result = receive;
+            // clear receive for next use
             receive = null;
             return result;
         }
         return null;
     }
 
+    /**
+     * actual send
+     * @return sum of bytes sended
+     * @throws IOException
+     */
     public long write() throws IOException {
+        // "send == null" means "Data sending completed"
         if (send == null)
             return 0;
 
         midWrite = true;
+        // call ByteBufferSend.writeTo to send data
         return send.writeTo(transportLayer);
     }
 

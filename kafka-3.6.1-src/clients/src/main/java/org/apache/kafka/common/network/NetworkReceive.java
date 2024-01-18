@@ -27,19 +27,28 @@ import java.nio.channels.ScatteringByteChannel;
 
 /**
  * A size delimited Receive that consists of a 4 byte network-ordered size N followed by N bytes of content
+ * two ByteBuffer:
+ * 1. ByteBuffer size | storage response size(meta data)
+ * 2. ByteBuffer buffer | storage response data(actual data)
  */
 public class NetworkReceive implements Receive {
 
     public static final String UNKNOWN_SOURCE = "";
     public static final int UNLIMITED = -1;
     private static final Logger log = LoggerFactory.getLogger(NetworkReceive.class);
+    // empty ByteBuffer
     private static final ByteBuffer EMPTY_BUFFER = ByteBuffer.allocate(0);
-
+    // channel id
     private final String source;
+    // ByteBuffer to storage response size
     private final ByteBuffer size;
+    // response max size
     private final int maxSize;
+    // ByteBuffer MemoryPool
     private final MemoryPool memoryPool;
+    // size of bytes read
     private int requestedBufferSize = -1;
+    // ByteBuffer to storage response data
     private ByteBuffer buffer;
 
 
@@ -58,8 +67,10 @@ public class NetworkReceive implements Receive {
 
     public NetworkReceive(int maxSize, String source, MemoryPool memoryPool) {
         this.source = source;
+        // response buffer and size
         this.size = ByteBuffer.allocate(4);
         this.buffer = null;
+        // maxsize can read
         this.maxSize = maxSize;
         this.memoryPool = memoryPool;
     }
@@ -74,12 +85,24 @@ public class NetworkReceive implements Receive {
     }
 
     @Override
+    /**
+     * response metadata read completed && response data read completed
+     */
     public boolean complete() {
         return !size.hasRemaining() && buffer != null && !buffer.hasRemaining();
     }
 
+    /**
+     * Read the corresponding "channel" data into "ByteBuffer"
+     * responses Examples are as follows....
+     * [ [response size(4bytes) + response data(N bytes 'count from response size')] + [response size(4bytes) + response data(N bytes ] + .... ]
+     * @param channel The channel to read from
+     * @return the size of response read
+     * @throws IOException
+     */
     public long readFrom(ScatteringByteChannel channel) throws IOException {
         int read = 0;
+        // 1. read and get response size
         if (size.hasRemaining()) {
             int bytesRead = channel.read(size);
             if (bytesRead < 0)
@@ -87,6 +110,7 @@ public class NetworkReceive implements Receive {
             read += bytesRead;
             if (!size.hasRemaining()) {
                 size.rewind();
+                // compute how much capacity of bytebuffer is needed
                 int receiveSize = size.getInt();
                 if (receiveSize < 0)
                     throw new InvalidReceiveException("Invalid receive (size = " + receiveSize + ")");
@@ -98,18 +122,22 @@ public class NetworkReceive implements Receive {
                 }
             }
         }
-        if (buffer == null && requestedBufferSize != -1) { //we know the size we want but havent been able to allocate it yet
+        // 2. Allocate N bytes ByteBuffer to store response data
+        if (buffer == null && requestedBufferSize != -1) {
+            //we know the size we want but havent been able to allocate it yet
+            //where the size come from ? requestedBufferSize = size.getInt() get from the "ByteBuffer size"
             buffer = memoryPool.tryAllocate(requestedBufferSize);
             if (buffer == null)
                 log.trace("Broker low on memory - could not allocate buffer of size {} for source {}", requestedBufferSize, source);
         }
+        // 3. read response data
         if (buffer != null) {
             int bytesRead = channel.read(buffer);
             if (bytesRead < 0)
                 throw new EOFException();
             read += bytesRead;
         }
-
+        // 4. return [response metadata size(response length) +  response actual size] have read
         return read;
     }
 

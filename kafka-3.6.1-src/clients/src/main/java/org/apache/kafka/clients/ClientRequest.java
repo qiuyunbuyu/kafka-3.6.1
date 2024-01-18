@@ -25,14 +25,21 @@ import org.apache.kafka.common.requests.RequestHeader;
  * A request being sent to the server. This holds both the network send as well as the client-level metadata.
  */
 public final class ClientRequest {
-
+    // broker
     private final String destination;
+    // ClientRequest use this builder for build different requests
     private final AbstractRequest.Builder<?> requestBuilder;
+    // request head-correlationId
     private final int correlationId;
+    // request head-clientId
     private final String clientId;
+    // request create time
     private final long createdTimeMs;
+    // Whether a response is required for this request
     private final boolean expectResponse;
+    // request Timeout Ms
     private final int requestTimeoutMs;
+    // callback for handle response
     private final RequestCompletionHandler callback;
 
     /**

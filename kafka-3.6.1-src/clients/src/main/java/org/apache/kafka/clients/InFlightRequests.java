@@ -29,8 +29,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * The set of requests which have been sent or are being sent but haven't yet received a response
  */
 final class InFlightRequests {
-
+    // max ClientRequest PerConnection
     private final int maxInFlightRequestsPerConnection;
+    // key: NodeId
+    // value: deque of ClientRequest, default capacity is 5
     private final Map<String, Deque<NetworkClient.InFlightRequest>> requests = new HashMap<>();
     /** Thread safe total number of in flight requests. */
     private final AtomicInteger inFlightRequestCount = new AtomicInteger(0);
@@ -93,7 +95,7 @@ final class InFlightRequests {
 
     /**
      * Can we send more requests to this node?
-     *
+     * Determine whether the current connection can send requests
      * @param node Node in question
      * @return true iff we have no requests still being sent to the given node
      */

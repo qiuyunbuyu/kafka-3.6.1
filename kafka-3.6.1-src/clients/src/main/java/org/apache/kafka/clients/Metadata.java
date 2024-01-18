@@ -119,6 +119,8 @@ public class Metadata implements Closeable {
      * @return remaining time in ms till the cluster info can be updated again
      */
     public synchronized long timeToAllowUpdate(long nowMs) {
+        // last update time + backoff time - nowMs
+        // when metadata add new topic, ProducerMetadata - requestUpdateForNewTopics() will set lastRefreshMs = 0
         return Math.max(this.lastRefreshMs + this.refreshBackoffMs - nowMs, 0);
     }
 
@@ -236,6 +238,7 @@ public class Metadata implements Closeable {
     }
 
     public synchronized void bootstrap(List<InetSocketAddress> addresses) {
+        // need full update when Producer init
         this.needFullUpdate = true;
         this.updateVersion += 1;
         this.cache = MetadataCache.bootstrap(addresses);
@@ -264,24 +267,28 @@ public class Metadata implements Closeable {
         Objects.requireNonNull(response, "Metadata response cannot be null");
         if (isClosed())
             throw new IllegalStateException("Update requested after metadata close");
-
+        // Determine whether it is a partial update
         this.needPartialUpdate = requestVersion < this.requestVersion;
+        // use nowMs to update lastRefreshMs
         this.lastRefreshMs = nowMs;
+        // add updateVersion
         this.updateVersion += 1;
+        // when not partial update, means already full update, so update needFullUpdate to false means no need to full update now
         if (!isPartialUpdate) {
             this.needFullUpdate = false;
             this.lastSuccessfulRefreshMs = nowMs;
         }
-
+        // get previous ClusterId
         String previousClusterId = cache.clusterResource().clusterId();
-
+        // parse response to construct MetadataCache
         this.cache = handleMetadataResponse(response, isPartialUpdate, nowMs);
-
+        // get cluster info from MetadataCache
         Cluster cluster = cache.cluster();
         maybeSetMetadataError(cluster);
 
         this.lastSeenLeaderEpochs.keySet().removeIf(tp -> !retainTopic(tp.topic(), false, nowMs));
 
+        // log newClusterId
         String newClusterId = cache.clusterResource().clusterId();
         if (!Objects.equals(previousClusterId, newClusterId)) {
             log.info("Cluster ID: {}", newClusterId);
@@ -326,6 +333,7 @@ public class Metadata implements Closeable {
         List<MetadataResponse.PartitionMetadata> partitions = new ArrayList<>();
         Map<String, Uuid> topicIds = new HashMap<>();
         Map<String, Uuid> oldTopicIds = cache.topicIds();
+        // Traverse MetadataResponse
         for (MetadataResponse.TopicMetadata metadata : metadataResponse.topicMetadata()) {
             String topicName = metadata.topic();
             Uuid topicId = metadata.topicId();
@@ -372,6 +380,11 @@ public class Metadata implements Closeable {
         }
 
         Map<Integer, Node> nodes = metadataResponse.brokersById();
+        // if isPartialUpdate: Merge the updated part with the original cache
+        // if not isPartialUpdate: Reinitialize cache
+        // Q: How to determine if it is isPartialUpdate?
+        // A: When build metadata request
+        //   in NetworkClient maybeUpdate() -> Metadata.MetadataRequestAndVersion requestAndVersion = metadata.newMetadataRequestAndVersion(now);
         if (isPartialUpdate)
             return this.cache.mergeWith(metadataResponse.clusterId(), nodes, partitions,
                 unauthorizedTopics, invalidTopics, internalTopics, metadataResponse.controller(), topicIds,
@@ -544,6 +557,7 @@ public class Metadata implements Closeable {
 
         // Perform a partial update only if a full update hasn't been requested, and the last successful
         // hasn't exceeded the metadata refresh time.
+        // not set needFullUpdate=true and "The update time for all topics has not been reached"
         if (!this.needFullUpdate && this.lastSuccessfulRefreshMs + this.metadataExpireMs > nowMs) {
             request = newMetadataRequestBuilderForNewTopics();
             isPartialUpdate = true;

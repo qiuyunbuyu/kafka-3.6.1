@@ -431,14 +431,14 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     apiVersions,
                     transactionManager,
                     new BufferPool(this.totalMemorySize, batchSize, metrics, time, PRODUCER_METRIC_GROUP_NAME));
-
+            // lists of brokers info user set, like: (kafka0001/10.6x.10x.2xx:9092, kafka0002/10.6x.10x.2xx:9092)
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config);
             if (metadata != null) {
                 this.metadata = metadata;
             } else {
                 this.metadata = new ProducerMetadata(retryBackoffMs,
-                        config.getLong(ProducerConfig.METADATA_MAX_AGE_CONFIG),
-                        config.getLong(ProducerConfig.METADATA_MAX_IDLE_CONFIG),
+                        config.getLong(ProducerConfig.METADATA_MAX_AGE_CONFIG), // for cluster default 300s = 5min
+                        config.getLong(ProducerConfig.METADATA_MAX_IDLE_CONFIG), // for per-topic default 300s = 5min
                         logContext,
                         clusterResourceListeners,
                         Time.SYSTEM);
@@ -1125,6 +1125,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             } else {
                 log.trace("Requesting metadata update for topic {}.", topic);
             }
+            // update the topic with expiry time
             metadata.add(topic, nowMs + elapsed);
             int version = metadata.requestUpdateForTopic(topic);
             sender.wakeup();
@@ -1137,6 +1138,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                                 topic, maxWaitMs));
             }
             cluster = metadata.fetch();
+            // Calculate how long it takes for metadata updates to complete
             elapsed = time.milliseconds() - nowMs;
             if (elapsed >= maxWaitMs) {
                 throw new TimeoutException(partitionsCount == null ?
@@ -1151,7 +1153,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         } while (partitionsCount == null || (partition != null && partition >= partitionsCount));
 
         producerMetrics.recordMetadataWait(time.nanoseconds() - nowNanos);
-
+        // Return metadata and time spent
         return new ClusterAndWaitTime(cluster, elapsed);
     }
 

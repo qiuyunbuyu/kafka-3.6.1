@@ -46,9 +46,14 @@ public class PlaintextTransportLayer implements TransportLayer {
     }
 
     @Override
+    // Determine whether the network connection is complete
     public boolean finishConnect() throws IOException {
+        // Determine whether the connection is completed
         boolean connected = socketChannel.finishConnect();
         if (connected)
+            // remove OP_CONNECT and add OP_READ
+            // "& ~ xx" means "If xx exists, delete xx; if not, leave xx unchanged."
+            // "| xx" means "add x"
             key.interestOps(key.interestOps() & ~SelectionKey.OP_CONNECT | SelectionKey.OP_READ);
         return connected;
     }

@@ -36,7 +36,7 @@ public class ProducerMetadata extends Metadata {
     // If a topic hasn't been accessed for this many milliseconds, it is removed from the cache.
     private final long metadataIdleMs;
 
-    /* Topics with expiry time */
+    /* Topics with expiry time [topic, nowMs + metadataIdleMs] */
     private final Map<String, Long> topics = new HashMap<>();
     private final Set<String> newTopics = new HashSet<>();
     private final Logger log;
@@ -66,16 +66,24 @@ public class ProducerMetadata extends Metadata {
 
     public synchronized void add(String topic, long nowMs) {
         Objects.requireNonNull(topic, "topic cannot be null");
+        // A null return indicate that the map previously associated null with key, means new topic add
         if (topics.put(topic, nowMs + metadataIdleMs) == null) {
             newTopics.add(topic);
             requestUpdateForNewTopics();
         }
     }
 
+    /**
+     * judge Partial update or Full update
+     * @param topic
+     * @return
+     */
     public synchronized int requestUpdateForTopic(String topic) {
         if (newTopics.contains(topic)) {
+            // Partial update
             return requestUpdateForNewTopics();
         } else {
+            // Full update
             return requestUpdate();
         }
     }
@@ -94,6 +102,13 @@ public class ProducerMetadata extends Metadata {
         return topics.containsKey(topic);
     }
 
+    /**
+     * Determine whether the metadata of this topic should be retained
+     * @param topic
+     * @param isInternal
+     * @param nowMs
+     * @return true/false
+     */
     @Override
     public synchronized boolean retainTopic(String topic, boolean isInternal, long nowMs) {
         Long expireMs = topics.get(topic);
@@ -112,10 +127,15 @@ public class ProducerMetadata extends Metadata {
 
     /**
      * Wait for metadata update until the current version is larger than the last version we know of
+     * @param lastVersion: last time updateVersion
+     * @param timeoutMs
+     * @throws InterruptedException
      */
     public synchronized void awaitUpdate(final int lastVersion, final long timeoutMs) throws InterruptedException {
         long currentTimeMs = time.milliseconds();
         long deadlineMs = currentTimeMs + timeoutMs < 0 ? Long.MAX_VALUE : currentTimeMs + timeoutMs;
+        // updateVersion() will return [now updateVersion]
+        // next method update() will "updateVersion += 1", so updateVersion() > lastVersion means "update metadata successfully"
         time.waitObject(this, () -> {
             // Throw fatal exceptions, if there are any. Recoverable topic errors will be handled by the caller.
             maybeThrowFatalException();
@@ -126,6 +146,14 @@ public class ProducerMetadata extends Metadata {
             throw new KafkaException("Requested metadata update after close");
     }
 
+    /**
+     *
+     * @param requestVersion The request version corresponding to the update response, as provided by
+     *     {@link #newMetadataRequestAndVersion(long)}.
+     * @param response metadata response received from the broker
+     * @param isPartialUpdate whether the metadata request was for a subset of the active topics
+     * @param nowMs current time in milliseconds
+     */
     @Override
     public synchronized void update(int requestVersion, MetadataResponse response, boolean isPartialUpdate, long nowMs) {
         super.update(requestVersion, response, isPartialUpdate, nowMs);
@@ -133,11 +161,12 @@ public class ProducerMetadata extends Metadata {
         // Remove all topics in the response that are in the new topic set. Note that if an error was encountered for a
         // new topic's metadata, then any work to resolve the error will include the topic in a full metadata update.
         if (!newTopics.isEmpty()) {
+            // If get metadata successfully, remove related topics
             for (MetadataResponse.TopicMetadata metadata : response.topicMetadata()) {
                 newTopics.remove(metadata.topic());
             }
         }
-
+        // notify awaitUpdate
         notifyAll();
     }
 

@@ -24,9 +24,11 @@ import java.nio.ByteBuffer;
  * A send backed by an array of byte buffers
  */
 public class ByteBufferSend implements Send {
-
+    // How much data should be written in total
     private final long size;
+    // ByteBuffers to write data to channel
     protected final ByteBuffer[] buffers;
+    // How much data is left to write
     private long remaining;
     private boolean pending = false;
 
@@ -34,6 +36,7 @@ public class ByteBufferSend implements Send {
         this.buffers = buffers;
         for (ByteBuffer buffer : buffers)
             remaining += buffer.remaining();
+        // compute sum of bytes to write
         this.size = remaining;
     }
 
@@ -55,9 +58,11 @@ public class ByteBufferSend implements Send {
 
     @Override
     public long writeTo(TransferableChannel channel) throws IOException {
+        // 1. write all buffers
         long written = channel.write(buffers);
         if (written < 0)
             throw new EOFException("Wrote negative bytes to channel. This shouldn't happen.");
+        // 2. Writing once may not necessarily be able to write all the data, so we should compute "how much data is left to write"
         remaining -= written;
         pending = channel.hasPendingWrites();
         return written;
@@ -75,10 +80,13 @@ public class ByteBufferSend implements Send {
             ", pending=" + pending +
             ')';
     }
-
+    //  Encapsulate the buffer to be sent, [ByteBuffer size] + [ByteBuffer buffer]
     public static ByteBufferSend sizePrefixed(ByteBuffer buffer) {
+        // 1. 4 byte sizeBuffer to restore request
         ByteBuffer sizeBuffer = ByteBuffer.allocate(4);
+        // 2. write request size ( Int -> 4byte -> putInt )
         sizeBuffer.putInt(0, buffer.remaining());
+        // 3. metadata buffer + actual data buffer
         return new ByteBufferSend(sizeBuffer, buffer);
     }
 }

@@ -221,6 +221,7 @@ public class Sender implements Runnable {
     }
 
     public void addToInflightBatches(Map<Integer, List<ProducerBatch>> batches) {
+        // traverse batch to Map<TopicPartition, List<ProducerBatch>>
         for (List<ProducerBatch> batchList : batches.values()) {
             addToInflightBatches(batchList);
         }
@@ -339,7 +340,14 @@ public class Sender implements Runnable {
         }
 
         long currentTimeMs = time.milliseconds();
+        // create request ready send to broker
         long pollTimeout = sendProducerData(currentTimeMs);
+
+        // actual read/write
+        // The process of "poll" is as follows：
+        // first poll: try to initialize the connection to node
+        // second poll: send request, like metadata
+        // "wait" poll: block for a while to get response
         client.poll(pollTimeout, currentTimeMs);
     }
 
@@ -371,12 +379,14 @@ public class Sender implements Runnable {
 
             log.debug("Requesting metadata update due to unknown leader topics from the batched records: {}",
                 result.unknownLeaderTopics);
+            // update topics metadata in RecordAccumulator.ReadyCheckResult
             this.metadata.requestUpdate();
         }
 
         // remove any nodes we aren't ready to send to
         Iterator<Node> iter = result.readyNodes.iterator();
         long notReadyTimeout = Long.MAX_VALUE;
+        // loop Check whether the network connection between the client and the broker to be sent is completed.
         while (iter.hasNext()) {
             Node node = iter.next();
             if (!this.client.ready(node, now)) {
@@ -394,8 +404,10 @@ public class Sender implements Runnable {
         }
 
         // create produce requests
+        // get ProducerBatch(ready to send)
         Map<Integer, List<ProducerBatch>> batches = this.accumulator.drain(metadata, result.readyNodes, this.maxRequestSize, now);
         addToInflightBatches(batches);
+        // if guaranteeMessageOrder, Ensure that only one batch is being sent
         if (guaranteeMessageOrder) {
             // Mute all the partitions drained
             for (List<ProducerBatch> batchList : batches.values()) {
@@ -403,7 +415,7 @@ public class Sender implements Runnable {
                     this.accumulator.mutePartition(batch.topicPartition);
             }
         }
-
+        // update next batch expire time
         accumulator.resetNextBatchExpiryTime();
         List<ProducerBatch> expiredInflightBatches = getExpiredInflightBatches(now);
         List<ProducerBatch> expiredBatches = this.accumulator.expiredBatches(now);
@@ -441,6 +453,7 @@ public class Sender implements Runnable {
             // otherwise the select time will be the time difference between now and the metadata expiry time;
             pollTimeout = 0;
         }
+        // *
         sendProduceRequests(batches, now);
         return pollTimeout;
     }
@@ -821,8 +834,11 @@ public class Sender implements Runnable {
                     transactionManager.canRetry(response, batch));
     }
 
+
     /**
      * Transfer the record batches into a list of produce requests on a per-node basis
+     * @param collated Map<Integer, List<ProducerBatch>> | Integer-brokerId | List<ProducerBatch>- ProducerBatch to send
+     * @param now
      */
     private void sendProduceRequests(Map<Integer, List<ProducerBatch>> collated, long now) {
         for (Map.Entry<Integer, List<ProducerBatch>> entry : collated.entrySet())
@@ -873,18 +889,21 @@ public class Sender implements Runnable {
         if (transactionManager != null && transactionManager.isTransactional()) {
             transactionalId = transactionManager.transactionalId();
         }
-
+        // create ProduceRequest
         ProduceRequest.Builder requestBuilder = ProduceRequest.forMagic(minUsedMagic,
                 new ProduceRequestData()
                         .setAcks(acks)
                         .setTimeoutMs(timeout)
                         .setTransactionalId(transactionalId)
                         .setTopicData(tpd));
+        // create callback
         RequestCompletionHandler callback = response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
 
+        // create ClientRequest, ProduceRequest contained in ClientRequest and N batch
         String nodeId = Integer.toString(destination);
         ClientRequest clientRequest = client.newClientRequest(nodeId, requestBuilder, now, acks != 0,
                 requestTimeoutMs, callback);
+        // call NetworkClient to do "ready send"
         client.send(clientRequest, now);
         log.trace("Sent produce request to {}: {}", nodeId, requestBuilder);
     }

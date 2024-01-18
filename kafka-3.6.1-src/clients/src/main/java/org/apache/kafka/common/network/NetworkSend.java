@@ -19,6 +19,7 @@ package org.apache.kafka.common.network;
 import java.io.IOException;
 
 public class NetworkSend implements Send {
+    // target channel id
     private final String destinationId;
     private final Send send;
 

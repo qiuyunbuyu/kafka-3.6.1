@@ -26,9 +26,11 @@ import org.apache.kafka.common.requests.RequestHeader;
  * metadata that was originally sent.
  */
 public class ClientResponse {
-
+    // Request Header
     private final RequestHeader requestHeader;
+    // callback function: Provided by ClientRequest
     private final RequestCompletionHandler callback;
+    // target node address
     private final String destination;
     private final long receivedTimeMs;
     private final long latencyMs;
