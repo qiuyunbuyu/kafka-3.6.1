@@ -71,6 +71,7 @@ public final class FutureRecordMetadata implements Future<RecordMetadata> {
         long now = time.milliseconds();
         long timeoutMillis = unit.toMillis(timeout);
         long deadline = Long.MAX_VALUE - timeoutMillis < now ? Long.MAX_VALUE : now + timeoutMillis;
+        // use ProduceRequestResult.CountDownLatch to implement blocking wait
         boolean occurred = this.result.await(timeout, unit);
         if (!occurred)
             throw new TimeoutException("Timeout after waiting for " + timeoutMillis + " ms.");
@@ -102,6 +103,7 @@ public final class FutureRecordMetadata implements Future<RecordMetadata> {
     RecordMetadata value() {
         if (nextRecordMetadata != null)
             return nextRecordMetadata.value();
+        // Encapsulation returns RecordMetadata
         return new RecordMetadata(result.topicPartition(), this.result.baseOffset(), this.batchIndex,
                                   timestamp(), this.serializedKeySize, this.serializedValueSize);
     }

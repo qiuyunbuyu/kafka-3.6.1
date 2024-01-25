@@ -59,25 +59,37 @@ import static org.apache.kafka.common.record.RecordBatch.NO_TIMESTAMP;
 public final class ProducerBatch {
 
     private static final Logger log = LoggerFactory.getLogger(ProducerBatch.class);
-
+    // ProducerBatch state
     private enum FinalState { ABORTED, FAILED, SUCCEEDED }
-
+    // ProducerBatch createdMs
     final long createdMs;
+    // ProducerBatch <-> TopicPartition [N:1]
     final TopicPartition topicPartition;
+    // The future of the request result
     final ProduceRequestResult produceFuture;
-
+    // list to save Callback and FutureRecordMetadata
     private final List<Thunk> thunks = new ArrayList<>();
+    // encapsulation MemoryRecordsBuilder to save records ByteBuffer
     private final MemoryRecordsBuilder recordsBuilder;
+    // ProducerBatch number of failed retries
     private final AtomicInteger attempts = new AtomicInteger(0);
+    // judge the ProducerBatch "isSplitBatch"
     private final boolean isSplitBatch;
+    // ProducerBatch state
     private final AtomicReference<FinalState> finalState = new AtomicReference<>(null);
-
+    // the num of records in ProducerBatch
     int recordCount;
+    // the size of records in ProducerBatch
     int maxRecordSize;
+    // last Attempt Ms(update when retry send)
     private long lastAttemptMs;
+    // last Append Ms(update when append record to ProducerBatch)
     private long lastAppendTime;
+    // The time for the sub-thread(sender) to pull the ProducerBatch
     private long drainedMs;
+    // Determine whether retrying now
     private boolean retry;
+    //
     private boolean reopened;
 
     // Tracks the current-leader's epoch to which this batch would be sent, in the current to produce the batch.
@@ -142,13 +154,17 @@ public final class ProducerBatch {
      * @return The RecordSend corresponding to this record or null if there isn't sufficient room.
      */
     public FutureRecordMetadata tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers, Callback callback, long now) {
+        // 1. Check if MemoryRecordsBuilder is still space to write
         if (!recordsBuilder.hasRoomFor(timestamp, key, value, headers)) {
             return null;
         } else {
+            // 2. call MemoryRecordsBuilder to append record
             this.recordsBuilder.append(timestamp, key, value, headers);
+            // 3. update the max RecordSizes
             this.maxRecordSize = Math.max(this.maxRecordSize, AbstractRecords.estimateSizeInBytesUpperBound(magic(),
                     recordsBuilder.compressionType(), key, value, headers));
             this.lastAppendTime = now;
+            // 4. construct FutureRecordMetadata and add to thunks
             FutureRecordMetadata future = new FutureRecordMetadata(this.produceFuture, this.recordCount,
                                                                    timestamp,
                                                                    key == null ? -1 : key.length,
@@ -157,6 +173,7 @@ public final class ProducerBatch {
             // we have to keep every future returned to the users in case the batch needs to be
             // split to several new batches and resent.
             thunks.add(new Thunk(callback, future));
+            // 5. update recordCount
             this.recordCount++;
             return future;
         }
@@ -262,14 +279,16 @@ public final class ProducerBatch {
         RuntimeException topLevelException,
         Function<Integer, RuntimeException> recordExceptions
     ) {
+        // get FinalState
         final FinalState tryFinalState = (topLevelException == null) ? FinalState.SUCCEEDED : FinalState.FAILED;
         if (tryFinalState == FinalState.SUCCEEDED) {
             log.trace("Successfully produced messages to {} with base offset {}.", topicPartition, baseOffset);
         } else {
             log.trace("Failed to produce messages to {} with base offset {}.", topicPartition, baseOffset, topLevelException);
         }
-
+        // use cas to update finalState
         if (this.finalState.compareAndSet(null, tryFinalState)) {
+            // Execute callback
             completeFutureAndFireCallbacks(baseOffset, logAppendTime, recordExceptions);
             return true;
         }
@@ -305,9 +324,12 @@ public final class ProducerBatch {
                 Thunk thunk = thunks.get(i);
                 if (thunk.callback != null) {
                     if (recordExceptions == null) {
+                        // get RecordMetadata
                         RecordMetadata metadata = thunk.future.value();
+                        // call callback
                         thunk.callback.onCompletion(metadata, null);
                     } else {
+                        // call callback when exception occur
                         RuntimeException exception = recordExceptions.apply(i);
                         thunk.callback.onCompletion(null, exception);
                     }
@@ -316,7 +338,7 @@ public final class ProducerBatch {
                 log.error("Error executing user-provided callback on message for topic-partition '{}'", topicPartition, e);
             }
         }
-
+        // Mark this request as complete and unblock any threads waiting on its completion.
         produceFuture.done();
     }
 

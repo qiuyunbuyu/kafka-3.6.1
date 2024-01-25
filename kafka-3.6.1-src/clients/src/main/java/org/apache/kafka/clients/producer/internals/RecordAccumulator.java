@@ -70,8 +70,10 @@ public class RecordAccumulator {
     private volatile boolean closed;
     private final AtomicInteger flushesInProgress;
     private final AtomicInteger appendsInProgress;
+    // the maxsize of each ProducerBatch(ByteBuffer)
     private final int batchSize;
     private final CompressionType compression;
+    // How long to delay(lingerMs) before sending, if the batch is not full
     private final int lingerMs;
     private final long retryBackoffMs;
     private final int deliveryTimeoutMs;
@@ -80,14 +82,20 @@ public class RecordAccumulator {
     private final BufferPool free;
     private final Time time;
     private final ApiVersions apiVersions;
+    // batches: <String /*topic*/, TopicInfo> -> <String /*topic*/, <Integer /*partition*/, Deque<ProducerBatch>>>
     private final ConcurrentMap<String /*topic*/, TopicInfo> topicInfoMap = new CopyOnWriteMap<>();
     private final ConcurrentMap<Integer /*nodeId*/, NodeLatencyStats> nodeStats = new CopyOnWriteMap<>();
+    // unsent ProducerBatches Set
+    // when create ProducerBatch, the ProducerBatch will be added to IncompleteBatches, and when send complete , the ProducerBatch will be deleted to IncompleteBatches
     private final IncompleteBatches incomplete;
     // The following variables are only accessed by the sender thread, so we don't need to protect them.
     private final Set<TopicPartition> muted;
+    // DrainIndex means "The position(index) where the last sending stopped, Next time, continue sending from this location"
     private final Map<String, Integer> nodesDrainIndex;
     private final TransactionManager transactionManager;
-    private long nextBatchExpiryTimeMs = Long.MAX_VALUE; // the earliest time (absolute) a batch will expire.
+    // If a ProducerBatch has not been sent by the Sender thread for a long time, the ProducerBatch will be destroyed.
+    // nextBatchExpiryTimeMs define how long to destroy?
+    private long nextBatchExpiryTimeMs = Long.MAX_VALUE; // the earliest time (absolute) a batch will expire
 
     /**
      * Create a new record accumulator
@@ -282,12 +290,14 @@ public class RecordAccumulator {
                                      boolean abortOnNewBatch,
                                      long nowMs,
                                      Cluster cluster) throws InterruptedException {
+        // ConcurrentMap<Integer /*partition*/, Deque<ProducerBatch>> batches
         TopicInfo topicInfo = topicInfoMap.computeIfAbsent(topic, k -> new TopicInfo(logContext, k, batchSize));
 
         // We keep track of the number of appending thread to make sure we do not miss batches in
         // abortIncompleteBatches().
         appendsInProgress.incrementAndGet();
         ByteBuffer buffer = null;
+        // set EMPTY_HEADERS when headers == null
         if (headers == null) headers = Record.EMPTY_HEADERS;
         try {
             // Loop to retry in case we encounter partitioner's race conditions.
@@ -315,7 +325,7 @@ public class RecordAccumulator {
                     // After taking the lock, validate that the partition hasn't changed and retry.
                     if (partitionChanged(topic, topicInfo, partitionInfo, dq, nowMs, cluster))
                         continue;
-
+                    // try to append record to the ProducerBatch in dq
                     RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callbacks, dq, nowMs);
                     if (appendResult != null) {
                         // If queue has incomplete batches we disable switch (see comments in updatePartitionInfo).
@@ -330,9 +340,10 @@ public class RecordAccumulator {
                     // Return a result that will cause another call to append.
                     return new RecordAppendResult(null, false, false, true, 0);
                 }
-
+                // allocate new ProducerBatch
                 if (buffer == null) {
                     byte maxUsableMagic = apiVersions.maxUsableProduceMagic();
+                    // estimate size to allocate new ProducerBatch
                     int size = Math.max(this.batchSize, AbstractRecords.estimateSizeInBytesUpperBound(maxUsableMagic, compression, key, value, headers));
                     log.trace("Allocating a new {} byte message buffer for topic {} partition {} with remaining timeout {}ms", size, topic, partition, maxTimeToBlock);
                     // This call may block if we exhausted buffer space.
@@ -342,7 +353,7 @@ public class RecordAccumulator {
                     // should be avoided.
                     nowMs = time.milliseconds();
                 }
-
+                // try to append again
                 synchronized (dq) {
                     // After taking the lock, validate that the partition hasn't changed and retry.
                     if (partitionChanged(topic, topicInfo, partitionInfo, dq, nowMs, cluster))
@@ -359,7 +370,10 @@ public class RecordAccumulator {
                 }
             }
         } finally {
+            // deallocate ByteBuffer
             free.deallocate(buffer);
+            // Indicates that the current record writing is completed,
+            // can contact [ appendsInProgress.incrementAndGet(); ] at the beginning of the process to understand
             appendsInProgress.decrementAndGet();
         }
     }
@@ -389,19 +403,21 @@ public class RecordAccumulator {
                                               ByteBuffer buffer,
                                               long nowMs) {
         assert partition != RecordMetadata.UNKNOWN_PARTITION;
-
+        // try append
         RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callbacks, dq, nowMs);
         if (appendResult != null) {
             // Somebody else found us a batch, return the one we waited for! Hopefully this doesn't happen often...
             return appendResult;
         }
-
+        // encapsulation: ByteBuffer -> MemoryRecordsBuilder
         MemoryRecordsBuilder recordsBuilder = recordsBuilder(buffer, apiVersions.maxUsableProduceMagic());
+        // encapsulation: MemoryRecordsBuilder -> ProducerBatch
         ProducerBatch batch = new ProducerBatch(new TopicPartition(topic, partition), recordsBuilder, nowMs);
         FutureRecordMetadata future = Objects.requireNonNull(batch.tryAppend(timestamp, key, value, headers,
                 callbacks, nowMs));
-
+        // add to dq
         dq.addLast(batch);
+        // add to incomplete
         incomplete.add(batch);
 
         return new RecordAppendResult(future, dq.size() > 1 || batch.isFull(), true, false, batch.estimatedSizeInBytes());
@@ -436,13 +452,17 @@ public class RecordAccumulator {
                                          Callback callback, Deque<ProducerBatch> deque, long nowMs) {
         if (closed)
             throw new KafkaException("Producer closed while send in progress");
+        // get the last ProducerBatch
         ProducerBatch last = deque.peekLast();
         if (last != null) {
             int initialBytes = last.estimatedSizeInBytes();
+            // try to add the record to the last ProducerBatch
             FutureRecordMetadata future = last.tryAppend(timestamp, key, value, headers, callback, nowMs);
             if (future == null) {
+                // "future == null" means append failed, so close the last ProducerBatch and return null to indicate "append failed"
                 last.closeForRecordAppends();
             } else {
+                // append succeed -> return the RecordAppendResult
                 int appendedBytes = last.estimatedSizeInBytes() - initialBytes;
                 return new RecordAppendResult(future, deque.size() > 1 || last.isFull(), false, false, appendedBytes);
             }
@@ -617,6 +637,12 @@ public class RecordAccumulator {
             long timeToWaitMs = backingOff ? retryBackoffMs : lingerMs;
             boolean expired = waitedTimeMs >= timeToWaitMs;
             boolean transactionCompleting = transactionManager != null && transactionManager.isCompleting();
+            // case1: full -> dequeSize > 1 or the first ProducerBatch in  deque isFull
+            // case2: expired -> ProducerBatch in deque is expected time
+            // case3: exhausted -> Is there a thread blocking waiting for BufferPool to release space
+            // case4: closed -> producer prepare for graceful shutdown
+            // case5: flushInProgress -> are there any threads currently waiting on a flush?
+            // case6: transactionManager.isCompleting()
             boolean sendable = full
                     || expired
                     || exhausted
@@ -765,7 +791,9 @@ public class RecordAccumulator {
      * </ol>
      */
     public ReadyCheckResult ready(Metadata metadata, long nowMs) {
+        // readyNodes: Node can be sent data
         Set<Node> readyNodes = new HashSet<>();
+        // the next time to call ReadyCheckResult.ready(...)
         long nextReadyCheckDelayMs = Long.MAX_VALUE;
         Set<String> unknownLeaderTopics = new HashSet<>();
         // Go topic by topic so that we can get queue sizes for partitions in a topic and calculate
@@ -845,7 +873,9 @@ public class RecordAccumulator {
 
     private List<ProducerBatch> drainBatchesForOneNode(Metadata metadata, Node node, int maxSize, long now) {
         int size = 0;
+        // get PartitionInfo
         List<PartitionInfo> parts = metadata.fetch().partitionsForNode(node.id());
+        // ProducerBatches send to target broker id
         List<ProducerBatch> ready = new ArrayList<>();
         if (parts.isEmpty())
             return ready;
@@ -957,7 +987,8 @@ public class RecordAccumulator {
     public Map<Integer, List<ProducerBatch>> drain(Metadata metadata, Set<Node> nodes, int maxSize, long now) {
         if (nodes.isEmpty())
             return Collections.emptyMap();
-
+        // key: node id
+        // value: ProducerBatches send to corresponding node
         Map<Integer, List<ProducerBatch>> batches = new HashMap<>();
         for (Node node : nodes) {
             List<ProducerBatch> ready = drainBatchesForOneNode(metadata, node, maxSize, now);
@@ -1145,10 +1176,13 @@ public class RecordAccumulator {
         }
     }
 
+    // mute a Partition to ensure orderliness
+    // mutedPartition will ensure only one ProducerBatch to send
     public void mutePartition(TopicPartition tp) {
         muted.add(tp);
     }
 
+    // unmutePartition to send next ProducerBatch
     public void unmutePartition(TopicPartition tp) {
         muted.remove(tp);
     }

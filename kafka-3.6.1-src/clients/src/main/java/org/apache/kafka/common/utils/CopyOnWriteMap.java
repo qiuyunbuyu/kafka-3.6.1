@@ -27,7 +27,7 @@ import java.util.concurrent.ConcurrentMap;
  * A simple read-optimized map implementation that synchronizes only writes and does a full copy on each modification
  */
 public class CopyOnWriteMap<K, V> implements ConcurrentMap<K, V> {
-
+    // volatile Map: In a multi-thread scenario, changes in map content are visible to all threads
     private volatile Map<K, V> map;
 
     public CopyOnWriteMap() {
@@ -53,6 +53,7 @@ public class CopyOnWriteMap<K, V> implements ConcurrentMap<K, V> {
         return map.entrySet();
     }
 
+    // no blocking, just read
     @Override
     public V get(Object k) {
         return map.get(k);
@@ -83,10 +84,14 @@ public class CopyOnWriteMap<K, V> implements ConcurrentMap<K, V> {
         this.map = Collections.emptyMap();
     }
 
+    // Use synchronized to ensure that only one thread can update at the same time
     @Override
     public synchronized V put(K k, V v) {
+        // create new
         Map<K, V> copy = new HashMap<>(this.map);
+        // volatile write
         V prev = copy.put(k, v);
+        // set unmodifiableMap
         this.map = Collections.unmodifiableMap(copy);
         return prev;
     }
@@ -106,6 +111,7 @@ public class CopyOnWriteMap<K, V> implements ConcurrentMap<K, V> {
         return prev;
     }
 
+    // synchronized: ensure thread safety
     @Override
     public synchronized V putIfAbsent(K k, V v) {
         if (!containsKey(k))

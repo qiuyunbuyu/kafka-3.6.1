@@ -104,7 +104,7 @@ public class Selector implements Selectable, AutoCloseable {
     private final Logger log;
     // original selector in nio
     private final java.nio.channels.Selector nioSelector;
-    // collections of KafkaChannels
+    // collections of KafkaChannels [ channel + NetworkSend + NetworkRead ]
     private final Map<String, KafkaChannel> channels;
     private final Set<KafkaChannel> explicitlyMutedChannels;
     private boolean outOfMemory;
@@ -259,7 +259,9 @@ public class Selector implements Selectable, AutoCloseable {
      */
     @Override
     public void connect(String id, InetSocketAddress address, int sendBufferSize, int receiveBufferSize) throws IOException {
+        // Do not connect repeatedly
         ensureNotRegistered(id);
+        // get a socketChannel and bind it to SelectionKey
         SocketChannel socketChannel = SocketChannel.open();
         SelectionKey key = null;
         try {
@@ -267,7 +269,7 @@ public class Selector implements Selectable, AutoCloseable {
             configureSocketChannel(socketChannel, sendBufferSize, receiveBufferSize);
             // connect broker
             boolean connected = doConnect(socketChannel, address);
-            // register OP_CONNECT on selector
+            // channel register OP_CONNECT on selector <-> Contact the finishConnect() method of KafkaChannel
             key = registerChannel(id, socketChannel, SelectionKey.OP_CONNECT);
 
             // if connected immediately
@@ -434,9 +436,9 @@ public class Selector implements Selectable, AutoCloseable {
      * @param send The request to send
      */
     public void send(NetworkSend send) {
-        // get id
+        // get destinationId
         String connectionId = send.destinationId();
-        // get channel from id
+        // get channel from channels by using destinationId
         KafkaChannel channel = openOrClosingChannelOrFail(connectionId);
         // if closingChannels contains the channel
         if (closingChannels.containsKey(connectionId)) {
@@ -523,7 +525,7 @@ public class Selector implements Selectable, AutoCloseable {
         long endSelect = time.nanoseconds();
         // record consume time = endSelect - startSelect
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds(), false);
-
+        // some "things" occur || immediatelyConnectedKeys not empty || Cached data exists(only occur in SSL connected)
         if (numReadyKeys > 0 || !immediatelyConnectedKeys.isEmpty() || dataInBuffers) {
             // get ready keys
             Set<SelectionKey> readyKeys = this.nioSelector.selectedKeys();
@@ -568,6 +570,7 @@ public class Selector implements Selectable, AutoCloseable {
     void pollSelectionKeys(Set<SelectionKey> selectionKeys,
                            boolean isImmediatelyConnected,
                            long currentTimeNanos) {
+        // traverse occur things
         for (SelectionKey key : determineHandlingOrder(selectionKeys)) {
             // get channel
             KafkaChannel channel = channel(key);
@@ -585,7 +588,8 @@ public class Selector implements Selectable, AutoCloseable {
             try {
                 /* complete any connections that have finished their handshake (either normally or immediately) */
                 if (isImmediatelyConnected || key.isConnectable()) {
-                    if (channel.finishConnect()) {
+                    // "channel.finishConnect()" will call "transportLayer.finishConnect();" to "~SelectionKey.OP_CONNECT | SelectionKey.OP_READ"
+                        if (channel.finishConnect()) {
                         this.connected.add(nodeId);
                         this.sensors.connectionCreated.record();
                         // if finishConnect, get channel
@@ -1510,8 +1514,13 @@ public class Selector implements Selectable, AutoCloseable {
     }
 
     // helper class for tracking least recently used connections to enable idle connection closing
+    // first add: Selector-registerChannel(*...)
+    // update: Selector-pollSelectionKeys(*...)
+    // close: Selector-close(*...)
     private static class IdleExpiryManager {
+        // lruConnections organized by LinkedHashMap(LRU)
         private final Map<String, Long> lruConnections;
+        // connection max idle time
         private final long connectionsMaxIdleNanos;
         private long nextIdleCloseCheckTime;
 

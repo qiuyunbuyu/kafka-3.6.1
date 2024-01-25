@@ -114,7 +114,7 @@ public class KafkaChannel implements AutoCloseable {
     }
     // the channel id
     private final String id;
-    // Enhance SocketChannel
+    // * Enhance SocketChannel
     private final TransportLayer transportLayer;
     private final Supplier<Authenticator> authenticatorCreator;
     private Authenticator authenticator;
@@ -126,14 +126,15 @@ public class KafkaChannel implements AutoCloseable {
     // memoryPool to allocate bytebuffer
     private final MemoryPool memoryPool;
     private final ChannelMetadataRegistry metadataRegistry;
-    // Enhance ByteBuffer Read
+    // * Enhance ByteBuffer Read
     private NetworkReceive receive;
-    // Enhance ByteBuffer Write
+    // * Enhance ByteBuffer Write
     private NetworkSend send;
     // Track connection and mute state of channels to enable outstanding requests on channels to be
     // processed after the channel is disconnected.
     private boolean disconnected;
     private ChannelMuteState muteState;
+    // * channel state
     private ChannelState state;
     // remote broker address
     private SocketAddress remoteAddress;
@@ -401,7 +402,7 @@ public class KafkaChannel implements AutoCloseable {
             // so when send != null means " not wrote completed "
             throw new IllegalStateException("Attempt to begin a send operation with prior send operation still in progress, connection id is " + id);
         this.send = send;
-        // Add attention to the write event
+        // add attention to the write event
         this.transportLayer.addInterestOps(SelectionKey.OP_WRITE);
     }
 

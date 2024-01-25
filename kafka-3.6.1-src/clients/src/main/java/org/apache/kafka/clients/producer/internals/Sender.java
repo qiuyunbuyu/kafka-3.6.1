@@ -85,7 +85,7 @@ public class Sender implements Runnable {
     /* the flag indicating whether the producer should guarantee the message order on the broker or not. */
     private final boolean guaranteeMessageOrder;
 
-    /* the maximum request size to attempt to send to the server */
+    /* the maximum request(each request) size to attempt to send to the server */
     private final int maxRequestSize;
 
     /* the number of acknowledgements to request from the server */
@@ -340,7 +340,7 @@ public class Sender implements Runnable {
         }
 
         long currentTimeMs = time.milliseconds();
-        // create request ready send to broker
+        // * create request ready send to broker
         long pollTimeout = sendProducerData(currentTimeMs);
 
         // actual read/write
@@ -404,7 +404,7 @@ public class Sender implements Runnable {
         }
 
         // create produce requests
-        // get ProducerBatch(ready to send)
+        // get ProducerBatch(ready to send) <broker.node, List<ProducerBatch>>
         Map<Integer, List<ProducerBatch>> batches = this.accumulator.drain(metadata, result.readyNodes, this.maxRequestSize, now);
         addToInflightBatches(batches);
         // if guaranteeMessageOrder, Ensure that only one batch is being sent
@@ -417,6 +417,7 @@ public class Sender implements Runnable {
         }
         // update next batch expire time
         accumulator.resetNextBatchExpiryTime();
+        // update expiredBatches
         List<ProducerBatch> expiredInflightBatches = getExpiredInflightBatches(now);
         List<ProducerBatch> expiredBatches = this.accumulator.expiredBatches(now);
         expiredBatches.addAll(expiredInflightBatches);
@@ -429,6 +430,7 @@ public class Sender implements Runnable {
         for (ProducerBatch expiredBatch : expiredBatches) {
             String errorMessage = "Expiring " + expiredBatch.recordCount + " record(s) for " + expiredBatch.topicPartition
                 + ":" + (now - expiredBatch.createdMs) + " ms has passed since batch creation";
+            // handle expiredBatch
             failBatch(expiredBatch, new TimeoutException(errorMessage), false);
             if (transactionManager != null && expiredBatch.inRetry()) {
                 // This ensures that no new batches are drained until the current in flight batches are fully resolved.
@@ -453,7 +455,7 @@ public class Sender implements Runnable {
             // otherwise the select time will be the time difference between now and the metadata expiry time;
             pollTimeout = 0;
         }
-        // *
+        // * from <broker.node, List<ProducerBatch>> to NetWorkSend
         sendProduceRequests(batches, now);
         return pollTimeout;
     }
@@ -590,24 +592,25 @@ public class Sender implements Runnable {
     private void handleProduceResponse(ClientResponse response, Map<TopicPartition, ProducerBatch> batches, long now) {
         RequestHeader requestHeader = response.requestHeader();
         int correlationId = requestHeader.correlationId();
-        if (response.wasTimedOut()) {
+        if (response.wasTimedOut()) { // TimedOut
             log.trace("Cancelled request with header {} due to the last request to node {} timed out",
                 requestHeader, response.destination());
             for (ProducerBatch batch : batches.values())
                 completeBatch(batch, new ProduceResponse.PartitionResponse(Errors.REQUEST_TIMED_OUT, String.format("Disconnected from node %s due to timeout", response.destination())),
                         correlationId, now);
-        } else if (response.wasDisconnected()) {
+        } else if (response.wasDisconnected()) { // Disconnected
             log.trace("Cancelled request with header {} due to node {} being disconnected",
                 requestHeader, response.destination());
             for (ProducerBatch batch : batches.values())
                 completeBatch(batch, new ProduceResponse.PartitionResponse(Errors.NETWORK_EXCEPTION, String.format("Disconnected from node %s", response.destination())),
                         correlationId, now);
-        } else if (response.versionMismatch() != null) {
+        } else if (response.versionMismatch() != null) { // versionMismatch
             log.warn("Cancelled request {} due to a version mismatch with node {}",
                     response, response.destination(), response.versionMismatch());
             for (ProducerBatch batch : batches.values())
                 completeBatch(batch, new ProduceResponse.PartitionResponse(Errors.UNSUPPORTED_VERSION), correlationId, now);
         } else {
+            // normal response
             log.trace("Received produce response from node {} with correlation id {}", response.destination(), correlationId);
             // if we have a response, parse it
             if (response.hasResponse()) {
@@ -889,7 +892,7 @@ public class Sender implements Runnable {
         if (transactionManager != null && transactionManager.isTransactional()) {
             transactionalId = transactionManager.transactionalId();
         }
-        // create ProduceRequest
+        // * create ProduceRequest, [ one request will merge N ProducerBatch ]
         ProduceRequest.Builder requestBuilder = ProduceRequest.forMagic(minUsedMagic,
                 new ProduceRequestData()
                         .setAcks(acks)

@@ -452,7 +452,9 @@ public class NetworkClient implements KafkaClient {
 
     /**
      * Are we connected and ready and able to send more requests to the given connection?
-     *
+     * Condition 1: node connect is ready
+     * Condition 2: node channel is ready
+     * Condition 2: inFlightRequests can add more request
      * @param node The node
      * @param now the current timestamp
      */
@@ -928,6 +930,7 @@ public class NetworkClient implements KafkaClient {
      * @param now The current time
      */
     private void handleCompletedReceives(List<ClientResponse> responses, long now) {
+        // attach Selector->attemptRead(...)->addToCompletedReceives(...)->"this.completedReceives.put(channel.id(), networkReceive);"
         for (NetworkReceive receive : this.selector.completedReceives()) {
             String source = receive.source();
             InFlightRequest req = inFlightRequests.completeNext(source);
@@ -947,7 +950,7 @@ public class NetworkClient implements KafkaClient {
                 // handle metadata response
                 metadataUpdater.handleSuccessfulResponse(req.header, now, (MetadataResponse) response);
             else if (req.isInternalRequest && response instanceof ApiVersionsResponse)
-                // handle other response
+                // handle internal response
                 handleApiVersionsResponse(responses, req, now, (ApiVersionsResponse) response);
             else
                 responses.add(req.completed(response, now));
@@ -1050,7 +1053,7 @@ public class NetworkClient implements KafkaClient {
     private void initiateConnect(Node node, long now) {
         String nodeConnectionId = node.idString();
         try {
-            // update connect state
+            // update connect state to connecting
             connectionStates.connecting(nodeConnectionId, now, node.host());
             // get node address
             InetAddress address = connectionStates.currentAddress(nodeConnectionId);

@@ -33,10 +33,11 @@ import java.nio.ByteBuffer;
  * that throws an error if buffer expansion is required to avoid the issue altogether.
  */
 public class ByteBufferOutputStream extends OutputStream {
-
+    // REALLOCATION FACTOR
     private static final float REALLOCATION_FACTOR = 1.1f;
-
+    // initial Capacity
     private final int initialCapacity;
+    // initial Position
     private final int initialPosition;
     private ByteBuffer buffer;
 
@@ -117,9 +118,16 @@ public class ByteBufferOutputStream extends OutputStream {
             expandBuffer(remainingBytesRequired);
     }
 
+    /**
+     * do expand Buffer
+     * @param remainingRequired
+     */
     private void expandBuffer(int remainingRequired) {
+        // 1. Estimate how much expansion is needed
         int expandSize = Math.max((int) (buffer.limit() * REALLOCATION_FACTOR), buffer.position() + remainingRequired);
+        // 2. Apply for a new bytebuffer
         ByteBuffer temp = ByteBuffer.allocate(expandSize);
+        // 3. use new temp ByteBuffer to replace old buffer
         int limit = limit();
         buffer.flip();
         temp.put(buffer);

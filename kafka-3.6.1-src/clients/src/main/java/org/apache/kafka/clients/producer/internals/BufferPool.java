@@ -45,13 +45,19 @@ import org.apache.kafka.common.utils.Time;
 public class BufferPool {
 
     static final String WAIT_TIME_SENSOR_NAME = "bufferpool-wait-time";
-
+    // totalMemory of BufferPool: default 32M
     private final long totalMemory;
+    // single ByteBuffer size: default 16k
     private final int poolableSize;
+    // There may be situations where multiple threads allocate and recycle ByteBuffer concurrently.
+    // Use ReentrantLock to control concurrency, and ensure thread safety
     private final ReentrantLock lock;
+    // Fixed-size ByteBuffer objects cached
     private final Deque<ByteBuffer> free;
+    // Record the Condition objects corresponding to "threads that are blocked because they cannot apply for enough space"
     private final Deque<Condition> waiters;
     /** Total available memory is the sum of nonPooledAvailableMemory and the number of byte buffers in free * poolableSize.  */
+    // non Pooled Available Memory
     private long nonPooledAvailableMemory;
     private final Metrics metrics;
     private final Time time;
@@ -109,25 +115,28 @@ public class BufferPool {
      *         forever)
      */
     public ByteBuffer allocate(int size, long maxTimeToBlockMs) throws InterruptedException {
+        // 1. judge size cannot exceed totalMemory
         if (size > this.totalMemory)
             throw new IllegalArgumentException("Attempt to allocate " + size
                                                + " bytes, but there is a hard limit of "
                                                + this.totalMemory
                                                + " on memory allocations.");
-
+        // 2. initialize  new ByteBuffer
         ByteBuffer buffer = null;
+        // 3. add lock
         this.lock.lock();
-
+        // 4. if BufferPool is closed, throw Exception
         if (this.closed) {
             this.lock.unlock();
             throw new KafkaException("Producer closed while allocating memory");
         }
-
+        // 5. do allocate
         try {
+            // 5.1 [allocate case 1]: Get it directly from free deque
             // check if we have a free buffer of the right size pooled
             if (size == poolableSize && !this.free.isEmpty())
                 return this.free.pollFirst();
-
+            // todo: allocate details...,4cases...
             // now check if the request is immediately satisfiable with the
             // memory on hand or if we need to block
             int freeListSize = freeSize() * this.poolableSize;
@@ -222,15 +231,19 @@ public class BufferPool {
     private ByteBuffer safeAllocateByteBuffer(int size) {
         boolean error = true;
         try {
+            // call allocateByteBuffer(...)
             ByteBuffer buffer = allocateByteBuffer(size);
             error = false;
             return buffer;
         } finally {
             if (error) {
+                // error == true means "allocate failed" so should return buffer to nonPooledAvailableMemory
                 this.lock.lock();
                 try {
+                    // return buffer to nonPooledAvailableMemory
                     this.nonPooledAvailableMemory += size;
                     if (!this.waiters.isEmpty())
+                        // Wake up the waiting thread
                         this.waiters.peekFirst().signal();
                 } finally {
                     this.lock.unlock();
@@ -262,18 +275,27 @@ public class BufferPool {
      *             since the buffer may re-allocate itself during in-place compression
      */
     public void deallocate(ByteBuffer buffer, int size) {
+        // 1. add lock
         lock.lock();
         try {
+            // 2. deallocate ByteBuffer
+            // 2.1. case1: if ByteBuffer to deallocate sizes == poolableSize(16k) -> clear and put to the free deque
             if (size == this.poolableSize && size == buffer.capacity()) {
+                // clear
                 buffer.clear();
+                // put to the free deque
                 this.free.add(buffer);
             } else {
+            // 2.2. case2: The action of recycling the ByteBuffer is left to the JVM to complete.
+                // add the nonPooledAvailableMemory
                 this.nonPooledAvailableMemory += size;
             }
+            // 3. Wake up the first blocked thread in waiters
             Condition moreMem = this.waiters.peekFirst();
             if (moreMem != null)
                 moreMem.signal();
         } finally {
+        // 4. unlock
             lock.unlock();
         }
     }

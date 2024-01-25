@@ -574,6 +574,22 @@ public class MemoryRecords extends AbstractRecords {
                 logAppendTime, producerId, producerEpoch, baseSequence, isTransactional, false, partitionLeaderEpoch);
     }
 
+    /**
+     * get a MemoryRecordsBuilder to build MemoryRecords
+     * @param buffer
+     * @param magic message version
+     * @param compressionType compression type
+     * @param timestampType timestamp
+     * @param baseOffset baseOffset
+     * @param logAppendTime append time
+     * @param producerId producer ID
+     * @param producerEpoch producer Epoch
+     * @param baseSequence batch serial number
+     * @param isTransactional is transactional
+     * @param isControlBatch is controlBatch
+     * @param partitionLeaderEpoch partition Leader Epoch
+     * @return MemoryRecordsBuilder
+     */
     public static MemoryRecordsBuilder builder(ByteBuffer buffer,
                                                byte magic,
                                                CompressionType compressionType,

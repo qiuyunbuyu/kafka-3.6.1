@@ -31,7 +31,9 @@ import java.security.Principal;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
 
 public class PlaintextTransportLayer implements TransportLayer {
+    // Native nio object - SelectionKey
     private final SelectionKey key;
+    // Native nio object - SocketChannel
     private final SocketChannel socketChannel;
     private final Principal principal = KafkaPrincipal.ANONYMOUS;
 
@@ -97,7 +99,7 @@ public class PlaintextTransportLayer implements TransportLayer {
     public void handshake() {}
 
     /**
-    * Reads a sequence of bytes from this channel into the given buffer.
+    * Use native Nio-socketChannel to reads a sequence of bytes from this channel into the given buffer.
     *
     * @param dst The buffer into which bytes are to be transferred
     * @return The number of bytes read, possible zero or -1 if the channel has reached end-of-stream
@@ -109,7 +111,7 @@ public class PlaintextTransportLayer implements TransportLayer {
     }
 
     /**
-     * Reads a sequence of bytes from this channel into the given buffers.
+     * Use native Nio-socketChannel to reads a sequence of bytes from this channel into the given buffers.
      *
      * @param dsts - The buffers into which bytes are to be transferred.
      * @return The number of bytes read, possibly zero, or -1 if the channel has reached end-of-stream.
@@ -134,7 +136,7 @@ public class PlaintextTransportLayer implements TransportLayer {
     }
 
     /**
-    * Writes a sequence of bytes to this channel from the given buffer.
+    * Use native Nio-socketChannel to writes a sequence of bytes to this channel from the given buffer.
     *
     * @param src The buffer from which bytes are to be retrieved
     * @return The number of bytes read, possibly zero, or -1 if the channel has reached end-of-stream
@@ -146,7 +148,7 @@ public class PlaintextTransportLayer implements TransportLayer {
     }
 
     /**
-    * Writes a sequence of bytes to this channel from the given buffer.
+    * Use native Nio-socketChannel to writes a sequence of bytes to this channel from the given buffer.
     *
     * @param srcs The buffer from which bytes are to be retrieved
     * @return The number of bytes read, possibly zero, or -1 if the channel has reached end-of-stream

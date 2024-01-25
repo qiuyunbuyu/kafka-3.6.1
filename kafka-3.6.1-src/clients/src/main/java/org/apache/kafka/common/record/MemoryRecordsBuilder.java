@@ -44,47 +44,67 @@ import static org.apache.kafka.common.utils.Utils.wrapNullable;
  */
 public class MemoryRecordsBuilder implements AutoCloseable {
     private static final float COMPRESSION_RATE_ESTIMATION_FACTOR = 1.05f;
+    // When a ByteBuffer is closed, its write operation output stream will be set to CLOSED_STREAM
+    // aim to prevent data written to this ByteBuffer, When a ByteBuffer is closed
     private static final DataOutputStream CLOSED_STREAM = new DataOutputStream(new OutputStream() {
         @Override
         public void write(int b) {
             throw new IllegalStateException("MemoryRecordsBuilder is closed for record appends");
         }
     });
-
+    // timestamp
     private final TimestampType timestampType;
+    // compression Type
     private final CompressionType compressionType;
     // Used to hold a reference to the underlying ByteBuffer so that we can write the record batch header and access
-    // the written bytes. ByteBufferOutputStream allocates a new ByteBuffer if the existing one is not large enough,
+    // the written bytes. *ByteBufferOutputStream allocates a new ByteBuffer if the existing one is not large enough*,
     // so it's not safe to hold a direct reference to the underlying ByteBuffer.
     private final ByteBufferOutputStream bufferStream;
+    // message version
     private final byte magic;
+    // bytebuffer initial Position
     private final int initialPosition;
+    // base offset
     private final long baseOffset;
+    // time to append log
     private final long logAppendTime;
+    // is ControlBatch
     private final boolean isControlBatch;
+    // partition Leader Epoch
     private final int partitionLeaderEpoch;
+    // write Limit
     private final int writeLimit;
+    // batch header size
     private final int batchHeaderSizeInBytes;
-
     // Use a conservative estimate of the compression ratio. The producer overrides this using statistics
     // from previous batches before appending any records.
     private float estimatedCompressionRatio = 1.0F;
-
     // Used to append records, may compress data on the fly
     private DataOutputStream appendStream;
+    // is Transactional
     private boolean isTransactional;
+    // producer ID
     private long producerId;
+    // producer Epoch
     private short producerEpoch;
+    // Batch serial number
     private int baseSequence;
-    private int uncompressedRecordsSizeInBytes = 0; // Number of bytes (excluding the header) written before compression
+    // Number of bytes (excluding the header) written before compression
+    private int uncompressedRecordsSizeInBytes = 0;
+    // the num of records to send before compression
     private int numRecords = 0;
+    // actual CompressionRatio (can compare with estimatedCompressionRatio)
     private float actualCompressionRatio = 1;
+    // Maximum timestamp
     private long maxTimestamp = RecordBatch.NO_TIMESTAMP;
     private long deleteHorizonMs;
+    // Maximum timestamp offset
     private long offsetOfMaxTimestamp = -1;
+    // last Offset
     private Long lastOffset = null;
+    // base Timestamp
     private Long baseTimestamp = null;
-
+    // Where the message is actually saved
     private MemoryRecords builtRecords;
     private boolean aborted = false;
 
@@ -132,11 +152,14 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         this.deleteHorizonMs = deleteHorizonMs;
         this.partitionLeaderEpoch = partitionLeaderEpoch;
         this.writeLimit = writeLimit;
+        // initial Position [ buffer.position() ]
         this.initialPosition = bufferStream.position();
+        // calculate Header size based on different versions
         this.batchHeaderSizeInBytes = AbstractRecords.recordBatchHeaderSizeInBytes(magic, compressionType);
-
+        // adjust position
         bufferStream.position(initialPosition + batchHeaderSizeInBytes);
         this.bufferStream = bufferStream;
+        // bufferStream -> DataOutputStream (add compress ability)
         this.appendStream = new DataOutputStream(compressionType.wrapForOutput(this.bufferStream, magic));
 
         if (hasDeleteHorizonMs()) {
@@ -434,25 +457,27 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     private void appendWithOffset(long offset, boolean isControlRecord, long timestamp, ByteBuffer key,
                                   ByteBuffer value, Header[] headers) {
         try {
+            // check if isControlBatch match
             if (isControlRecord != isControlBatch)
                 throw new IllegalArgumentException("Control records can only be appended to control batches");
-
+            // check if offset increment
             if (lastOffset != null && offset <= lastOffset)
                 throw new IllegalArgumentException(String.format("Illegal offset %s following previous offset %s " +
                         "(Offsets must increase monotonically).", offset, lastOffset));
-
+            // check timestamp
             if (timestamp < 0 && timestamp != RecordBatch.NO_TIMESTAMP)
                 throw new IllegalArgumentException("Invalid negative timestamp " + timestamp);
-
+            // check header with magic(only v2 has header)
             if (magic < RecordBatch.MAGIC_VALUE_V2 && headers != null && headers.length > 0)
                 throw new IllegalArgumentException("Magic v" + magic + " does not support record headers");
-
+            // baseTimestamp handle
             if (baseTimestamp == null)
                 baseTimestamp = timestamp;
-
+            // v2 record write
             if (magic > RecordBatch.MAGIC_VALUE_V1) {
                 appendDefaultRecord(offset, timestamp, key, value, headers);
             } else {
+                // v0,v1 record write
                 appendLegacyRecord(offset, timestamp, key, value, magic);
             }
         } catch (IOException e) {
@@ -719,10 +744,15 @@ public class MemoryRecordsBuilder implements AutoCloseable {
 
     private void appendDefaultRecord(long offset, long timestamp, ByteBuffer key, ByteBuffer value,
                                      Header[] headers) throws IOException {
+        // check appendStream state, Is it writable?
         ensureOpenForRecordAppend();
+        // count the offsets to write
         int offsetDelta = (int) (offset - baseOffset);
+        // Calculate time[ timestamp, baseTimestamp ] difference
         long timestampDelta = timestamp - baseTimestamp;
+        // call DefaultRecord.writeTo(...) to write to appendStream and return the sizeInBytes(Message size before compression)
         int sizeInBytes = DefaultRecord.writeTo(appendStream, offsetDelta, timestampDelta, key, value, headers);
+        // After the message is written successfully, update the metadata of the RecordBatch
         recordWritten(offset, timestamp, sizeInBytes);
     }
 
@@ -754,11 +784,13 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         if (offset - baseOffset > Integer.MAX_VALUE)
             throw new IllegalArgumentException("Maximum offset delta exceeded, base offset: " + baseOffset +
                     ", last offset: " + offset);
-
+        // numRecords += 1 ( before compression )
         numRecords += 1;
+        // records size inBytes ( before compression )
         uncompressedRecordsSizeInBytes += size;
+        // update lastOffset
         lastOffset = offset;
-
+        // update timestamp, v0 has no timestamp
         if (magic > RecordBatch.MAGIC_VALUE_V0 && timestamp > maxTimestamp) {
             maxTimestamp = timestamp;
             offsetOfMaxTimestamp = offset;
@@ -814,6 +846,8 @@ public class MemoryRecordsBuilder implements AutoCloseable {
      * re-allocation in the underlying byte buffer stream.
      */
     public boolean hasRoomFor(long timestamp, ByteBuffer key, ByteBuffer value, Header[] headers) {
+        // case 1: appendStream state
+        // case 2: estimated Bytes Written
         if (isFull())
             return false;
 
@@ -822,14 +856,17 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             return true;
 
         final int recordSize;
+        // Estimated record size
         if (magic < RecordBatch.MAGIC_VALUE_V2) {
+            // v0 / v1
             recordSize = Records.LOG_OVERHEAD + LegacyRecord.recordSize(magic, key, value);
         } else {
+            // v2
             int nextOffsetDelta = lastOffset == null ? 0 : (int) (lastOffset - baseOffset + 1);
             long timestampDelta = baseTimestamp == null ? 0 : timestamp - baseTimestamp;
             recordSize = DefaultRecord.sizeInBytes(nextOffsetDelta, timestampDelta, key, value, headers);
         }
-
+        // [ Records that have been written + new Record ] cannot exceed the upper writeLimit
         // Be conservative and not take compression of the new record into consideration.
         return this.writeLimit >= estimatedBytesWritten() + recordSize;
     }

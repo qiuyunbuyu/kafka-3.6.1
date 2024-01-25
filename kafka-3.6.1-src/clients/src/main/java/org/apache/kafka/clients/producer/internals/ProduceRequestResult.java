@@ -30,10 +30,11 @@ import java.util.function.Function;
  * for the same partition in the request.
  */
 public class ProduceRequestResult {
-
+    // use CountDownLatch(1) to indirectly implement the future function
     private final CountDownLatch latch = new CountDownLatch(1);
     private final TopicPartition topicPartition;
-
+    // baseOffset: Related to the offset on the broker side
+    // the record offset = baseOffset + relativeOffset
     private volatile Long baseOffset = null;
     private volatile long logAppendTime = RecordBatch.NO_TIMESTAMP;
     private volatile Function<Integer, RuntimeException> errorsByIndex;
@@ -70,7 +71,7 @@ public class ProduceRequestResult {
     }
 
     /**
-     * Await the completion of this request
+     * Await the completion of this request, it will wait until count == 0
      */
     public void await() throws InterruptedException {
         latch.await();

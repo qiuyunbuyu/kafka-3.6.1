@@ -38,9 +38,9 @@ public class NetworkReceive implements Receive {
     private static final Logger log = LoggerFactory.getLogger(NetworkReceive.class);
     // empty ByteBuffer
     private static final ByteBuffer EMPTY_BUFFER = ByteBuffer.allocate(0);
-    // channel id
+    // the numeric id of the source from which we are receiving data. [defined in interface]
     private final String source;
-    // ByteBuffer to storage response size
+    // ByteBuffer to storage response size(meta data) 4 byte
     private final ByteBuffer size;
     // response max size
     private final int maxSize;
@@ -48,7 +48,7 @@ public class NetworkReceive implements Receive {
     private final MemoryPool memoryPool;
     // size of bytes read
     private int requestedBufferSize = -1;
-    // ByteBuffer to storage response data
+    // ByteBuffer to storage response data(actual data)
     private ByteBuffer buffer;
 
 
@@ -66,6 +66,7 @@ public class NetworkReceive implements Receive {
     }
 
     public NetworkReceive(int maxSize, String source, MemoryPool memoryPool) {
+        // used to determine the channel
         this.source = source;
         // response buffer and size
         this.size = ByteBuffer.allocate(4);
@@ -109,6 +110,7 @@ public class NetworkReceive implements Receive {
                 throw new EOFException();
             read += bytesRead;
             if (!size.hasRemaining()) {
+                // read complete
                 size.rewind();
                 // compute how much capacity of bytebuffer is needed
                 int receiveSize = size.getInt();
@@ -124,7 +126,7 @@ public class NetworkReceive implements Receive {
         }
         // 2. Allocate N bytes ByteBuffer to store response data
         if (buffer == null && requestedBufferSize != -1) {
-            //we know the size we want but havent been able to allocate it yet
+            //we know the size we want but have not been able to allocate it yet
             //where the size come from ? requestedBufferSize = size.getInt() get from the "ByteBuffer size"
             buffer = memoryPool.tryAllocate(requestedBufferSize);
             if (buffer == null)
