@@ -87,6 +87,7 @@ import scala.util.{Failure, Success, Try}
 
 /**
  * Logic to handle the various Kafka requests
+ * There are many key processing components: RequestChannel, ReplicaManager...
  */
 class KafkaApis(val requestChannel: RequestChannel,
                 val metadataSupport: MetadataSupport,
@@ -177,43 +178,81 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
 
       request.header.apiKey match {
+        // producer request
         case ApiKeys.PRODUCE => handleProduceRequest(request, requestLocal)
+        // consumer request
         case ApiKeys.FETCH => handleFetchRequest(request)
+        // offset
         case ApiKeys.LIST_OFFSETS => handleListOffsetRequest(request)
+        // get cluster metadata
         case ApiKeys.METADATA => handleTopicMetadataRequest(request)
+        // change partition leader or isr
         case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request)
+        // Stop partition replica copy
         case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request)
+        // update metadata for broker
         case ApiKeys.UPDATE_METADATA => handleUpdateMetadataRequest(request, requestLocal)
+        // broker shutdown
         case ApiKeys.CONTROLLED_SHUTDOWN => handleControlledShutdownRequest(request)
+        // consumer offset commit
         case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request, requestLocal).exceptionally(handleError)
+        // consumer offset fetch
         case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request).exceptionally(handleError)
+        // find coordinator
         case ApiKeys.FIND_COORDINATOR => handleFindCoordinatorRequest(request)
+        // let consumer to add consumer group
         case ApiKeys.JOIN_GROUP => handleJoinGroupRequest(request, requestLocal).exceptionally(handleError)
+        // consumer send heartbeat to coordinator to prove survival
         case ApiKeys.HEARTBEAT => handleHeartbeatRequest(request).exceptionally(handleError)
+        // let consumer to leave consumer group
         case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request).exceptionally(handleError)
+        // synchronize the status of consumer groups
         case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request, requestLocal).exceptionally(handleError)
+        // Get the description of the consumer group
         case ApiKeys.DESCRIBE_GROUPS => handleDescribeGroupsRequest(request).exceptionally(handleError)
+        // List all consumer groups
         case ApiKeys.LIST_GROUPS => handleListGroupsRequest(request).exceptionally(handleError)
+        // sasl handshake for client authentication
         case ApiKeys.SASL_HANDSHAKE => handleSaslHandshakeRequest(request)
+        // Get API version information
         case ApiKeys.API_VERSIONS => handleApiVersionsRequest(request)
+        // create new topic
         case ApiKeys.CREATE_TOPICS => maybeForwardToController(request, handleCreateTopicsRequest)
+        // delete topic
         case ApiKeys.DELETE_TOPICS => maybeForwardToController(request, handleDeleteTopicsRequest)
+        // delete data from one or more partitions
         case ApiKeys.DELETE_RECORDS => handleDeleteRecordsRequest(request)
+        // init producer id
         case ApiKeys.INIT_PRODUCER_ID => handleInitProducerIdRequest(request, requestLocal)
+        // Get the specified partition and the offset of the specified replica
         case ApiKeys.OFFSET_FOR_LEADER_EPOCH => handleOffsetForLeaderEpochRequest(request)
+        // Add the specified partition to the transaction
         case ApiKeys.ADD_PARTITIONS_TO_TXN => handleAddPartitionsToTxnRequest(request, requestLocal)
+        // add consumer offset to the transaction
         case ApiKeys.ADD_OFFSETS_TO_TXN => handleAddOffsetsToTxnRequest(request, requestLocal)
+        // Mark the end of the transaction
         case ApiKeys.END_TXN => handleEndTxnRequest(request, requestLocal)
+        //
         case ApiKeys.WRITE_TXN_MARKERS => handleWriteTxnMarkersRequest(request, requestLocal)
+        // Submit transaction id and offset at the same time
         case ApiKeys.TXN_OFFSET_COMMIT => handleTxnOffsetCommitRequest(request, requestLocal).exceptionally(handleError)
+        // Get acl list
         case ApiKeys.DESCRIBE_ACLS => handleDescribeAcls(request)
+        // Create acl
         case ApiKeys.CREATE_ACLS => maybeForwardToController(request, handleCreateAcls)
+        // Delete acl
         case ApiKeys.DELETE_ACLS => maybeForwardToController(request, handleDeleteAcls)
+        // alter config
         case ApiKeys.ALTER_CONFIGS => handleAlterConfigsRequest(request)
+        // describe config
         case ApiKeys.DESCRIBE_CONFIGS => handleDescribeConfigsRequest(request)
+        // alter replica log data dir
         case ApiKeys.ALTER_REPLICA_LOG_DIRS => handleAlterReplicaLogDirsRequest(request)
+        // get broker log data dir
         case ApiKeys.DESCRIBE_LOG_DIRS => handleDescribeLogDirsRequest(request)
+        // sasl authentication
         case ApiKeys.SASL_AUTHENTICATE => handleSaslAuthenticateRequest(request)
+        // create partitions for topic
         case ApiKeys.CREATE_PARTITIONS => maybeForwardToController(request, handleCreatePartitionsRequest)
         // Create, renew and expire DelegationTokens must first validate that the connection
         // itself is not authenticated with a delegation token before maybeForwardToController.
@@ -221,18 +260,31 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.RENEW_DELEGATION_TOKEN => handleRenewTokenRequest(request)
         case ApiKeys.EXPIRE_DELEGATION_TOKEN => handleExpireTokenRequest(request)
         case ApiKeys.DESCRIBE_DELEGATION_TOKEN => handleDescribeTokensRequest(request)
+        // Consumer: delete consumer groups
         case ApiKeys.DELETE_GROUPS => handleDeleteGroupsRequest(request, requestLocal).exceptionally(handleError)
+        // Broker: Force partition leader election
         case ApiKeys.ELECT_LEADERS => maybeForwardToController(request, handleElectLeaders)
+        // Broker: alter configs incremental
         case ApiKeys.INCREMENTAL_ALTER_CONFIGS => handleIncrementalAlterConfigsRequest(request)
+        // Broker: alter partition reassign
         case ApiKeys.ALTER_PARTITION_REASSIGNMENTS => maybeForwardToController(request, handleAlterPartitionReassignmentsRequest)
+        // Broker: list partition reassigning now
         case ApiKeys.LIST_PARTITION_REASSIGNMENTS => maybeForwardToController(request, handleListPartitionReassignmentsRequest)
+        // Consumer: delete specific topic, specific partition offset
         case ApiKeys.OFFSET_DELETE => handleOffsetDeleteRequest(request, requestLocal).exceptionally(handleError)
+        // Broker-Quota: describe client quotas
         case ApiKeys.DESCRIBE_CLIENT_QUOTAS => handleDescribeClientQuotasRequest(request)
+        // Broker-Quota: alter client quotas
         case ApiKeys.ALTER_CLIENT_QUOTAS => maybeForwardToController(request, handleAlterClientQuotasRequest)
+        // Broker-Scram: describe user scram credentials
         case ApiKeys.DESCRIBE_USER_SCRAM_CREDENTIALS => handleDescribeUserScramCredentialsRequest(request)
+        // Broker-Scram: alter user scram credentials
         case ApiKeys.ALTER_USER_SCRAM_CREDENTIALS => maybeForwardToController(request, handleAlterUserScramCredentialsRequest)
+        // Broker-Partition: alter partition ISR
         case ApiKeys.ALTER_PARTITION => handleAlterPartitionRequest(request)
+        // Broker-Feature: update broker supported features
         case ApiKeys.UPDATE_FEATURES => maybeForwardToController(request, handleUpdateFeatures)
+        //
         case ApiKeys.ENVELOPE => handleEnvelope(request, requestLocal)
         case ApiKeys.DESCRIBE_CLUSTER => handleDescribeCluster(request)
         case ApiKeys.DESCRIBE_PRODUCERS => handleDescribeProducersRequest(request)
@@ -562,8 +614,9 @@ class KafkaApis(val requestChannel: RequestChannel,
    * Handle a produce request
    */
   def handleProduceRequest(request: RequestChannel.Request, requestLocal: RequestLocal): Unit = {
+    // 1. get request body
     val produceRequest = request.body[ProduceRequest]
-
+    // 2. transactional judge
     if (RequestUtils.hasTransactionalRecords(produceRequest)) {
       val isAuthorizedTransactional = produceRequest.transactionalId != null &&
         authHelper.authorize(request.context, WRITE, TRANSACTIONAL_ID, produceRequest.transactionalId)
@@ -580,18 +633,21 @@ class KafkaApis(val requestChannel: RequestChannel,
     // cache the result to avoid redundant authorization calls
     val authorizedTopics = authHelper.filterByAuthorized(request.context, WRITE, TOPIC,
       produceRequest.data().topicData().asScala)(_.name())
-
+    // 3. Traverse each partition record, perform authorization and verification operations on it, and construct corresponding response information
     produceRequest.data.topicData.forEach(topic => topic.partitionData.forEach { partition =>
       val topicPartition = new TopicPartition(topic.name, partition.index)
       // This caller assumes the type is MemoryRecords and that is true on current serialization
       // We cast the type to avoid causing big change to code base.
       // https://issues.apache.org/jira/browse/KAFKA-10698
       val memoryRecords = partition.records.asInstanceOf[MemoryRecords]
+      // 3.1 case1: unauthorizedTopicResponses
       if (!authorizedTopics.contains(topicPartition.topic))
         unauthorizedTopicResponses += topicPartition -> new PartitionResponse(Errors.TOPIC_AUTHORIZATION_FAILED)
+      // 3.2 case2: nonExistingTopicResponses
       else if (!metadataCache.contains(topicPartition))
         nonExistingTopicResponses += topicPartition -> new PartitionResponse(Errors.UNKNOWN_TOPIC_OR_PARTITION)
       else
+      // 3.3 case3: Send partition records to the corresponding broker
         try {
           ProduceRequest.validateRecords(request.header.apiVersion, memoryRecords)
           authorizedRequestInfo += (topicPartition -> memoryRecords)

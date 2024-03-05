@@ -73,13 +73,15 @@ class KafkaRaftServer(
     controllerQuorumVotersFuture,
     new StandardFaultHandlerFactory(),
   )
-
+  // BrokerServer: config.processRoles.contains(BrokerRole)
+  // handle dataPlaneRequest
   private val broker: Option[BrokerServer] = if (config.processRoles.contains(BrokerRole)) {
     Some(new BrokerServer(sharedServer, offlineDirs))
   } else {
     None
   }
-
+  // ControllerServer: config.processRoles.contains(ControllerRole)
+  // handle controlPlaneRequest
   private val controller: Option[ControllerServer] = if (config.processRoles.contains(ControllerRole)) {
     Some(new ControllerServer(
       sharedServer,

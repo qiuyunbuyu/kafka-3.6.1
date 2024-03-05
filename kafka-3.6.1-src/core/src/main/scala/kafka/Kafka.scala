@@ -28,11 +28,17 @@ import org.apache.kafka.server.util.CommandLineUtils
 
 object Kafka extends Logging {
 
+  /**
+   * @param args: server.properties
+   * @return
+   */
   def getPropsFromArgs(args: Array[String]): Properties = {
     val optionParser = new OptionParser(false)
+    // --override override values set in server.properties file
     val overrideOpt = optionParser.accepts("override", "Optional property that should override values set in server.properties file")
       .withRequiredArg()
       .ofType(classOf[String])
+
     // This is just to make the parameter show up in the help output, we are not actually using this due the
     // fact that this class ignores the first parameter which is interpreted as positional and mandatory
     // but would not be mandatory if --version is specified
@@ -50,6 +56,7 @@ object Kafka extends Logging {
 
     val props = Utils.loadProps(args(0))
 
+    // Other parameter processing
     if (args.length > 1) {
       val options = optionParser.parse(args.slice(1, args.length): _*)
 
@@ -68,9 +75,17 @@ object Kafka extends Logging {
   private def enableApiForwarding(config: KafkaConfig) =
     config.migrationEnabled && config.interBrokerProtocolVersion.isApiForwardingEnabled
 
+  /**
+   * build kafka-server from Properties
+   * @param props
+   * @return
+   */
   private def buildServer(props: Properties): Server = {
+    // 1. build KafkaConfig from props
     val config = KafkaConfig.fromProps(props, false)
+    // 2. determine which startup mode, the judgment standard is whether contains the parameter process.role
     if (config.requiresZookeeper) {
+      // 2.1 zk mode
       new KafkaServer(
         config,
         Time.SYSTEM,
@@ -78,6 +93,7 @@ object Kafka extends Logging {
         enableForwarding = enableApiForwarding(config)
       )
     } else {
+      // 2.2 raft mode
       new KafkaRaftServer(
         config,
         Time.SYSTEM,
@@ -87,9 +103,13 @@ object Kafka extends Logging {
 
   def main(args: Array[String]): Unit = {
     try {
+      // 1. get props
       val serverProps = getPropsFromArgs(args)
+
+      // 2. build server from props
       val server = buildServer(serverProps)
 
+      // 3. LoggingSignalHandler
       try {
         if (!OperatingSystem.IS_WINDOWS && !Java.isIbmJdk)
           new LoggingSignalHandler().register()
@@ -99,7 +119,8 @@ object Kafka extends Logging {
             s"by a signal. Reason for registration failure is: $e", e)
       }
 
-      // attach shutdown handler to catch terminating signals as well as normal termination
+      // 4. attach shutdown handler to catch terminating signals as well as normal termination
+      //    will call server.shutdown() before shutdown
       Exit.addShutdownHook("kafka-shutdown-hook", {
         try server.shutdown()
         catch {
@@ -110,6 +131,7 @@ object Kafka extends Logging {
         }
       })
 
+      // 5. start server
       try server.startup()
       catch {
         case e: Throwable =>
@@ -118,6 +140,7 @@ object Kafka extends Logging {
           Exit.exit(1)
       }
 
+      // 6. wait server shutdown
       server.awaitShutdown()
     }
     catch {

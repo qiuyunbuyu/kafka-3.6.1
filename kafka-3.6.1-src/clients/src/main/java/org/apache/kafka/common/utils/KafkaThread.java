@@ -21,6 +21,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * A wrapper for Thread that sets things up nicely
+ * The purpose of this thread design is to separate "the tasks that the thread needs to perform" and "the information of the thread itself"
  */
 public class KafkaThread extends Thread {
 

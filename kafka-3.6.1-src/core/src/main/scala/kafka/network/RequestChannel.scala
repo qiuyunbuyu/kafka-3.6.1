@@ -401,9 +401,9 @@ class RequestChannel(val queueSize: Int,
   }
 
   def sendResponse(
-    request: RequestChannel.Request,
-    response: AbstractResponse,
-    onComplete: Option[Send => Unit]
+    request: RequestChannel.Request, // request
+    response: AbstractResponse, // response
+    onComplete: Option[Send => Unit] // onComplete method
   ): Unit = {
     updateErrorMetrics(request.header.apiKey, response.errorCounts.asScala)
     sendResponse(new RequestChannel.SendResponse(

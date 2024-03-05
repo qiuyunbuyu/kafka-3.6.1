@@ -82,6 +82,7 @@ class SocketServer(val config: KafkaConfig,
 
   private val metricsGroup = new KafkaMetricsGroup(this.getClass)
 
+  // * queued.max.requests
   private val maxQueuedRequests = config.queuedMaxRequests
 
   protected val nodeId = config.brokerId
@@ -95,10 +96,10 @@ class SocketServer(val config: KafkaConfig,
   private val memoryPoolDepletedTimeMetricName = metrics.metricName("MemoryPoolDepletedTimeTotal", MetricsGroup)
   memoryPoolSensor.add(new Meter(TimeUnit.MILLISECONDS, memoryPoolDepletedPercentMetricName, memoryPoolDepletedTimeMetricName))
   private val memoryPool = if (config.queuedMaxBytes > 0) new SimpleMemoryPool(config.queuedMaxBytes, config.socketRequestMaxBytes, false, memoryPoolSensor) else MemoryPool.NONE
-  // data-plane
+  // * data-plane
   private[network] val dataPlaneAcceptors = new ConcurrentHashMap[EndPoint, DataPlaneAcceptor]()
   val dataPlaneRequestChannel = new RequestChannel(maxQueuedRequests, DataPlaneAcceptor.MetricPrefix, time, apiVersionManager.newRequestMetrics)
-  // control-plane
+  // * control-plane
   private[network] var controlPlaneAcceptorOpt: Option[ControlPlaneAcceptor] = None
   val controlPlaneRequestChannelOpt: Option[RequestChannel] = config.controlPlaneListenerName.map(_ =>
     new RequestChannel(20, ControlPlaneAcceptor.MetricPrefix, time, apiVersionManager.newRequestMetrics))
@@ -238,6 +239,10 @@ class SocketServer(val config: KafkaConfig,
     enableFuture
   }
 
+  /**
+   * create Acceptor and add processor for Acceptor
+   * @param endpoint
+   */
   def createDataPlaneAcceptorAndProcessors(endpoint: EndPoint): Unit = synchronized {
     if (stopped) {
       throw new RuntimeException("Can't create new data plane acceptor and processors: SocketServer is stopped.")
@@ -246,8 +251,10 @@ class SocketServer(val config: KafkaConfig,
     connectionQuotas.addListener(config, endpoint.listenerName)
     val isPrivilegedListener = controlPlaneRequestChannelOpt.isEmpty &&
       config.interBrokerListenerName == endpoint.listenerName
+    // 1. create Acceptor
     val dataPlaneAcceptor = createDataPlaneAcceptor(endpoint, isPrivilegedListener, dataPlaneRequestChannel)
     config.addReconfigurable(dataPlaneAcceptor)
+    // 2. add processor for Acceptor
     dataPlaneAcceptor.configure(parsedConfigs)
     dataPlaneAcceptors.put(endpoint, dataPlaneAcceptor)
     info(s"Created data-plane acceptor and processors for endpoint : ${endpoint.listenerName}")
@@ -595,13 +602,13 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
   private val recvBufferSize = config.socketReceiveBufferBytes
   private val listenBacklogSize = config.socketListenBacklogSize
 
-  private val nioSelector = NSelector.open()
+  private val nioSelector = NSelector.open() // * java nio Selector
 
   // If the port is configured as 0, we are using a wildcard port, so we need to open the socket
   // before we can find out what port we have. If it is set to a nonzero value, defer opening
   // the socket until we start the Acceptor. The reason for deferring the socket opening is so
   // that systems which assume that the socket being open indicates readiness are not confused.
-  private[network] var serverChannel: ServerSocketChannel  = _
+  private[network] var serverChannel: ServerSocketChannel  = _ // * java nio ServerSocketChannel
   private[network] val localPort: Int  = if (endPoint.port != 0) {
     endPoint.port
   } else {
@@ -688,10 +695,12 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
    * Accept loop that checks for new connection attempts
    */
   override def run(): Unit = {
+    // 1. register
     serverChannel.register(nioSelector, SelectionKey.OP_ACCEPT)
     try {
       while (shouldRun.get()) {
         try {
+          // 2. accept new connection
           acceptNewConnections()
           closeThrottledConnections()
         }
@@ -756,6 +765,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
               // all processors, block until the last one is able to accept a connection.
               var retriesLeft = synchronized(processors.length)
               var processor: Processor = null
+              // ** assign NewConnection
               do {
                 retriesLeft -= 1
                 processor = synchronized {
@@ -960,6 +970,7 @@ private[kafka] class Processor(
   private val expiredConnectionsKilledCountMetricName = metrics.metricName("expired-connections-killed-count", MetricsGroup, metricTags)
   metrics.addMetric(expiredConnectionsKilledCountMetricName, expiredConnectionsKilledCount)
 
+  // * KSelector
   private[network] val selector = createSelector(
     ChannelBuilders.serverChannelBuilder(
       listenerName,
@@ -1266,8 +1277,10 @@ private[kafka] class Processor(
       } else
         false
     }
-    if (accepted)
+    if (accepted) {
+      // *
       wakeup()
+    }
     accepted
   }
 

@@ -369,8 +369,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // An id string to pass to the server when making requests.
             this.clientId = config.getString(ProducerConfig.CLIENT_ID_CONFIG);
 
-            // log related
+            // transactionalId: If configured, it means idempotent + transactions are enabled
             String transactionalId = config.getString(ProducerConfig.TRANSACTIONAL_ID_CONFIG);
+            // log related
             LogContext logContext;
             if (transactionalId == null)
                 logContext = new LogContext(String.format("[Producer clientId=%s] ", clientId));
@@ -437,14 +438,15 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             this.maxBlockTimeMs = config.getLong(ProducerConfig.MAX_BLOCK_MS_CONFIG);
 
             // RecordAccumulator related, params to init
-            // 1. batchSize: As per Kafka producer configuration documentation batch.size may be set to 0 to explicitly disable, batching which in practice actually means using a batch size of 1.
+            // 1. batchSize: default 16kb, a batch consists of some records
+            // As per Kafka producer configuration documentation batch.size may be set to 0 to explicitly disable, batching which in practice actually means using a batch size of 1.
             int batchSize = Math.max(1, config.getInt(ProducerConfig.BATCH_SIZE_CONFIG));
             // 2. compressionType
             this.compressionType = CompressionType.forName(config.getString(ProducerConfig.COMPRESSION_TYPE_CONFIG));
-            // 3. lingerMs(config)
-            // 4. retryBackoffMs
+            // 3. lingerMs(config): How long should the batch be delayed before sending? The longer the delay, the more records accumulate, but if too long ....
+            // 4. retryBackoffMs: wait ms to retry
             long retryBackoffMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG);
-            // 5. deliveryTimeoutMs
+            // 5. deliveryTimeoutMs: An upper bound on the time to report success or failure after a call to send() returns
             int deliveryTimeoutMs = configureDeliveryTimeout(config, log);
             // 6. partitionerConfig: There is no need to do work required for adaptive partitioning, if we use a custom partitioner.
             boolean enableAdaptivePartitioning = partitioner == null &&
@@ -1022,6 +1024,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         //  - remember partition that is calculated in RecordAccumulator.append
         AppendCallbacks appendCallbacks = new AppendCallbacks(callback, this.interceptors, record);
 
+        // metadata handle, get directly or request
         try {
             throwIfProducerClosed();
             // first make sure the metadata for the topic is available
@@ -1037,6 +1040,8 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             nowMs += clusterAndWaitTime.waitedOnMetadataMs;
             long remainingWaitMs = Math.max(0, maxBlockTimeMs - clusterAndWaitTime.waitedOnMetadataMs);
             Cluster cluster = clusterAndWaitTime.cluster;
+
+            // serialize Key
             byte[] serializedKey;
             try {
                 serializedKey = keySerializer.serialize(record.topic(), record.headers(), record.key());
@@ -1045,6 +1050,8 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                         " to class " + producerConfig.getClass(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG).getName() +
                         " specified in key.serializer", cce);
             }
+
+            // serialize Value
             byte[] serializedValue;
             try {
                 serializedValue = valueSerializer.serialize(record.topic(), record.headers(), record.value());
@@ -1059,12 +1066,16 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // take into account broker load, the amount of data produced to each partition, etc.).
             int partition = partition(record, serializedKey, serializedValue, cluster);
 
+            // headers
             setReadOnly(record.headers());
             Header[] headers = record.headers().toArray();
 
+            // ensureValidRecordSize, check estimateSizeInBytes
             int serializedSize = AbstractRecords.estimateSizeInBytesUpperBound(apiVersions.maxUsableProduceMagic(),
                     compressionType, serializedKey, serializedValue, headers);
             ensureValidRecordSize(serializedSize);
+
+            // timestamp, if not set, use nowMs
             long timestamp = record.timestamp() == null ? nowMs : record.timestamp();
 
             // A custom partitioner may take advantage on the onNewBatch callback.
@@ -1072,10 +1083,23 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
             // Append the record to the accumulator.  Note, that the actual partition may be
             // calculated there and can be accessed via appendCallbacks.topicPartition.
+            // 1. record.topic(): topic name
+            // 2. partition:
+            // 3. timestamp
+            // 4. serializedKey
+            // 5. serializedValue
+            // 6. headers
+            // 7. appendCallbacks
+            // 8. remainingWaitMs
+            // 9. abortOnNewBatch
+            // 10. nowMs
+            // 11. cluster
             RecordAccumulator.RecordAppendResult result = accumulator.append(record.topic(), partition, timestamp, serializedKey,
                     serializedValue, headers, appendCallbacks, remainingWaitMs, abortOnNewBatch, nowMs, cluster);
+
             assert appendCallbacks.getPartition() != RecordMetadata.UNKNOWN_PARTITION;
 
+            // New batches need to be re-partitioned ?
             if (result.abortForNewBatch) {
                 int prevPartition = partition;
                 onNewBatch(record.topic(), cluster, prevPartition);
@@ -1095,11 +1119,13 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             if (transactionManager != null) {
                 transactionManager.maybeAddPartition(appendCallbacks.topicPartition());
             }
+
             // one ProducerBatch is full || new ProducerBatch is created
             if (result.batchIsFull || result.newBatchCreated) {
                 log.trace("Waking up the sender since topic {} partition {} is either full or getting a new batch", record.topic(), appendCallbacks.getPartition());
                 this.sender.wakeup();
             }
+
             return result.future;
             // handling exceptions and record the errors;
             // for API exceptions return them in the future,
@@ -1178,6 +1204,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // update the topic with expiry time
             metadata.add(topic, nowMs + elapsed);
             int version = metadata.requestUpdateForTopic(topic);
+            // no block, wake up now
             sender.wakeup();
             try {
                 metadata.awaitUpdate(version, remainingWaitMs);
