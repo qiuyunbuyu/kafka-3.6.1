@@ -149,7 +149,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
 
                 return;
             }
-
+            // get data from response
             final Map<TopicPartition, FetchResponseData.PartitionData> responseData = response.responseData(handler.sessionTopicNames(), requestVersion);
             final Set<TopicPartition> partitions = new HashSet<>(responseData.keySet());
             final FetchMetricsAggregator metricAggregator = new FetchMetricsAggregator(metricsManager, partitions);
@@ -410,13 +410,16 @@ public abstract class AbstractFetch<K, V> implements Closeable {
      * @see SubscriptionState#updatePreferredReadReplica
      */
     Node selectReadReplica(final TopicPartition partition, final Node leaderReplica, final long currentTimeMs) {
+        // 1. get this partition preferredReadReplica
         Optional<Integer> nodeId = subscriptions.preferredReadReplica(partition, currentTimeMs);
-
+        // 2. if preferredReadReplica set: try to use preferredReadReplica node
         if (nodeId.isPresent()) {
+            // 2.1 judge preferredReadReplica node isPresent
             Optional<Node> node = nodeId.flatMap(id -> metadata.fetch().nodeIfOnline(partition, id));
             if (node.isPresent()) {
                 return node.get();
             } else {
+                // 2.2 clear preferred replica and use leader replica
                 log.trace("Not fetching from {} for partition {} since it is marked offline or is missing from our metadata," +
                         " using the leader instead.", nodeId, partition);
                 // Note that this condition may happen due to stale metadata, so we clear preferred replica and
@@ -425,6 +428,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                 return leaderReplica;
             }
         } else {
+        //  3. preferredReadReplica not set: use leader replica
             return leaderReplica;
         }
     }
@@ -473,6 +477,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                     return fetchSessionHandler.newBuilder();
                 });
                 Uuid topicId = topicIds.getOrDefault(partition.topic(), Uuid.ZERO_UUID);
+                // prepare FetchRequest.PartitionData with partition+position.offset
                 FetchRequest.PartitionData partitionData = new FetchRequest.PartitionData(topicId,
                         position.offset,
                         FetchRequest.INVALID_LOG_START_OFFSET,

@@ -198,9 +198,13 @@ class OffsetFetcherUtils {
      * we should check that all the assignments have a valid position.
      */
     void validatePositionsOnMetadataChange() {
+        // get newest MetadataUpdateVersion
         int newMetadataUpdateVersion = metadata.updateVersion();
+        // If we have seen new metadata, then we should check that all the assignments have a valid position.
         if (metadataUpdateVersion.getAndSet(newMetadataUpdateVersion) != newMetadataUpdateVersion) {
+            // Traverse Partitions assigned
             subscriptionState.assignedPartitions().forEach(topicPartition -> {
+                // get partition leader and Epoch
                 ConsumerMetadata.LeaderAndEpoch leaderAndEpoch = metadata.currentLeader(topicPartition);
                 subscriptionState.maybeValidatePositionForCurrentLeader(apiVersions, topicPartition, leaderAndEpoch);
             });

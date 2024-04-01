@@ -37,7 +37,7 @@ public class GroupRebalanceConfig {
         }
     }
 
-    public final int sessionTimeoutMs;
+    public final int sessionTimeoutMs; // How long does it take for the consumer and broker to have no heartbeat to trigger rebalance
     public final int rebalanceTimeoutMs;
     public final int heartbeatIntervalMs;
     public final String groupId;

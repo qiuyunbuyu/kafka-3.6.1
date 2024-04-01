@@ -128,6 +128,7 @@ private[group] class GroupCoordinator(
   /**
    * Verify if the group has space to accept the joining member. The various
    * criteria are explained below.
+   * * group.max.size *
    */
   private def acceptJoiningMember(group: GroupMetadata, member: String): Boolean = {
     group.currentState match {
@@ -168,15 +169,18 @@ private[group] class GroupCoordinator(
                       responseCallback: JoinCallback,
                       reason: Option[String] = None,
                       requestLocal: RequestLocal = RequestLocal.NoCaching): Unit = {
+    // 1. Check that the groupId is valid, assigned to this coordinator and that the group has been loaded.
     validateGroupStatus(groupId, ApiKeys.JOIN_GROUP).foreach { error =>
       responseCallback(JoinGroupResult(memberId, error))
       return
     }
-
+    // 2. groupConfig.groupMinSessionTimeoutMs < sessionTimeoutMs < groupConfig.groupMaxSessionTimeoutMs
     if (sessionTimeoutMs < groupConfig.groupMinSessionTimeoutMs ||
       sessionTimeoutMs > groupConfig.groupMaxSessionTimeoutMs) {
+      // 2.1 INVALID_SESSION_TIMEOUT
       responseCallback(JoinGroupResult(memberId, Errors.INVALID_SESSION_TIMEOUT))
     } else {
+      // 2.2  consumer memberId is blank?
       val isUnknownMember = memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID
       // group is created if it does not exist and the member id is UNKNOWN. if member
       // is specified but group does not exist, request is rejected with UNKNOWN_MEMBER_ID
@@ -186,10 +190,13 @@ private[group] class GroupCoordinator(
         case Some(group) =>
           group.inLock {
             val joinReason = reason.getOrElse("not provided")
+            // *
             if (!acceptJoiningMember(group, memberId)) {
+              // if full, cannot join
               group.remove(memberId)
               responseCallback(JoinGroupResult(JoinGroupRequest.UNKNOWN_MEMBER_ID, Errors.GROUP_MAX_SIZE_REACHED))
             } else if (isUnknownMember) {
+              // blank memberId join group
               doNewMemberJoinGroup(
                 group,
                 groupInstanceId,
@@ -206,6 +213,7 @@ private[group] class GroupCoordinator(
                 joinReason
               )
             } else {
+              // not blank memberId join group
               doCurrentMemberJoinGroup(
                 group,
                 memberId,
@@ -246,6 +254,7 @@ private[group] class GroupCoordinator(
     reason: String
   ): Unit = {
     group.inLock {
+      // 1. Errors.COORDINATOR_NOT_AVAILABLE
       if (group.is(Dead)) {
         // if the group is marked as dead, it means some other thread has just removed the group
         // from the coordinator metadata; it is likely that the group has migrated to some other
@@ -253,11 +262,14 @@ private[group] class GroupCoordinator(
         // finding the correct coordinator and rejoin.
         responseCallback(JoinGroupResult(JoinGroupRequest.UNKNOWN_MEMBER_ID, Errors.COORDINATOR_NOT_AVAILABLE))
       } else if (!group.supportsProtocols(protocolType, MemberMetadata.plainProtocolSet(protocols))) {
+      // 2. Errors.INCONSISTENT_GROUP_PROTOCOL
         responseCallback(JoinGroupResult(JoinGroupRequest.UNKNOWN_MEMBER_ID, Errors.INCONSISTENT_GROUP_PROTOCOL))
       } else {
+        // 3.1 create newMemberId
         val newMemberId = group.generateMemberId(clientId, groupInstanceId)
         groupInstanceId match {
           case Some(instanceId) =>
+            // 3.2 static member join
             doStaticNewMemberJoinGroup(
               group,
               instanceId,
@@ -274,6 +286,7 @@ private[group] class GroupCoordinator(
               reason
             )
           case None =>
+            // 3.3 dynamicNewMemberJoinGroup
             doDynamicNewMemberJoinGroup(
               group,
               requireKnownMemberId,
@@ -409,6 +422,7 @@ private[group] class GroupCoordinator(
     reason: String
   ): Unit = {
     group.inLock {
+      // 1. Errors.COORDINATOR_NOT_AVAILABLE)
       if (group.is(Dead)) {
         // if the group is marked as dead, it means some other thread has just removed the group
         // from the coordinator metadata; it is likely that the group has migrated to some other
@@ -416,6 +430,7 @@ private[group] class GroupCoordinator(
         // finding the correct coordinator and rejoin.
         responseCallback(JoinGroupResult(memberId, Errors.COORDINATOR_NOT_AVAILABLE))
       } else if (!group.supportsProtocols(protocolType, MemberMetadata.plainProtocolSet(protocols))) {
+      // 2. Errors.INCONSISTENT_GROUP_PROTOCOL)
         responseCallback(JoinGroupResult(memberId, Errors.INCONSISTENT_GROUP_PROTOCOL))
       } else if (group.isPendingMember(memberId)) {
         // A rejoining pending member will be accepted. Note that pending member cannot be a static member.
@@ -426,6 +441,8 @@ private[group] class GroupCoordinator(
 
         debug(s"Pending dynamic member with id $memberId joins group ${group.groupId} in " +
           s"${group.currentState} state. Adding to the group now.")
+
+        // will change state to PreparingRebalance
         addMemberAndRebalance(rebalanceTimeoutMs, sessionTimeoutMs, memberId, None,
           clientId, clientHost, protocolType, protocols, group, responseCallback, reason)
       } else {
@@ -437,14 +454,15 @@ private[group] class GroupCoordinator(
         )
 
         memberErrorOpt match {
+          // error => return false
           case Some(error) => responseCallback(JoinGroupResult(memberId, error))
-
           case None => group.currentState match {
+            // PreparingRebalance state
             case PreparingRebalance =>
               val member = group.get(memberId)
               updateMemberAndRebalance(group, member, protocols, rebalanceTimeoutMs, sessionTimeoutMs, s"Member ${member.memberId} joining group during ${group.currentState}; client reason: $reason", responseCallback)
-
             case CompletingRebalance =>
+              // CompletingRebalance state
               val member = group.get(memberId)
               if (member.matches(protocols)) {
                 // member is joining with the same metadata (which could be because it failed to
@@ -467,7 +485,7 @@ private[group] class GroupCoordinator(
                 // member has changed metadata, so force a rebalance
                 updateMemberAndRebalance(group, member, protocols, rebalanceTimeoutMs, sessionTimeoutMs, s"Updating metadata for member ${member.memberId} during ${group.currentState}; client reason: $reason", responseCallback)
               }
-
+            // Stable state
             case Stable =>
               val member = group.get(memberId)
               if (group.isLeader(memberId)) {
@@ -490,7 +508,7 @@ private[group] class GroupCoordinator(
                   skipAssignment = false,
                   error = Errors.NONE))
               }
-
+            // Empty | Dead state
             case Empty | Dead =>
               // Group reaches unexpected state. Let the joining member reset their generation and rejoin.
               warn(s"Attempt to add rejoining member $memberId of group ${group.groupId} in " +
@@ -524,6 +542,7 @@ private[group] class GroupCoordinator(
       case None =>
         groupManager.getGroup(groupId) match {
           case None => responseCallback(SyncGroupResult(Errors.UNKNOWN_MEMBER_ID))
+          // doSyncGroup
           case Some(group) => doSyncGroup(group, generation, memberId, protocolType, protocolName,
             groupInstanceId, groupAssignment, requestLocal, responseCallback)
         }
@@ -620,7 +639,9 @@ private[group] class GroupCoordinator(
                       resetAndPropagateAssignmentError(group, error)
                       maybePrepareRebalance(group, s"Error $error when storing group assignment during SyncGroup (member: $memberId)")
                     } else {
+                      // set assignment plan
                       setAndPropagateAssignment(group, assignment)
+                      // group state set to Stable
                       group.transitionTo(Stable)
                     }
                   }

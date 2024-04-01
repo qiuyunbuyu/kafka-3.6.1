@@ -97,13 +97,20 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
     private final GroupRebalanceConfig rebalanceConfig;
     private final Logger log;
+    // Subscribe to partition list
     private final List<ConsumerPartitionAssignor> assignors;
+    // Consumer Metadata
     private final ConsumerMetadata metadata;
     private final ConsumerCoordinatorMetrics sensors;
+    // * SubscriptionState *
     private final SubscriptionState subscriptions;
+    //
     private final OffsetCommitCallback defaultOffsetCommitCallback;
+    // is auto commit?
     private final boolean autoCommitEnabled;
+    // auto Commit IntervalMs
     private final int autoCommitIntervalMs;
+    // interceptors
     private final ConsumerInterceptors<?, ?> interceptors;
     // track number of async commits for which callback must be called
     // package private for testing
@@ -114,13 +121,16 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     // this collection must be thread-safe because it is modified from the response handler
     // of offset commit requests, which may be invoked from the heartbeat thread
     private final ConcurrentLinkedQueue<OffsetCommitCompletion> completedOffsetCommits;
-
+    // is Leader consumer in consumer group
     private boolean isLeader = false;
     private Set<String> joinedSubscription;
+    // Monitor metadata changes: [Map<String, List<PartitionRackInfo>>]
     private MetadataSnapshot metadataSnapshot;
     private MetadataSnapshot assignmentSnapshot;
+    // nextAutoCommitTimer
     private Timer nextAutoCommitTimer;
     private AtomicBoolean asyncCommitFenced;
+    // Consumer Group Metadata
     private ConsumerGroupMetadata groupMetadata;
     private final boolean throwOnFetchStableOffsetsUnsupported;
     private final Optional<String> rackId;
@@ -251,6 +261,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         JoinGroupRequestData.JoinGroupRequestProtocolCollection protocolSet = new JoinGroupRequestData.JoinGroupRequestProtocolCollection();
 
         List<String> topics = new ArrayList<>(joinedSubscription);
+        // the ConsumerPartitionAssignor implement by user
         for (ConsumerPartitionAssignor assignor : assignors) {
             Subscription subscription = new Subscription(topics,
                                                          assignor.subscriptionUserData(joinedSubscription),
@@ -413,11 +424,13 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 "it is possible that the leader's assign function is buggy and did not return any assignment for this member, " +
                 "or because static member is configured and the protocol is buggy hence did not get the assignment for this member");
 
+        // get assign plan from assignmentBuffer
         Assignment assignment = ConsumerProtocol.deserializeAssignment(assignmentBuffer);
 
         SortedSet<TopicPartition> assignedPartitions = new TreeSet<>(COMPARATOR);
         assignedPartitions.addAll(assignment.partitions());
 
+        // Check if the assigned plan matches the subscribed
         if (!subscriptions.checkAssignmentMatchedSubscription(assignedPartitions)) {
             final String fullReason = String.format("received assignment %s does not match the current subscription %s; " +
                     "it is likely that the subscription has changed since we joined the group, will re-join with current subscription",
@@ -521,22 +534,26 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
      * @return true iff the operation succeeded
      */
     public boolean poll(Timer timer, boolean waitForJoinGroup) {
+        // 1. Update Subscription Metadata
         maybeUpdateSubscriptionMetadata();
-
+        // 2. call completed Offset Commit Callbacks
         invokeCompletedOffsetCommitCallbacks();
-
+        // 3. hasAutoAssignedPartitions
         if (subscriptions.hasAutoAssignedPartitions()) {
+            // 3.1 check RebalanceProtocol if null throw Exception
             if (protocol == null) {
                 throw new IllegalStateException("User configured " + ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG +
                     " to empty while trying to subscribe for group protocol to auto assign partitions");
             }
+            // 3.2 send Heartbeat
             // Always update the heartbeat last poll time so that the heartbeat thread does not leave the
             // group proactively due to application inactivity even if (say) the coordinator cannot be found.
             pollHeartbeat(timer.currentTimeMs());
+            // 3.3 if not found coordinator, call AbstractCoordinator.ensureCoordinatorReady to ensure connect with coordinator
             if (coordinatorUnknownAndUnreadySync(timer)) {
                 return false;
             }
-
+            // 3.4 rejoin needed
             if (rejoinNeededOrPending()) {
                 // due to a race condition between the initial metadata fetch and the initial rebalance,
                 // we need to ensure that the metadata is fresh before joining initially. This ensures
@@ -560,7 +577,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     maybeUpdateSubscriptionMetadata();
                 }
 
-                // if not wait for join group, we would just use a timer of 0
+                // 3.5 if not wait for join group, we would just use a timer of 0
                 if (!ensureActiveGroup(waitForJoinGroup ? timer : time.timer(0L))) {
                     // since we may use a different timer in the callee, we'd still need
                     // to update the original timer's current time after the call
@@ -570,6 +587,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 }
             }
         } else {
+            // 4. manually assigned partitions
             // For manually assigned partitions, we do not try to pro-actively lookup coordinator;
             // instead we only try to refresh metadata when necessary.
             // If connections to all nodes fail, wakeups triggered while attempting to send fetch
@@ -583,7 +601,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             // if there is pending coordinator requests, ensure they have a chance to be transmitted.
             client.pollNoWakeup();
         }
-
+        // 5. if autoCommitEnabled, commit last consume offsets
         maybeAutoCommitOffsetsAsync(timer.currentTimeMs());
         return true;
     }
@@ -666,6 +684,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                                                       String assignmentStrategy,
                                                       List<JoinGroupResponseData.JoinGroupResponseMember> allSubscriptions,
                                                       boolean skipAssignment) {
+        // 1. get PartitionAssignor
         ConsumerPartitionAssignor assignor = lookupAssignor(assignmentStrategy);
         if (assignor == null)
             throw new IllegalStateException("Coordinator selected invalid assignment protocol: " + assignmentStrategy);
@@ -700,6 +719,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         log.debug("Performing assignment using strategy {} with subscriptions {}", assignorName, subscriptions);
 
+        // 2. Partition Allocation Plan
         Map<String, Assignment> assignments = assignor.assign(metadata.fetch(), new GroupSubscription(subscriptions)).groupAssignment();
 
         // skip the validation for built-in cooperative sticky assignor since we've considered
@@ -1227,6 +1247,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     }
 
     public void maybeAutoCommitOffsetsAsync(long now) {
+        // is auto commit
         if (autoCommitEnabled) {
             nextAutoCommitTimer.update(now);
             if (nextAutoCommitTimer.isExpired()) {
@@ -1302,7 +1323,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     RequestFuture<Void> sendOffsetCommitRequest(final Map<TopicPartition, OffsetAndMetadata> offsets) {
         if (offsets.isEmpty())
             return RequestFuture.voidSuccess();
-
+        // get coordinator
         Node coordinator = checkAndGetCoordinator();
         if (coordinator == null)
             return RequestFuture.coordinatorNotAvailable();

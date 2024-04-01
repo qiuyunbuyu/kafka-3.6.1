@@ -54,19 +54,21 @@ private object MemberMetadata {
  */
 @nonthreadsafe
 private[group] class MemberMetadata(var memberId: String,
-                                    val groupInstanceId: Option[String],
+                                    val groupInstanceId: Option[String], // static Member ID
                                     val clientId: String,
                                     val clientHost: String,
                                     var rebalanceTimeoutMs: Int,
                                     var sessionTimeoutMs: Int,
                                     val protocolType: String,
-                                    var supportedProtocols: List[(String, Array[Byte])],
-                                    var assignment: Array[Byte] = Array.empty[Byte]) {
-
+                                    var supportedProtocols: List[(String, Array[Byte])], // partition.assignment.strategy: like rangeassigner
+                                    var assignment: Array[Byte] = Array.empty[Byte]) { // Partition assign specific plan
+  // await Join Group
   var awaitingJoinCallback: JoinGroupResult => Unit = _
+  // await sync Group
   var awaitingSyncCallback: SyncGroupResult => Unit = _
+  // is new member in Consumer Group
   var isNew: Boolean = false
-
+  // is Static Member
   def isStaticMember: Boolean = groupInstanceId.isDefined
 
   // This variable is used to track heartbeat completion through the delayed
@@ -75,12 +77,14 @@ private[group] class MemberMetadata(var memberId: String,
   // indicating the liveness of the client), we set it to `true` so that the
   // delayed heartbeat can be completed.
   var heartbeatSatisfied: Boolean = false
-
+  // await Join Group
   def isAwaitingJoin: Boolean = awaitingJoinCallback != null
+  // await sync Group
   def isAwaitingSync: Boolean = awaitingSyncCallback != null
 
   /**
    * Get metadata corresponding to the provided protocol.
+   * use supportedProtocols: List[(String, Array[Byte])] | protocol <-> Array[Byte]
    */
   def metadata(protocol: String): Array[Byte] = {
     supportedProtocols.find(_._1 == protocol) match {
@@ -90,6 +94,9 @@ private[group] class MemberMetadata(var memberId: String,
     }
   }
 
+  /**
+   * @return Determine whether heartbeat conditions are expected
+   */
   def hasSatisfiedHeartbeat: Boolean = {
     if (isNew) {
       // New members can be expired while awaiting join, so we have to check this first
@@ -105,6 +112,7 @@ private[group] class MemberMetadata(var memberId: String,
 
   /**
    * Check if the provided protocol metadata matches the currently stored metadata.
+   * protocols vs supportedProtocols in MemberMetadata
    */
   def matches(protocols: List[(String, Array[Byte])]): Boolean = {
     if (protocols.size != this.supportedProtocols.size)
@@ -133,7 +141,9 @@ private[group] class MemberMetadata(var memberId: String,
    */
   def vote(candidates: Set[String]): String = {
     supportedProtocols.find({ case (protocol, _) => candidates.contains(protocol)}) match {
+      // if match, will return first protocol in supportedProtocols
       case Some((protocol, _)) => protocol
+      // no match
       case None =>
         throw new IllegalArgumentException("Member does not support any of the candidate protocols")
     }

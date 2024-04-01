@@ -69,12 +69,17 @@ public class Fetcher<K, V> extends AbstractFetch<K, V> {
      * @return number of fetches sent
      */
     public synchronized int sendFetches() {
+        // 1. prepare FetchRequests: <Node, FetchRequestData>
         Map<Node, FetchSessionHandler.FetchRequestData> fetchRequestMap = prepareFetchRequests();
-
+        // 2. traverse with node
         for (Map.Entry<Node, FetchSessionHandler.FetchRequestData> entry : fetchRequestMap.entrySet()) {
+            // 2.1. get target node
             final Node fetchTarget = entry.getKey();
+            // 2.2. prepare FetchRequestData
             final FetchSessionHandler.FetchRequestData data = entry.getValue();
+            // 2.3 prepare FetchRequest
             final FetchRequest.Builder request = createFetchRequest(fetchTarget, data);
+            // 2.4 RequestFutureListener
             RequestFutureListener<ClientResponse> listener = new RequestFutureListener<ClientResponse>() {
                 @Override
                 public void onSuccess(ClientResponse resp) {
@@ -90,7 +95,7 @@ public class Fetcher<K, V> extends AbstractFetch<K, V> {
                     }
                 }
             };
-
+            // 2.5 true send ApiKeys.FETCH
             final RequestFuture<ClientResponse> future = client.send(fetchTarget, request);
             future.addListener(listener);
         }

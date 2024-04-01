@@ -266,7 +266,7 @@ public class ConsumerNetworkClient implements Closeable {
             // Handle async disconnects prior to attempting any sends
             handlePendingDisconnects();
 
-            // send all the requests we can send now
+            // * [ send all the requests we can send now ]
             long pollDelayMs = trySend(timer.currentTimeMs());
 
             // check whether the poll is still needed by the caller. Note that if the expected completion
@@ -502,15 +502,18 @@ public class ConsumerNetworkClient implements Closeable {
     long trySend(long now) {
         long pollDelayMs = maxPollTimeoutMs;
 
-        // send any requests that can be sent now
+        // send any requests that can be sent now, for loop by node
         for (Node node : unsent.nodes()) {
+            // 1. get all request from unsent deque
             Iterator<ClientRequest> iterator = unsent.requestIterator(node);
             if (iterator.hasNext())
                 pollDelayMs = Math.min(pollDelayMs, client.pollDelayMs(node, now));
-
+            // 2. loop each request
             while (iterator.hasNext()) {
                 ClientRequest request = iterator.next();
+                // client ready
                 if (client.ready(node, now)) {
+                    // 2.1 true send(attach SelectionKey.OP_WRITE)
                     client.send(request, now);
                     iterator.remove();
                 } else {

@@ -125,7 +125,7 @@ private[group] case object Empty extends GroupState {
 
 
 private object GroupMetadata extends Logging {
-
+  // load consumer group metadata
   def loadGroup(groupId: String,
                 initialState: GroupState,
                 generationId: Int,
@@ -141,6 +141,7 @@ private object GroupMetadata extends Logging {
     group.protocolName = Option(protocolName)
     group.leaderId = Option(leaderId)
     group.currentStateTimestamp = currentStateTimestamp
+    // add member
     members.foreach { member =>
       group.add(member, null)
       info(s"Loaded member $member in group $groupId with generation ${group.generationId}.")
@@ -155,23 +156,25 @@ private object GroupMetadata extends Logging {
 /**
  * Case class used to represent group metadata for the ListGroups API
  */
-case class GroupOverview(groupId: String,
-                         protocolType: String,
-                         state: String)
+case class GroupOverview(groupId: String, // group.id
+                         protocolType: String, // protocolType
+                         state: String) // consumer state
 
 /**
  * Case class used to represent group metadata for the DescribeGroup API
  */
 case class GroupSummary(state: String,
                         protocolType: String,
-                        protocol: String,
-                        members: List[MemberSummary])
+                        protocol: String, // which partition assign strategy, consumer group choose finally
+                        members: List[MemberSummary]) // 1 consumer group : N Member
 
 /**
   * We cache offset commits along with their commit record offset. This enables us to ensure that the latest offset
   * commit is always materialized when we have a mix of transactional and regular offset commits. Without preserving
   * information of the commit record offset, compaction of the offsets topic itself may result in the wrong offset commit
   * being materialized.
+ * appendedBatchOffset: Long -> offset in the consumer-offsets to save "consumer offset commit information"
+ * offsetAndMetadata: OffsetAndMetadata -> "actual consumer offset commit information"
   */
 case class CommitRecordMetadataAndOffset(appendedBatchOffset: Option[Long], offsetAndMetadata: OffsetAndMetadata) {
   def olderThan(that: CommitRecordMetadataAndOffset): Boolean = appendedBatchOffset.get < that.appendedBatchOffset.get
@@ -195,20 +198,25 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   type JoinCallback = JoinGroupResult => Unit
 
   private[group] val lock = new ReentrantLock
-
+  // GroupState
   private var state: GroupState = initialState
+  // last state change Timestamp
   var currentStateTimestamp: Option[Long] = Some(time.milliseconds())
   var protocolType: Option[String] = None
   var protocolName: Option[String] = None
   var generationId = 0
+  // group leader
   private var leaderId: Option[String] = None
-
+  // group members
   private val members = new mutable.HashMap[String, MemberMetadata]
   // Static membership mapping [key: group.instance.id, value: member.id]
   private val staticMembers = new mutable.HashMap[String, String]
+  // Member will to be added
   private val pendingMembers = new mutable.HashSet[String]
   private var numMembersAwaitingJoin = 0
+  // [key: supported Assign Protocol, value: Number of votes supported]
   private val supportedProtocols = new mutable.HashMap[String, Integer]().withDefaultValue(0)
+  // [key: TopicPartition, value: CommitRecordMetadataAndOffset]
   private val offsets = new mutable.HashMap[TopicPartition, CommitRecordMetadataAndOffset]
   private val pendingOffsetCommits = new mutable.HashMap[TopicPartition, OffsetAndMetadata]
   private val pendingTransactionalOffsetCommits = new mutable.HashMap[Long, mutable.Map[TopicPartition, CommitRecordMetadataAndOffset]]()
@@ -218,6 +226,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
 
   // When protocolType == `consumer`, a set of subscribed topics is maintained. The set is
   // computed when a new generation is created or when the group is restored from the log.
+  // consumer group: Subscribed topic list
   private var subscribedTopics: Option[Set[String]] = None
 
   var newMemberAdded: Boolean = false
@@ -236,6 +245,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   def isConsumerGroup: Boolean = protocolType.contains(ConsumerProtocol.PROTOCOL_TYPE)
 
   def add(member: MemberMetadata, callback: JoinCallback = null): Unit = {
+    // if staticMembers already contain the member id, will throw exception
     member.groupInstanceId.foreach { instanceId =>
       if (staticMembers.contains(instanceId))
         throw new IllegalStateException(s"Static member with groupInstanceId=$instanceId " +
@@ -243,34 +253,39 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
       staticMembers.put(instanceId, member.memberId)
     }
 
+    // members.isEmpty: first member to add
     if (members.isEmpty)
       this.protocolType = Some(member.protocolType)
-
+    // protocolType[consumer, connect]
     assert(this.protocolType.orNull == member.protocolType)
+    // supportedProtocols[]
     assert(supportsProtocols(member.protocolType, MemberMetadata.plainProtocolSet(member.supportedProtocols)))
-
+    // set leader
     if (leaderId.isEmpty)
       leaderId = Some(member.memberId)
-
+    // add member to members
     members.put(member.memberId, member)
+    // ++ partition assign Strategy
     incSupportedProtocols(member)
+    // set call back
     member.awaitingJoinCallback = callback
-
+    // add numMembersAwaitingJoin
     if (member.isAwaitingJoin)
       numMembersAwaitingJoin += 1
-
+    // remove from pendingMembers
     pendingMembers.remove(member.memberId)
   }
 
   def remove(memberId: String): Unit = {
     members.remove(memberId).foreach { member =>
+      // ++ partition assign Strategy
       decSupportedProtocols(member)
       if (member.isAwaitingJoin)
         numMembersAwaitingJoin -= 1
 
       member.groupInstanceId.foreach(staticMembers.remove)
     }
-
+    // elect new leader
     if (isLeader(memberId))
       leaderId = members.keys.headOption
 
@@ -435,7 +450,9 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   def canRebalance: Boolean = PreparingRebalance.validPreviousStates.contains(state)
 
   def transitionTo(groupState: GroupState): Unit = {
+    // make sure valid transition
     assertValidTransition(groupState)
+    // change state
     state = groupState
     currentStateTimestamp = Some(time.milliseconds())
   }
@@ -473,8 +490,10 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   def supportsProtocols(memberProtocolType: String, memberProtocols: Set[String]): Boolean = {
     if (is(Empty))
       memberProtocolType.nonEmpty && memberProtocols.nonEmpty
-    else
+    else {
+      // ? how to judge " memberProtocols.exists(supportedProtocols(_) == members.size) "
       protocolType.contains(memberProtocolType) && memberProtocols.exists(supportedProtocols(_) == members.size)
+    }
   }
 
   def getSubscribedTopics: Option[Set[String]] = subscribedTopics
@@ -625,23 +644,38 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
     GroupOverview(groupId, protocolType.getOrElse(""), state.toString)
   }
 
+  /**
+   * initialize Offsets
+   * @param offsets
+   * @param pendingTxnOffsets
+   */
   def initializeOffsets(offsets: collection.Map[TopicPartition, CommitRecordMetadataAndOffset],
                         pendingTxnOffsets: Map[Long, mutable.Map[TopicPartition, CommitRecordMetadataAndOffset]]): Unit = {
     this.offsets ++= offsets
     this.pendingTransactionalOffsetCommits ++= pendingTxnOffsets
   }
 
+  /**
+   * onOffsetCommitAppend
+   * @param topicIdPartition
+   * @param offsetWithCommitRecordMetadata
+   */
   def onOffsetCommitAppend(topicIdPartition: TopicIdPartition, offsetWithCommitRecordMetadata: CommitRecordMetadataAndOffset): Unit = {
     val topicPartition = topicIdPartition.topicPartition
+    //
     if (pendingOffsetCommits.contains(topicPartition)) {
+      // appendedBatchOffset is empty, throw exception
       if (offsetWithCommitRecordMetadata.appendedBatchOffset.isEmpty)
         throw new IllegalStateException("Cannot complete offset commit write without providing the metadata of the record " +
           "in the log.")
+      // can put to offsets: HashMap[TopicPartition, CommitRecordMetadataAndOffset]
       if (!offsets.contains(topicPartition) || offsets(topicPartition).olderThan(offsetWithCommitRecordMetadata))
         offsets.put(topicPartition, offsetWithCommitRecordMetadata)
     }
 
+    // handle pendingOffsetCommits
     pendingOffsetCommits.get(topicPartition) match {
+      // success put
       case Some(stagedOffset) if offsetWithCommitRecordMetadata.offsetAndMetadata == stagedOffset =>
         pendingOffsetCommits.remove(topicPartition)
       case _ =>
@@ -713,6 +747,12 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   /* Complete a pending transactional offset commit. This is called after a commit or abort marker is fully written
    * to the log.
    */
+
+  /**
+   * completePending Txn OffsetCommit
+   * @param producerId
+   * @param isCommit
+   */
   def completePendingTxnOffsetCommit(producerId: Long, isCommit: Boolean): Unit = {
     val pendingOffsetsOpt = pendingTransactionalOffsetCommits.remove(producerId)
     if (isCommit) {
@@ -763,8 +803,14 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
     }.toMap
   }
 
+  /**
+   * remove Expired Offsets
+   * @param currentTimestamp: current time
+   * @param offsetRetentionMs: offset Retention Ms
+   * @return
+   */
   def removeExpiredOffsets(currentTimestamp: Long, offsetRetentionMs: Long): Map[TopicPartition, OffsetAndMetadata] = {
-
+    // get TopicPartition --> ExpiredOffsets
     def getExpiredOffsets(baseTimestamp: CommitRecordMetadataAndOffset => Long,
                           subscribedTopics: Set[String] = Set.empty): Map[TopicPartition, OffsetAndMetadata] = {
       offsets.filter {

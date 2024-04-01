@@ -55,24 +55,26 @@ import scala.jdk.CollectionConverters._
 
 class GroupMetadataManager(brokerId: Int,
                            interBrokerProtocolVersion: MetadataVersion,
-                           config: OffsetConfig,
+                           config: OffsetConfig, // __consumer_offsets config
                            val replicaManager: ReplicaManager,
                            time: Time,
                            metrics: Metrics) extends Logging {
   // Visible for test.
   private[group] val metricsGroup: KafkaMetricsGroup = new KafkaMetricsGroup(this.getClass)
-
+  // aim to compress __consumer_offsets
   private val compressionType: CompressionType = config.offsetsTopicCompressionType
-
+  // GroupMeta managered by this broker: [consumer group name: GroupMetadata]
   private val groupMetadataCache = new Pool[String, GroupMetadata]
 
   /* lock protecting access to loading and owned partition sets */
   private val partitionLock = new ReentrantLock()
 
   /* partitions of consumer groups that are being loaded, its lock should be always called BEFORE the group lock if needed */
+  /* loading partitions: filling the GroupMetadata */
   private val loadingPartitions: mutable.Set[Int] = mutable.Set()
 
   /* partitions of consumer groups that are assigned, using the same loading partition lock */
+  /* Completed loading partitions*/
   private val ownedPartitions: mutable.Set[Int] = mutable.Set()
 
   /* shutting down flag */
@@ -175,13 +177,16 @@ class GroupMetadataManager(brokerId: Int,
     })
 
   def startup(retrieveGroupMetadataTopicPartitionCount: () => Int, enableMetadataExpiration: Boolean): Unit = {
+    // the num of __consumer_offsets partitions
     groupMetadataTopicPartitionCount = retrieveGroupMetadataTopicPartitionCount()
+    // start
     scheduler.startup()
+    // if enable Metadata Expiration
     if (enableMetadataExpiration) {
       scheduler.schedule("delete-expired-group-metadata",
         () => cleanupGroupMetadata(),
         0L,
-        config.offsetsRetentionCheckIntervalMs)
+        config.offsetsRetentionCheckIntervalMs) // OffsetConfig.DefaultOffsetsRetentionCheckIntervalMs
     }
   }
 
@@ -215,6 +220,7 @@ class GroupMetadataManager(brokerId: Int,
   }
 
   /**
+   * FIND
    * Get the group associated with the given groupId or null if not found
    */
   def getGroup(groupId: String): Option[GroupMetadata] = {
@@ -222,17 +228,20 @@ class GroupMetadataManager(brokerId: Int,
   }
 
   /**
+   * GET Or MaybeCreate
    * Get the group associated with the given groupId - the group is created if createIfNotExist
    * is true - or null if not found
    */
   def getOrMaybeCreateGroup(groupId: String, createIfNotExist: Boolean): Option[GroupMetadata] = {
-    if (createIfNotExist)
+    if (createIfNotExist) {
+      // if not exist, create consumer group(state is *empty*)
       Option(groupMetadataCache.getAndMaybePut(groupId, new GroupMetadata(groupId, Empty, time)))
-    else
+    } else
       Option(groupMetadataCache.get(groupId))
   }
 
   /**
+   * ADD
    * Add a group or get the group associated with the given groupId if it already exists
    */
   def addGroup(group: GroupMetadata): GroupMetadata = {
@@ -244,6 +253,13 @@ class GroupMetadataManager(brokerId: Int,
     }
   }
 
+  /**
+   *
+   * @param group
+   * @param groupAssignment
+   * @param responseCallback
+   * @param requestLocal
+   */
   def storeGroup(group: GroupMetadata,
                  groupAssignment: Map[String, Array[Byte]],
                  responseCallback: Errors => Unit,
@@ -746,6 +762,13 @@ class GroupMetadataManager(brokerId: Int,
     }
   }
 
+  /**
+   * LOAD
+   * groupMetadataCache.putIfNotExists(group.groupId, group)
+   * @param group
+   * @param offsets
+   * @param pendingTransactionalOffsets
+   */
   private def loadGroup(group: GroupMetadata, offsets: Map[TopicPartition, CommitRecordMetadataAndOffset],
                         pendingTransactionalOffsets: Map[Long, mutable.Map[TopicPartition, CommitRecordMetadataAndOffset]]): Unit = {
     // offsets are initialized prior to loading the group into the cache to ensure that clients see a consistent
@@ -760,6 +783,7 @@ class GroupMetadataManager(brokerId: Int,
   }
 
   /**
+   * DELETE
    * When this broker becomes a follower for an offsets topic partition clear out the cache for groups that belong to
    * that partition.
    *
@@ -770,6 +794,7 @@ class GroupMetadataManager(brokerId: Int,
                                onGroupUnloaded: GroupMetadata => Unit): Unit = {
     val topicPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, offsetsPartition)
     info(s"Scheduling unloading of offsets and group metadata from $topicPartition")
+    // Asynchronous remove
     scheduler.scheduleOnce(topicPartition.toString, () => removeGroupsAndOffsets(topicPartition, coordinatorEpoch, onGroupUnloaded))
   }
 

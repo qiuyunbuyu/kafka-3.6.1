@@ -1643,6 +1643,7 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   private def getCoordinator(request: RequestChannel.Request, keyType: Byte, key: String): (Errors, Node) = {
+    // Group authorization failed.
     if (keyType == CoordinatorType.GROUP.id &&
         !authHelper.authorize(request.context, DESCRIBE, GROUP, key))
       (Errors.GROUP_AUTHORIZATION_FAILED, Node.noNode)
@@ -1650,6 +1651,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         !authHelper.authorize(request.context, DESCRIBE, TRANSACTIONAL_ID, key))
       (Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED, Node.noNode)
     else {
+      // distinguish CoordinatorType
       val (partition, internalTopicName) = CoordinatorType.forId(keyType) match {
         case CoordinatorType.GROUP =>
           (groupCoordinator.partitionFor(key), GROUP_METADATA_TOPIC_NAME)
@@ -1657,17 +1659,21 @@ class KafkaApis(val requestChannel: RequestChannel,
         case CoordinatorType.TRANSACTION =>
           (txnCoordinator.partitionFor(key), TRANSACTION_STATE_TOPIC_NAME)
       }
-
+      // get internalTopicName Metadata
       val topicMetadata = metadataCache.getTopicMetadata(Set(internalTopicName), request.context.listenerName)
 
       if (topicMetadata.headOption.isEmpty) {
         val controllerMutationQuota = quotas.controllerMutation.newPermissiveQuotaFor(request)
+        // try to create internalTopic
         autoTopicCreationManager.createTopics(Seq(internalTopicName).toSet, controllerMutationQuota, None)
         (Errors.COORDINATOR_NOT_AVAILABLE, Node.noNode)
       } else {
         if (topicMetadata.head.errorCode != Errors.NONE.code) {
           (Errors.COORDINATOR_NOT_AVAILABLE, Node.noNode)
         } else {
+          // try to get coordinatorEndpoint, two step:
+          // 1. find partitionID
+          // 2. find brokerID (the leader of Replica of "partitionID")
           val coordinatorEndpoint = topicMetadata.head.partitions.asScala
             .find(_.partitionIndex == partition)
             .filter(_.leaderId != MetadataResponse.NO_LEADER_ID)

@@ -75,7 +75,10 @@ public class SubscriptionState {
     private final Logger log;
 
     private enum SubscriptionType {
-        NONE, AUTO_TOPICS, AUTO_PATTERN, USER_ASSIGNED
+        NONE,   // initial value
+        AUTO_TOPICS, // specify topic and automatically assign partitions
+        AUTO_PATTERN,   // Regular expression matching subscription topic and automatically assign partitions
+        USER_ASSIGNED   //
     }
 
     /* the type of subscription */
@@ -95,7 +98,7 @@ public class SubscriptionState {
     /* the partitions that are currently assigned, note that the order of partition matters (see FetchBuilder for more details) */
     private final PartitionStates<TopicPartitionState> assignment;
 
-    /* Default offset reset strategy */
+    /* Default offset reset strategy : Affects consumers’ consume position after restarting */
     private final OffsetResetStrategy defaultResetStrategy;
 
     /* User-provided listener to be invoked when assignment changes */
@@ -136,6 +139,7 @@ public class SubscriptionState {
         this.assignment = new PartitionStates<>();
         this.groupSubscription = new HashSet<>();
         this.subscribedPattern = null;
+        // initial set none
         this.subscriptionType = SubscriptionType.NONE;
     }
 
@@ -158,12 +162,14 @@ public class SubscriptionState {
     private void setSubscriptionType(SubscriptionType type) {
         if (this.subscriptionType == SubscriptionType.NONE)
             this.subscriptionType = type;
-        else if (this.subscriptionType != type)
+        else if (this.subscriptionType != type) // Guaranteed subscriptionType to be the same as the previous time
             throw new IllegalStateException(SUBSCRIPTION_EXCEPTION_MESSAGE);
     }
 
     public synchronized boolean subscribe(Set<String> topics, ConsumerRebalanceListener listener) {
+        // register Rebalance Listener
         registerRebalanceListener(listener);
+        // Automatically allocate partitions based on subscribed topics
         setSubscriptionType(SubscriptionType.AUTO_TOPICS);
         return changeSubscription(topics);
     }
@@ -183,6 +189,7 @@ public class SubscriptionState {
     }
 
     private boolean changeSubscription(Set<String> topicsToSubscribe) {
+        // Determine whether this subscription is consistent with previous subscriptions
         if (subscription.equals(topicsToSubscribe))
             return false;
 

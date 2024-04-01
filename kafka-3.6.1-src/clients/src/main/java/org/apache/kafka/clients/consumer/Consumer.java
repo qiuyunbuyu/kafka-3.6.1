@@ -47,11 +47,14 @@ public interface Consumer<K, V> extends Closeable {
     Set<String> subscription();
 
     /**
+     * Subscribe to the given list of topics to get dynamically assigned partitions.
      * @see KafkaConsumer#subscribe(Collection)
      */
     void subscribe(Collection<String> topics);
 
     /**
+     * Subscribe to the given list of topics to get dynamically assigned partitions.
+     * The provided listener will be invoked first to indicate that the consumer's assignment has been revoked, and then again when the new assignment has been received.
      * @see KafkaConsumer#subscribe(Collection, ConsumerRebalanceListener)
      */
     void subscribe(Collection<String> topics, ConsumerRebalanceListener callback);
