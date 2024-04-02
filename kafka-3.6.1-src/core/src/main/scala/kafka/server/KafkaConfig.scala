@@ -2175,14 +2175,19 @@ class KafkaConfig private(doLog: Boolean, val props: java.util.Map[_, _], dynami
   }
 
   private def getControlPlaneListenerNameAndSecurityProtocol: Option[(ListenerName, SecurityProtocol)] = {
+    // judge is set "control.plane.listener.name" ?
     Option(getString(KafkaConfig.ControlPlaneListenerNameProp)) match {
+      // if use
       case Some(name) =>
+        // get listenerName
         val listenerName = ListenerName.normalised(name)
+        // get securityProtocol
         val securityProtocol = effectiveListenerSecurityProtocolMap.getOrElse(listenerName,
           throw new ConfigException(s"Listener with ${listenerName.value} defined in " +
             s"${KafkaConfig.ControlPlaneListenerNameProp} not found in ${KafkaConfig.ListenerSecurityProtocolMapProp}."))
+        // return
         Some(listenerName, securityProtocol)
-
+      // not use
       case None => None
    }
   }

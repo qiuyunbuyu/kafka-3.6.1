@@ -34,6 +34,12 @@ public class Endpoint {
     private final String host;
     private final int port;
 
+    /**
+     * @param listenerName define by self
+     * @param securityProtocol 4: [PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL]
+     * @param host
+     * @param port
+     */
     public Endpoint(String listenerName, SecurityProtocol securityProtocol, String host, int port) {
         this.listenerName = listenerName;
         this.securityProtocol = securityProtocol;

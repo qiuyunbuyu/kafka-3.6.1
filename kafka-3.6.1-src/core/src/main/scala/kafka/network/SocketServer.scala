@@ -80,32 +80,37 @@ class SocketServer(val config: KafkaConfig,
                    val apiVersionManager: ApiVersionManager)
   extends Logging with BrokerReconfigurable {
 
-  private val metricsGroup = new KafkaMetricsGroup(this.getClass)
-
   // * queued.max.requests
   private val maxQueuedRequests = config.queuedMaxRequests
-
+  // brokerID
   protected val nodeId = config.brokerId
 
   private val logContext = new LogContext(s"[SocketServer listenerType=${apiVersionManager.listenerType}, nodeId=$nodeId] ")
-
   this.logIdent = logContext.logPrefix
 
+  // memoryPool attach
+  private val metricsGroup = new KafkaMetricsGroup(this.getClass)
   private val memoryPoolSensor = metrics.sensor("MemoryPoolUtilization")
   private val memoryPoolDepletedPercentMetricName = metrics.metricName("MemoryPoolAvgDepletedPercent", MetricsGroup)
   private val memoryPoolDepletedTimeMetricName = metrics.metricName("MemoryPoolDepletedTimeTotal", MetricsGroup)
   memoryPoolSensor.add(new Meter(TimeUnit.MILLISECONDS, memoryPoolDepletedPercentMetricName, memoryPoolDepletedTimeMetricName))
   private val memoryPool = if (config.queuedMaxBytes > 0) new SimpleMemoryPool(config.queuedMaxBytes, config.socketRequestMaxBytes, false, memoryPoolSensor) else MemoryPool.NONE
+
   // * data-plane
   private[network] val dataPlaneAcceptors = new ConcurrentHashMap[EndPoint, DataPlaneAcceptor]()
+  // RequestChannel[handle data request len 500]
   val dataPlaneRequestChannel = new RequestChannel(maxQueuedRequests, DataPlaneAcceptor.MetricPrefix, time, apiVersionManager.newRequestMetrics)
+
   // * control-plane
   private[network] var controlPlaneAcceptorOpt: Option[ControlPlaneAcceptor] = None
+  // RequestChannel[handle control request len 20]
   val controlPlaneRequestChannelOpt: Option[RequestChannel] = config.controlPlaneListenerName.map(_ =>
     new RequestChannel(20, ControlPlaneAcceptor.MetricPrefix, time, apiVersionManager.newRequestMetrics))
 
-  private[this] val nextProcessorId: AtomicInteger = new AtomicInteger(0)
+  // * Quotas
   val connectionQuotas = new ConnectionQuotas(config, time, metrics)
+
+  private[this] val nextProcessorId: AtomicInteger = new AtomicInteger(0)
 
   /**
    * A future which is completed once all the authorizer futures are complete.
@@ -260,12 +265,18 @@ class SocketServer(val config: KafkaConfig,
     info(s"Created data-plane acceptor and processors for endpoint : ${endpoint.listenerName}")
   }
 
+  /**
+   *
+   * @param endpoint
+   */
   private def createControlPlaneAcceptorAndProcessor(endpoint: EndPoint): Unit = synchronized {
     if (stopped) {
       throw new RuntimeException("Can't create new control plane acceptor and processor: SocketServer is stopped.")
     }
     connectionQuotas.addListener(config, endpoint.listenerName)
+    // create controlPlane Acceptor
     val controlPlaneAcceptor = createControlPlaneAcceptor(endpoint, controlPlaneRequestChannelOpt.get)
+    // add an Processor for "controlPlane Acceptor"
     controlPlaneAcceptor.addProcessors(1)
     controlPlaneAcceptorOpt = Some(controlPlaneAcceptor)
     info(s"Created control-plane acceptor and processor for endpoint : ${endpoint.listenerName}")
@@ -410,6 +421,7 @@ class SocketServer(val config: KafkaConfig,
 object SocketServer {
   val MetricsGroup = "socket-server-metrics"
 
+  // Parameters that can be dynamically configured
   val ReconfigurableConfigs = Set(
     KafkaConfig.MaxConnectionsPerIpProp,
     KafkaConfig.MaxConnectionsPerIpOverridesProp,
@@ -598,6 +610,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
   def metricPrefix(): String
   def threadPrefix(): String
 
+  // socketSendBuffer / socketReceiveBuffer: default 128kb
   private val sendBufferSize = config.socketSendBufferBytes
   private val recvBufferSize = config.socketReceiveBufferBytes
   private val listenBacklogSize = config.socketListenBacklogSize
@@ -644,10 +657,14 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
         serverChannel = openServerSocket(endPoint.host, endPoint.port, listenBacklogSize)
         debug(s"Opened endpoint ${endPoint.host}:${endPoint.port}")
       }
+
+      // 1. start processor thread
       debug(s"Starting processors for listener ${endPoint.listenerName}")
       processors.foreach(_.start())
+      // 2. start acceptor thread
       debug(s"Starting acceptor thread for listener ${endPoint.listenerName}")
       thread.start()
+
       startedFuture.complete(null)
       started = true
     } catch {
@@ -850,12 +867,18 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
    */
   def wakeup(): Unit = nioSelector.wakeup()
 
+  /**
+   * add Processor for Acceptor
+   * @param toCreate
+   */
   def addProcessors(toCreate: Int): Unit = synchronized {
     val listenerName = endPoint.listenerName
+    // like PLAINTEXT SSL SASL_PLAINTEXT SASL_SSL
     val securityProtocol = endPoint.securityProtocol
     val listenerProcessors = new ArrayBuffer[Processor]()
 
     for (_ <- 0 until toCreate) {
+      // create processor thread
       val processor = newProcessor(socketServer.nextProcessorId(), listenerName, securityProtocol)
       listenerProcessors += processor
       requestChannel.addProcessor(processor)
@@ -867,6 +890,13 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
     processors ++= listenerProcessors
   }
 
+  /**
+   * create Processor
+   * @param id
+   * @param listenerName
+   * @param securityProtocol
+   * @return
+   */
   def newProcessor(id: Int, listenerName: ListenerName, securityProtocol: SecurityProtocol): Processor = {
     val name = s"${threadPrefix()}-kafka-network-thread-$nodeId-${endPoint.listenerName}-${endPoint.securityProtocol}-${id}"
     new Processor(id,
