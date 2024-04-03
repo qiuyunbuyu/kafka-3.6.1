@@ -587,6 +587,19 @@ class ControlPlaneAcceptor(socketServer: SocketServer,
 
 /**
  * Thread that accepts and configures new connections. There is one of these per endpoint.
+ * @param socketServer
+ * @param endPoint
+ * @param config
+ * @param nodeId
+ * @param connectionQuotas
+ * @param time
+ * @param isPrivilegedListener
+ * @param requestChannel
+ * @param metrics
+ * @param credentialProvider
+ * @param logContext
+ * @param memoryPool
+ * @param apiVersionManager
  */
 private[kafka] abstract class Acceptor(val socketServer: SocketServer,
                                        val endPoint: EndPoint,
@@ -615,7 +628,8 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
   private val recvBufferSize = config.socketReceiveBufferBytes
   private val listenBacklogSize = config.socketListenBacklogSize
 
-  private val nioSelector = NSelector.open() // * java nio Selector
+  // *: java nio Selector
+  private val nioSelector = NSelector.open()
 
   // If the port is configured as 0, we are using a wildcard port, so we need to open the socket
   // before we can find out what port we have. If it is set to a nonzero value, defer opening
@@ -630,7 +644,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
     info(s"Opened wildcard endpoint ${endPoint.host}:${newPort}")
     newPort
   }
-
+  // *: 1 Acceptor <-> N Processor
   private[network] val processors = new ArrayBuffer[Processor]()
   // Build the metric name explicitly in order to keep the existing name for compatibility
   private val blockedPercentMeterMetricName = KafkaMetricsGroup.explicitMetricName(
@@ -654,6 +668,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
         throw new ClosedChannelException()
       }
       if (serverChannel == null) {
+        // * create ServerSocketChannel and can see register on Selector[OP_ACCEPT] in run()
         serverChannel = openServerSocket(endPoint.host, endPoint.port, listenBacklogSize)
         debug(s"Opened endpoint ${endPoint.host}:${endPoint.port}")
       }
@@ -685,9 +700,14 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
     // Shutdown `removeCount` processors. Remove them from the processor list first so that no more
     // connections are assigned. Shutdown the removed processors, closing the selector and its connections.
     // The processors are then removed from `requestChannel` and any pending responses to these processors are dropped.
+
+    // processors = new ArrayBuffer[Processor]()
+    // 1. get and remove removeCount processors
     val toRemove = processors.takeRight(removeCount)
     processors.remove(processors.size - removeCount, removeCount)
+    // 2. close processors
     toRemove.foreach(_.close())
+    // 3. remove processors from requestChannel
     toRemove.foreach(processor => requestChannel.removeProcessor(processor.id))
   }
 
@@ -719,6 +739,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
         try {
           // 2. accept new connection
           acceptNewConnections()
+          // 3. maybe close some socketChannel
           closeThrottledConnections()
         }
         catch {
@@ -747,11 +768,13 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
         new InetSocketAddress(port)
       else
         new InetSocketAddress(host, port)
+    // 1. open
     val serverChannel = ServerSocketChannel.open()
+    // 2. Configure parameters
     serverChannel.configureBlocking(false)
     if (recvBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
       serverChannel.socket().setReceiveBufferSize(recvBufferSize)
-
+    // 3. bind
     try {
       serverChannel.socket.bind(socketAddress, listenBacklogSize)
       info(s"Awaiting socket connections on ${socketAddress.getHostString}:${serverChannel.socket.getLocalPort}.")
@@ -766,16 +789,22 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
    * Listen for new connections and assign accepted connections to processors using round-robin.
    */
   private def acceptNewConnections(): Unit = {
+    // 1. Selects a set of keys whose corresponding channels are ready for I/O operations.[500ms]
     val ready = nioSelector.select(500)
     if (ready > 0) {
+      // 2. get selectedKeys and traverse
       val keys = nioSelector.selectedKeys()
       val iter = keys.iterator()
       while (iter.hasNext && shouldRun.get()) {
         try {
+          // 2.1 get key and remove from iter
           val key = iter.next
           iter.remove()
-
+          // 2.2 Only listen to OP_ACCEPT events
           if (key.isAcceptable) {
+            // 2.3 two things:
+              // 1. get socketChannel from accept(key) method
+              // 2. handle socketChannel
             accept(key).foreach { socketChannel =>
               // Assign the channel to the next processor (using round-robin) to which the
               // channel can be added without blocking. If newConnections queue is full on
@@ -785,6 +814,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
               // ** assign NewConnection
               do {
                 retriesLeft -= 1
+                // * choose a processor to handle
                 processor = synchronized {
                   // adjust the index (if necessary) and retrieve the processor atomically for
                   // correct behaviour in case the number of processors is reduced dynamically
@@ -794,8 +824,10 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
                 currentProcessorIndex += 1
               } while (!assignNewConnection(socketChannel, processor, retriesLeft == 0))
             }
-          } else
+          } else {
+            // If an event other than OP_ACCEPT is received, an exception will throw
             throw new IllegalStateException("Unrecognized key state for acceptor thread.")
+          }
         } catch {
           case e: Throwable => error("Error while accepting connection", e)
         }
@@ -807,10 +839,13 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
    * Accept a new connection
    */
   private def accept(key: SelectionKey): Option[SocketChannel] = {
+    // 1. get socketChannel
     val serverSocketChannel = key.channel().asInstanceOf[ServerSocketChannel]
     val socketChannel = serverSocketChannel.accept()
     try {
+      // 2. quota manage
       connectionQuotas.inc(endPoint.listenerName, socketChannel.socket.getInetAddress, blockedPercentMeter)
+      // 3. setting SocketChannel
       configureAcceptedSocketChannel(socketChannel)
       Some(socketChannel)
     } catch {
@@ -831,6 +866,10 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
     }
   }
 
+  /**
+   * setting SocketChannel
+   * @param socketChannel
+   */
   protected def configureAcceptedSocketChannel(socketChannel: SocketChannel): Unit = {
     socketChannel.configureBlocking(false)
     socketChannel.socket().setTcpNoDelay(true)
@@ -851,6 +890,13 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
     }
   }
 
+  /**
+   * use processor to connect client channel
+   * @param socketChannel
+   * @param processor
+   * @param mayBlock
+   * @return
+   */
   private def assignNewConnection(socketChannel: SocketChannel, processor: Processor, mayBlock: Boolean): Boolean = {
     if (processor.accept(socketChannel, mayBlock, blockedPercentMeter)) {
       debug(s"Accepted connection from ${socketChannel.socket.getRemoteSocketAddress} on" +
@@ -881,12 +927,13 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
       // create processor thread
       val processor = newProcessor(socketServer.nextProcessorId(), listenerName, securityProtocol)
       listenerProcessors += processor
+      // add new ConcurrentHashMap[Int, Processor]() in RequestChannel
       requestChannel.addProcessor(processor)
-
       if (started) {
         processor.start()
       }
     }
+    // add new ArrayBuffer[Processor]() in Acceptor
     processors ++= listenerProcessors
   }
 
@@ -1483,6 +1530,7 @@ class ConnectionQuotas(config: KafkaConfig, time: Time, metrics: Metrics) extend
   private val brokerConnectionRateSensor = getOrCreateConnectionRateQuotaSensor(config.maxConnectionCreationRate, BrokerQuotaEntity)
   private val maxThrottleTimeMs = TimeUnit.SECONDS.toMillis(config.quotaWindowSizeSeconds.toLong)
 
+  // user for quota manage
   def inc(listenerName: ListenerName, address: InetAddress, acceptorBlockedPercentMeter: com.yammer.metrics.core.Meter): Unit = {
     counts.synchronized {
       waitForConnectionSlot(listenerName, acceptorBlockedPercentMeter)
