@@ -971,6 +971,7 @@ private[kafka] object Processor {
   val IdlePercentMetricName = "IdlePercent"
   val NetworkProcessorMetricTag = "networkProcessor"
   val ListenerMetricTag = "listener"
+  // hardcode 20
   val ConnectionQueueSize = 20
 }
 
@@ -1024,9 +1025,11 @@ private[kafka] class Processor(
   private[network] case class ConnectionId(localHost: String, localPort: Int, remoteHost: String, remotePort: Int, index: Int) {
     override def toString: String = s"$localHost:$localPort-$remoteHost:$remotePort-$index"
   }
-
+  // ArrayBlockingQueue: store SocketChannel, size 20
   private val newConnections = new ArrayBlockingQueue[SocketChannel](connectionQueueSize)
+  // tmp Response Queue
   private val inflightResponses = mutable.Map[String, RequestChannel.Response]()
+  // Response Queue
   private val responseQueue = new LinkedBlockingDeque[RequestChannel.Response]()
 
   private[kafka] val metricTags = mutable.LinkedHashMap(
@@ -1068,6 +1071,7 @@ private[kafka] class Processor(
       case reconfigurable: Reconfigurable => config.addReconfigurable(reconfigurable)
       case _ =>
     }
+  // * KSelector
     new KSelector(
       maxRequestSize,
       connectionsMaxIdleMs,
@@ -1094,12 +1098,17 @@ private[kafka] class Processor(
         try {
           // setup any new connections that have been queued up
           configureNewConnections()
-          // register any new responses for writing
+          // register any new responses for writing, add to inflightResponses
           processNewResponses()
+          // truly handle and Send
           poll()
+          // handle Completed Receive Request
           processCompletedReceives()
+          // handle Completed Send Response
           processCompletedSends()
+          // Get the connection that was disconnected due to a send failure and then process it
           processDisconnected()
+          //  close Exceed Quota connections
           closeExcessConnections()
         } catch {
           // We catch all the throwables here to prevent the processor thread from exiting. We do this because
@@ -1132,12 +1141,22 @@ private[kafka] class Processor(
     processException(errorMessage, throwable)
   }
 
+  /**
+   * two things:
+   * 1. send Response to Corresponding Client
+   * 2. add Response to inflightResponses
+   */
   private def processNewResponses(): Unit = {
+    // 1. declare a Response object
     var currentResponse: RequestChannel.Response = null
+    // 2. get Response from responseQueue and handle;
     while ({currentResponse = dequeueResponse(); currentResponse != null}) {
+      // 3. get channelId
       val channelId = currentResponse.request.context.connectionId
       try {
+        // 4. Match the type of Response and handle
         currentResponse match {
+          // case1: no need send Response for Client, like ack = 0
           case response: NoOpResponse =>
             // There is no response to send to the client, we need to read more pipelined requests
             // that are sitting in the server's socket buffer
@@ -1147,16 +1166,20 @@ private[kafka] class Processor(
             // it will be unmuted immediately. If the channel has been throttled, it will be unmuted only if the
             // throttling delay has already passed by now.
             handleChannelMuteEvent(channelId, ChannelMuteEvent.RESPONSE_SENT)
+            // listen OP_READ event again
             tryUnmuteChannel(channelId)
-
+          // case2: truly send Response, add Response to inflightResponses
           case response: SendResponse =>
             sendResponse(response, response.responseSend)
+          // case3: response the [Close Connection Request] and handle close
           case response: CloseConnectionResponse =>
             updateRequestMetrics(response)
             trace("Closing socket connection actively according to the response code.")
             close(channelId)
+          // case4: handle Start Throttling
           case _: StartThrottlingResponse =>
             handleChannelMuteEvent(channelId, ChannelMuteEvent.THROTTLE_STARTED)
+          // case5: handle end Throttling
           case _: EndThrottlingResponse =>
             // Try unmuting the channel. The channel will be unmuted only if the response has already been sent out to
             // the client.
@@ -1173,9 +1196,17 @@ private[kafka] class Processor(
   }
 
   // `protected` for test usage
+
+  /**
+   *
+   * @param response
+   * @param responseSend
+   */
   protected[network] def sendResponse(response: RequestChannel.Response, responseSend: Send): Unit = {
+    // 1. get connectionId(ClientID) from Response
     val connectionId = response.request.context.connectionId
     trace(s"Socket server received response to send to $connectionId, registering for write and sending data: $response")
+    // 2. judge connectionId isEmpty
     // `channel` can be None if the connection was closed remotely or if selector closed it for being idle for too long
     if (channel(connectionId).isEmpty) {
       warn(s"Attempting to send response via channel for which there is no open connection, connection id $connectionId")
@@ -1184,14 +1215,21 @@ private[kafka] class Processor(
     // Invoke send for closingChannel as well so that the send is failed and the channel closed properly and
     // removed from the Selector after discarding any pending staged receives.
     // `openOrClosingChannel` can be None if the selector closed the connection because it was idle for too long
+    // 3. handle
     if (openOrClosingChannel(connectionId).isDefined) {
+      // *[send Response to Corresponding Client]
       selector.send(new NetworkSend(connectionId, responseSend))
+      // *[add Response to inflightResponses]
       inflightResponses += (connectionId -> response)
     }
   }
 
+  /**
+   * truly Send Response by net
+   */
   private def poll(): Unit = {
     val pollTimeout = if (newConnections.isEmpty) 300 else 0
+    // call NIO Selector select()
     try selector.poll(pollTimeout)
     catch {
       case e @ (_: IllegalStateException | _: IOException) =>
@@ -1211,15 +1249,20 @@ private[kafka] class Processor(
   }
 
   private def processCompletedReceives(): Unit = {
+    // 1. get and handle all accepted Request
     selector.completedReceives.forEach { receive =>
       try {
+        // 2. get Channel and ChannelID
         openOrClosingChannel(receive.source) match {
           case Some(channel) =>
+            // 3. get Request Header
             val header = parseRequestHeader(receive.payload)
+            // 4. if SASL_HANDSHAKE Request, need Reauthentication
             if (header.apiKey == ApiKeys.SASL_HANDSHAKE && channel.maybeBeginServerReauthentication(receive,
               () => time.nanoseconds()))
               trace(s"Begin re-authentication: $channel")
             else {
+              // 5. if server Authentication Session Expired
               val nowNanos = time.nanoseconds()
               if (channel.serverAuthenticationSessionExpired(nowNanos)) {
                 // be sure to decrease connection count and drop any in-flight responses
@@ -1227,6 +1270,7 @@ private[kafka] class Processor(
                 close(channel.id)
                 expiredConnectionsKilledCount.record(null, 1, 0)
               } else {
+                // 6.1 construct Request Object
                 val connectionId = receive.source
                 val context = new RequestContext(header, connectionId, channel.socketAddress,
                   channel.principal, listenerName, securityProtocol,
@@ -1245,7 +1289,9 @@ private[kafka] class Processor(
                       apiVersionsRequest.data.clientSoftwareVersion))
                   }
                 }
+                // 6.2 add Request to RequestChannel
                 requestChannel.sendRequest(req)
+                // 6.3 remove the OP_READ event
                 selector.mute(connectionId)
                 handleChannelMuteEvent(connectionId, ChannelMuteEvent.REQUEST_RECEIVED)
               }
@@ -1261,18 +1307,22 @@ private[kafka] class Processor(
           processChannelException(receive.source, s"Exception while processing request from ${receive.source}", e)
       }
     }
+    // 7. clear all Accepted Request of Selector
     selector.clearCompletedReceives()
   }
 
   private def processCompletedSends(): Unit = {
+    // 1. get completed sent Response from SocketChannel
     selector.completedSends.forEach { send =>
       try {
+        // 2. get Response from inflightResponses
         val response = inflightResponses.remove(send.destinationId).getOrElse {
           throw new IllegalStateException(s"Send for ${send.destinationId} completed, but not in `inflightResponses`")
         }
         
         // Invoke send completion callback, and then update request metrics since there might be some
         // request metrics got updated during callback
+        // 3. call onComplete(send) callback
         response.onComplete.foreach(onComplete => onComplete(send))
         updateRequestMetrics(response)
 
@@ -1280,12 +1330,15 @@ private[kafka] class Processor(
         // it will be unmuted immediately. If the channel has been throttled, it will unmuted only if the throttling
         // delay has already passed by now.
         handleChannelMuteEvent(send.destinationId, ChannelMuteEvent.RESPONSE_SENT)
+
+        // 4. register OP_READ event again
         tryUnmuteChannel(send.destinationId)
       } catch {
         case e: Throwable => processChannelException(send.destinationId,
           s"Exception while processing completed send to ${send.destinationId}", e)
       }
     }
+    // 5. Clears completed sends
     selector.clearCompletedSends()
   }
 
@@ -1295,6 +1348,11 @@ private[kafka] class Processor(
     request.updateRequestMetrics(networkThreadTimeNanos, response)
   }
 
+  /**
+   * handle disconnected
+   * 1. remove from inflightResponses
+   * 2. update quota
+   */
   private def processDisconnected(): Unit = {
     selector.disconnected.keySet.forEach { connectionId =>
       try {
@@ -1311,10 +1369,14 @@ private[kafka] class Processor(
   }
 
   private def closeExcessConnections(): Unit = {
+    // if Exceeded quota
     if (connectionQuotas.maxConnectionsExceeded(listenerName)) {
+      // find lowest Priority Channel
       val channel = selector.lowestPriorityChannel()
-      if (channel != null)
+      if (channel != null) {
+        // close
         close(channel.id)
+      }
     }
   }
 
@@ -1328,11 +1390,13 @@ private[kafka] class Processor(
   private def close(connectionId: String): Unit = {
     openOrClosingChannel(connectionId).foreach { channel =>
       debug(s"Closing selector connection $connectionId")
+      // get address
       val address = channel.socketAddress
+      // update quota
       if (address != null)
         connectionQuotas.dec(listenerName, address)
+      // remove from selector and inflightResponses
       selector.close(connectionId)
-
       inflightResponses.remove(connectionId).foreach(response => updateRequestMetrics(response))
     }
   }
@@ -1344,18 +1408,22 @@ private[kafka] class Processor(
              mayBlock: Boolean,
              acceptorIdlePercentMeter: com.yammer.metrics.core.Meter): Boolean = {
     val accepted = {
+      // case 1: queue not full, add socketChannel to newConnections
       if (newConnections.offer(socketChannel))
         true
       else if (mayBlock) {
+        // case2: If the queue is full and can block
         val startNs = time.nanoseconds
         newConnections.put(socketChannel)
         acceptorIdlePercentMeter.mark(time.nanoseconds() - startNs)
         true
-      } else
+      } else {
+        // case3: queue not full, and can not block
         false
+      }
     }
     if (accepted) {
-      // *
+      // * wake up selector
       wakeup()
     }
     accepted
@@ -1367,15 +1435,20 @@ private[kafka] class Processor(
    * existing channels are handled promptly.
    */
   private def configureNewConnections(): Unit = {
+    // 1. the num of processed connection
     var connectionsProcessed = 0
+    // 2. Two conditions: [1] not exceed quota [2] the queue of newConnections(SocketChannel)
     while (connectionsProcessed < connectionQueueSize && !newConnections.isEmpty) {
+      // 2.1 get SocketChannel from newConnections
       val channel = newConnections.poll()
       try {
         debug(s"Processor $id listening to new connection from ${channel.socket.getRemoteSocketAddress}")
+        // 2.2 register SocketChannel on Selector and listen OP_READ
         selector.register(connectionId(channel.socket), channel)
+        // 2.3 update the num of processed connection
         connectionsProcessed += 1
       } catch {
-        // We explicitly catch all exceptions and close the socket to avoid a socket leak.
+        // 3. We explicitly catch all exceptions and close the socket to avoid a socket leak.
         case e: Throwable =>
           val remoteAddress = channel.socket.getRemoteSocketAddress
           // need to close the channel here to avoid a socket leak.
@@ -1415,6 +1488,10 @@ private[kafka] class Processor(
     wakeup()
   }
 
+  /**
+   * get response from RequestChannel
+   * @return RequestChannel.Response
+   */
   private def dequeueResponse(): RequestChannel.Response = {
     val response = responseQueue.poll()
     if (response != null)
