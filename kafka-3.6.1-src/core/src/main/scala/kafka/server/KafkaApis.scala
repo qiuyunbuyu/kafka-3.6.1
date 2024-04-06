@@ -178,49 +178,49 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
 
       request.header.apiKey match {
-        // producer request
+        // producer: write request
         case ApiKeys.PRODUCE => handleProduceRequest(request, requestLocal)
-        // consumer request
+        // consumer: fetch messages request
         case ApiKeys.FETCH => handleFetchRequest(request)
-        // offset
+        // consumer: list offset
         case ApiKeys.LIST_OFFSETS => handleListOffsetRequest(request)
-        // get cluster metadata
+        // broker: get cluster metadata
         case ApiKeys.METADATA => handleTopicMetadataRequest(request)
-        // change partition leader or isr
+        // broker: change partition leader or isr
         case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request)
-        // Stop partition replica copy
+        // broker: Stop partition replica copy
         case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request)
-        // update metadata for broker
+        // producer/consumer: update metadata for broker
         case ApiKeys.UPDATE_METADATA => handleUpdateMetadataRequest(request, requestLocal)
-        // broker shutdown
+        // broker: shutdown
         case ApiKeys.CONTROLLED_SHUTDOWN => handleControlledShutdownRequest(request)
-        // consumer offset commit
+        // consumer: offset commit
         case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request, requestLocal).exceptionally(handleError)
-        // consumer offset fetch
+        // consumer: offset fetch
         case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request).exceptionally(handleError)
-        // find coordinator
+        // consumer: find coordinator
         case ApiKeys.FIND_COORDINATOR => handleFindCoordinatorRequest(request)
-        // let consumer to add consumer group
+        // consumer: let consumer to add consumer group
         case ApiKeys.JOIN_GROUP => handleJoinGroupRequest(request, requestLocal).exceptionally(handleError)
-        // consumer send heartbeat to coordinator to prove survival
+        // consumer: consumer send heartbeat to coordinator to prove survival
         case ApiKeys.HEARTBEAT => handleHeartbeatRequest(request).exceptionally(handleError)
-        // let consumer to leave consumer group
+        // consumer: let consumer to leave consumer group
         case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request).exceptionally(handleError)
-        // synchronize the status of consumer groups
+        // consumer: synchronize the status of consumer groups
         case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request, requestLocal).exceptionally(handleError)
-        // Get the description of the consumer group
+        // consumer: Get the description of the consumer group
         case ApiKeys.DESCRIBE_GROUPS => handleDescribeGroupsRequest(request).exceptionally(handleError)
-        // List all consumer groups
+        // consumer: List all consumer groups
         case ApiKeys.LIST_GROUPS => handleListGroupsRequest(request).exceptionally(handleError)
-        // sasl handshake for client authentication
+        // client-broker: sasl handshake for client authentication
         case ApiKeys.SASL_HANDSHAKE => handleSaslHandshakeRequest(request)
-        // Get API version information
+        // broker: Get API version information
         case ApiKeys.API_VERSIONS => handleApiVersionsRequest(request)
-        // create new topic
+        // broker: create new topic
         case ApiKeys.CREATE_TOPICS => maybeForwardToController(request, handleCreateTopicsRequest)
-        // delete topic
+        // broker: delete topic
         case ApiKeys.DELETE_TOPICS => maybeForwardToController(request, handleDeleteTopicsRequest)
-        // delete data from one or more partitions
+        // broker: delete data from one or more partitions
         case ApiKeys.DELETE_RECORDS => handleDeleteRecordsRequest(request)
         // init producer id
         case ApiKeys.INIT_PRODUCER_ID => handleInitProducerIdRequest(request, requestLocal)
@@ -717,6 +717,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           requestHelper.sendNoOpResponseExemptThrottle(request)
         }
       } else {
+        // ** send Response to the processor.responseQueue
         requestChannel.sendResponse(request, new ProduceResponse(mergedResponseStatus.asJava, maxThrottleTimeMs), None)
       }
     }
