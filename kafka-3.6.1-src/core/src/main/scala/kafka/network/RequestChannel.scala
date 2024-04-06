@@ -355,13 +355,15 @@ class RequestChannel(val queueSize: Int,
                      time: Time,
                      val metrics: RequestChannel.Metrics) {
   import RequestChannel._
-
   private val metricsGroup = new KafkaMetricsGroup(this.getClass)
 
+  // the size of request Queue, default 500
   private val requestQueue = new ArrayBlockingQueue[BaseRequest](queueSize)
+  // processors in RequestChannel, default 3
   private val processors = new ConcurrentHashMap[Int, Processor]()
   val requestQueueSizeMetricName = metricNamePrefix.concat(RequestQueueSizeMetric)
   val responseQueueSizeMetricName = metricNamePrefix.concat(ResponseQueueSizeMetric)
+  //
   private val callbackQueue = new ArrayBlockingQueue[BaseRequest](queueSize)
 
   metricsGroup.newGauge(requestQueueSizeMetricName, () => requestQueue.size)
@@ -373,13 +375,15 @@ class RequestChannel(val queueSize: Int,
   })
 
   def addProcessor(processor: Processor): Unit = {
+    // 1. add processor
     if (processors.putIfAbsent(processor.id, processor) != null)
       warn(s"Unexpected processor with processorId ${processor.id}")
-
+    // 2. focus on responseQueueSize metric in processor
     metricsGroup.newGauge(responseQueueSizeMetricName, () => processor.responseQueueSize,
       Map(ProcessorMetricTag -> processor.id.toString).asJava)
   }
 
+  // Contrary to addProcessor
   def removeProcessor(processorId: Int): Unit = {
     processors.remove(processorId)
     metricsGroup.removeMetric(responseQueueSizeMetricName, Map(ProcessorMetricTag -> processorId.toString).asJava)
@@ -428,6 +432,7 @@ class RequestChannel(val queueSize: Int,
 
   /** Send a response back to the socket server to be sent over the network */
   private[network] def sendResponse(response: RequestChannel.Response): Unit = {
+    // 1. if need Traced
     if (isTraceEnabled) {
       val requestHeader = response.request.headerForLoggingOrThrottling()
       val message = response match {
@@ -444,13 +449,15 @@ class RequestChannel(val queueSize: Int,
       }
       trace(message)
     }
-
+    // 2. Match the type of response and perform corresponding processing
     response match {
       // We should only send one of the following per request
       case _: SendResponse | _: NoOpResponse | _: CloseConnectionResponse =>
         val request = response.request
         val timeNanos = time.nanoseconds()
+        // calculate response Complete TimeNanos
         request.responseCompleteTimeNanos = timeNanos
+        // calculate apiLocal Complete TimeNanos
         if (request.apiLocalCompleteTimeNanos == -1L)
           request.apiLocalCompleteTimeNanos = timeNanos
         // If this callback was executed after KafkaApis returned we will need to adjust the callback completion time here.
@@ -460,10 +467,13 @@ class RequestChannel(val queueSize: Int,
       case _: StartThrottlingResponse | _: EndThrottlingResponse => ()
     }
 
+    // 3. find the response correspond processor
+    // The corresponding request and response need to be the same processor
     val processor = processors.get(response.processor)
     // The processor may be null if it was shutdown. In this case, the connections
     // are closed, so the response is dropped.
     if (processor != null) {
+      // add the Response to the processor.responseQueue
       processor.enqueueResponse(response)
     }
   }
