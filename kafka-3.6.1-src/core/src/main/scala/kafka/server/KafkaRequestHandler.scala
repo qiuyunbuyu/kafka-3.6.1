@@ -114,6 +114,7 @@ class KafkaRequestHandler(id: Int,
 
       // 1. calculate the metric of time and get the Request
       val startSelectTime = time.nanoseconds
+      // * get the Request from RequestChannel
       val req = requestChannel.receiveRequest(300)
       val endTime = time.nanoseconds
       val idleTime = endTime - startSelectTime

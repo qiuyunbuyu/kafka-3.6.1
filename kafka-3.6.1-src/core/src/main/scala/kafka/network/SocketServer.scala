@@ -636,6 +636,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
   // the socket until we start the Acceptor. The reason for deferring the socket opening is so
   // that systems which assume that the socket being open indicates readiness are not confused.
   private[network] var serverChannel: ServerSocketChannel  = _ // * java nio ServerSocketChannel
+  // open ServerSocketChannel when init Acceptor
   private[network] val localPort: Int  = if (endPoint.port != 0) {
     endPoint.port
   } else {
@@ -1096,15 +1097,15 @@ private[kafka] class Processor(
     try {
       while (shouldRun.get()) {
         try {
-          // setup any new connections that have been queued up
+          // setup any new connections that have been queued up, register SocketChannel on Selector and listen [OP_READ]
           configureNewConnections()
           // register any new responses for writing, add to inflightResponses
           processNewResponses()
-          // truly handle and Send
+          // Do whatever net I/O can be done on each connection without blocking.
           poll()
           // handle Completed Receive Request
           processCompletedReceives()
-          // handle Completed Send Response
+          // handle Completed Send Response(Execute the callback logic after sending the response, Very little response is needed, like Fetch)
           processCompletedSends()
           // Get the connection that was disconnected due to a send failure and then process it
           processDisconnected()
@@ -1149,7 +1150,7 @@ private[kafka] class Processor(
   private def processNewResponses(): Unit = {
     // 1. declare a Response object
     var currentResponse: RequestChannel.Response = null
-    // 2. get Response from responseQueue and handle;
+    // 2. get Response from responseQueue(add Response to responseQueue in KafkaApis) and handle; [Contact KafkaApis-requestChannel.sendResponse(....) for thoughts]
     while ({currentResponse = dequeueResponse(); currentResponse != null}) {
       // 3. get channelId
       val channelId = currentResponse.request.context.connectionId
