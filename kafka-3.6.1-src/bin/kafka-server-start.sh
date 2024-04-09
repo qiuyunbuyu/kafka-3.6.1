@@ -14,23 +14,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# 1. Check the number of input parameters, num < 1 will exit
 if [ $# -lt 1 ];
 then
 	echo "USAGE: $0 [-daemon] server.properties [--override property=value]*"
 	exit 1
 fi
+
+# 2. get the dir of this shell, and assigned to base_dir
 base_dir=$(dirname $0)
 
+# 3. Check whether $KAFKA_LOG4J_OPTS is set, if not, set it
 if [ "x$KAFKA_LOG4J_OPTS" = "x" ]; then
     export KAFKA_LOG4J_OPTS="-Dlog4j.configuration=file:$base_dir/../config/log4j.properties"
 fi
 
+# 4. Check whether $KAFKA_HEAP_OPTS is set, if not, set it
 if [ "x$KAFKA_HEAP_OPTS" = "x" ]; then
     export KAFKA_HEAP_OPTS="-Xmx1G -Xms1G"
 fi
 
+# 5. set EXTRA_ARGS
 EXTRA_ARGS=${EXTRA_ARGS-'-name kafkaServer -loggc'}
 
+# 6. Process EXTRA_ARGS according to whether -daemon is present or not
 COMMAND=$1
 case $COMMAND in
   -daemon)
@@ -41,4 +48,5 @@ case $COMMAND in
     ;;
 esac
 
+# $@ means all params
 exec $base_dir/kafka-run-class.sh $EXTRA_ARGS kafka.Kafka "$@"

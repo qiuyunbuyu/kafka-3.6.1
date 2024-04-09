@@ -29,41 +29,48 @@ import org.apache.kafka.server.util.CommandLineUtils
 object Kafka extends Logging {
 
   /**
-   * @param args: server.properties
-   * @return
+   * @param args: server.properties or other
+   * @return Properties
    */
   def getPropsFromArgs(args: Array[String]): Properties = {
+    // 1. define OptionParser to handle args
     val optionParser = new OptionParser(false)
-    // --override override values set in server.properties file
+
+    // 2. --override override values set in server.properties file
+    // first get from server.properties file, if have "--override" Options, will override values set in server.properties file
     val overrideOpt = optionParser.accepts("override", "Optional property that should override values set in server.properties file")
       .withRequiredArg()
       .ofType(classOf[String])
 
+    // 3. --version handle
     // This is just to make the parameter show up in the help output, we are not actually using this due the
     // fact that this class ignores the first parameter which is interpreted as positional and mandatory
     // but would not be mandatory if --version is specified
     // This is a bit of an ugly crutch till we get a chance to rework the entire command line parsing
     optionParser.accepts("version", "Print version information and exit.")
 
+    // 4. if no args or --help
     if (args.isEmpty || args.contains("--help")) {
       CommandLineUtils.printUsageAndExit(optionParser,
         "USAGE: java [options] %s server.properties [--override property=value]*".format(this.getClass.getCanonicalName.split('$').head))
     }
 
+    //5. print Version And Exit
     if (args.contains("--version")) {
       CommandLineUtils.printVersionAndExit()
     }
 
+    // * 6. load Props in server.properties and assign to props
     val props = Utils.loadProps(args(0))
 
-    // Other parameter processing
+    // 7. Other parameter processing
     if (args.length > 1) {
       val options = optionParser.parse(args.slice(1, args.length): _*)
 
       if (options.nonOptionArguments().size() > 0) {
         CommandLineUtils.printUsageAndExit(optionParser, "Found non argument parameters: " + options.nonOptionArguments().toArray.mkString(","))
       }
-
+      // add other props in CommandLine to props(defined in *6)
       props ++= CommandLineUtils.parseKeyValueArgs(options.valuesOf(overrideOpt))
     }
     props
@@ -148,6 +155,7 @@ object Kafka extends Logging {
         fatal("Exiting Kafka due to fatal exception", e)
         Exit.exit(1)
     }
+    // 7. Exit normally
     Exit.exit(0)
   }
 }

@@ -92,6 +92,9 @@ class KafkaRaftServer(
     None
   }
 
+  /**
+   * kraft model start
+   */
   override def startup(): Unit = {
     Mx4jLoader.maybeLoad()
     controller.foreach(_.startup())

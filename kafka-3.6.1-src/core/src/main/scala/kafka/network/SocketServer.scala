@@ -188,6 +188,7 @@ class SocketServer(val config: KafkaConfig,
   }
 
   /**
+   * called in KafkaServer.scala startup()
    * This method enables request processing for all endpoints managed by this SocketServer. Each
    * endpoint will be brought up asynchronously as soon as its associated future is completed.
    * Therefore, we do not know that any particular request processor will be running by the end of
@@ -209,6 +210,7 @@ class SocketServer(val config: KafkaConfig,
       throw new RuntimeException("Can't enable request processing: SocketServer is stopped.")
     }
 
+    // start acceptor
     def chainAcceptorFuture(acceptor: Acceptor): Unit = {
       // Because of ephemeral ports, we need to match acceptors to futures by looking at
       // the listener name, rather than the endpoint object.
@@ -231,7 +233,9 @@ class SocketServer(val config: KafkaConfig,
     }
 
     info("Enabling request processing.")
+    // each controlPlane Acceptor start
     controlPlaneAcceptorOpt.foreach(chainAcceptorFuture)
+    // each dataPlane Acceptor start
     dataPlaneAcceptors.values().forEach(chainAcceptorFuture)
     FutureUtils.chainFuture(CompletableFuture.allOf(authorizerFutures.values.toArray: _*),
         allAuthorizerFuturesComplete)
@@ -674,9 +678,10 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
         debug(s"Opened endpoint ${endPoint.host}:${endPoint.port}")
       }
 
-      // 1. start processor thread
+      // 1. start processors thread
       debug(s"Starting processors for listener ${endPoint.listenerName}")
       processors.foreach(_.start())
+
       // 2. start acceptor thread
       debug(s"Starting acceptor thread for listener ${endPoint.listenerName}")
       thread.start()
