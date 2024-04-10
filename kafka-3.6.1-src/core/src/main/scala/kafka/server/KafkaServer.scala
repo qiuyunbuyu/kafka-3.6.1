@@ -724,7 +724,9 @@ class KafkaServer(
 
   private def initZkClient(time: Time): Unit = {
     info(s"Connecting to zookeeper on ${config.zkConnect}")
+    // 1. create zkClient by configs
     _zkClient = KafkaZkClient.createZkClient("Kafka server", time, config, zkClientConfig)
+    // 2. Pre-create top level paths in ZK if needed.
     _zkClient.createTopLevelPaths()
   }
 
@@ -1108,8 +1110,9 @@ class KafkaServer(
    * @return The brokerId.
    */
   private def getOrGenerateBrokerId(brokerMetadata: RawMetaProperties): Int = {
+    // 1. get brokerId from config
     val brokerId = config.brokerId
-
+    // 2. check with brokerId in metadata.properties
     if (brokerId >= 0 && brokerMetadata.brokerId.exists(_ != brokerId))
       throw new InconsistentBrokerIdException(
         s"Configured broker.id $brokerId doesn't match stored broker.id ${brokerMetadata.brokerId} in meta.properties. " +
@@ -1117,9 +1120,10 @@ class KafkaServer(
           s"If you intend to create a new broker, you should remove all data in your data directories (log.dirs).")
     else if (brokerMetadata.brokerId.isDefined)
       brokerMetadata.brokerId.get
-    else if (brokerId < 0 && config.brokerIdGenerationEnable) // generate a new brokerId from Zookeeper
+    else if (brokerId < 0 && config.brokerIdGenerationEnable) { // generate a new brokerId from Zookeeper
+      // 3. generate BrokerId
       generateBrokerId()
-    else
+    } else
       brokerId
   }
 

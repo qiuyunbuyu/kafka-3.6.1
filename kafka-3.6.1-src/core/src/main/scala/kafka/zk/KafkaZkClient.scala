@@ -1768,6 +1768,22 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
 
   /**
     * Pre-create top level paths in ZK if needed.
+    ConsumerPathZNode.path, "old consumer path" /consumers
+    BrokerIdsZNode.path, /brokers/ids
+    TopicsZNode.path, /brokers/topics
+    ConfigEntityChangeNotificationZNode.path, /config/changes
+    DeleteTopicsZNode.path,  /admin/delete_topics
+    BrokerSequenceIdZNode.path, /brokers/seqid
+    IsrChangeNotificationZNode.path, /isr_change_notification
+    ProducerIdBlockZNode.path,  /latest_producer_id_block
+    LogDirEventNotificationZNode.path,   /log_dir_event_notification
+    ---
+    configs attach:
+    /config/topics
+    /config/clients
+    /config/users
+    /config/brokers
+    /config/ips
     */
   def createTopLevelPaths(): Unit = {
     ZkData.PersistentZkPaths.foreach(makeSurePersistentPathExists(_))
@@ -2247,6 +2263,7 @@ object KafkaZkClient {
       zkClientConfig.setProperty(ZKConfig.JUTE_MAXBUFFER, ((4096 * 1024).toString))
 
     if (createChrootIfNecessary) {
+      // get from config: zookeeper.connect=xxxxxxxxx:2181/kafka10
       val chrootIndex = connectString.indexOf("/")
       if (chrootIndex > 0) {
         val zkConnWithoutChrootForChrootCreation = connectString.substring(0, chrootIndex)
@@ -2343,9 +2360,9 @@ object KafkaZkClient {
   }
 
   def createZkClient(name: String, time: Time, config: KafkaConfig, zkClientConfig: ZKClientConfig): KafkaZkClient = {
+    // 1. judge zk setting the Security ACL
     val secureAclsEnabled = config.zkEnableSecureAcls
     val isZkSecurityEnabled = JaasUtils.isZkSaslEnabled || KafkaConfig.zkTlsClientAuthEnabled(zkClientConfig)
-
     if (secureAclsEnabled && !isZkSecurityEnabled)
       throw new java.lang.SecurityException(
         s"${KafkaConfig.ZkEnableSecureAclsProp} is true, but ZooKeeper client TLS configuration identifying at least " +
@@ -2353,6 +2370,7 @@ object KafkaZkClient {
           s"${KafkaConfig.ZkSslKeyStoreLocationProp} was not present and the verification of the JAAS login file failed " +
           s"${JaasUtils.zkSecuritySysConfigString}")
 
+    // 2. create KafkaZkClient
     KafkaZkClient(config.zkConnect, secureAclsEnabled, config.zkSessionTimeoutMs, config.zkConnectionTimeoutMs,
       config.zkMaxInFlightRequests, time, name = name, zkClientConfig = zkClientConfig,
       createChrootIfNecessary = true)

@@ -102,6 +102,18 @@ object KafkaController extends Logging {
   )
 }
 
+/**
+ * @param config: all broker configs
+ * @param zkClient: controller user to connect with zk
+ * @param time: time util
+ * @param metrics: metric util
+ * @param initialBrokerInfo: broker info ,like hostname, port...
+ * @param initialBrokerEpoch: broker epoch,
+ * @param tokenManager: delegation token manage utill
+ * @param brokerFeatures
+ * @param featureCache
+ * @param threadNamePrefix: thread name prefix
+ */
 class KafkaController(val config: KafkaConfig,
                       zkClient: KafkaZkClient,
                       time: Time,
@@ -115,15 +127,17 @@ class KafkaController(val config: KafkaConfig,
   extends ControllerEventProcessor with Logging {
 
   private val metricsGroup = new KafkaMetricsGroup(this.getClass)
-
+  // log record, contain the brokerId
   this.logIdent = s"[Controller id=${config.brokerId}] "
-
+  // broker metadata
   @volatile private var brokerInfo = initialBrokerInfo
   @volatile private var _brokerEpoch = initialBrokerEpoch
-
+  //
   private val isAlterPartitionEnabled = config.interBrokerProtocolVersion.isAlterPartitionSupported
+  // help for record state change
   private val stateChangeLogger = new StateChangeLogger(config.brokerId, inControllerContext = true, None)
   val controllerContext = new ControllerContext
+  // Used to create and maintain network connections
   var controllerChannelManager = new ControllerChannelManager(
     () => controllerContext.epoch,
     config,
@@ -134,31 +148,56 @@ class KafkaController(val config: KafkaConfig,
   )
 
   // have a separate scheduler for the controller to be able to start and stop independently of the kafka server
+  // such as used for Leader Election
   // visible for testing
   private[controller] val kafkaScheduler = new KafkaScheduler(1)
 
+  // Event Manager, Event like "add/delete.." topic
+  // ** Processing flow
+  // 1. KafkaController will watch the change of zk node
+  // 2. put the event to "ControllerEventManager" queue
+  // 3. "event handling thread" in KafkaController will get event from queue
+  // 4. event handling thread call "process()" to handle event
   // visible for testing
   private[controller] val eventManager = new ControllerEventManager(config.brokerId, this, time,
     controllerContext.stats.rateAndTimeMetrics)
 
+  // Batch processing of requests from brokers
   private val brokerRequestBatch = new ControllerBrokerRequestBatch(config, controllerChannelManager,
     eventManager, controllerContext, stateChangeLogger)
+
+  // replica State Machine: used for replica state transitions, like handle the change of ISR set
   val replicaStateMachine: ReplicaStateMachine = new ZkReplicaStateMachine(config, stateChangeLogger, controllerContext, zkClient,
     new ControllerBrokerRequestBatch(config, controllerChannelManager, eventManager, controllerContext, stateChangeLogger))
+
+  // partition State Machine: used for partition state transitions
   val partitionStateMachine: PartitionStateMachine = new ZkPartitionStateMachine(config, stateChangeLogger, controllerContext, zkClient,
     new ControllerBrokerRequestBatch(config, controllerChannelManager, eventManager, controllerContext, stateChangeLogger))
+
+  // topic delete Manager: used for delete topic and log
   private val topicDeletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
     partitionStateMachine, new ControllerDeletionClient(this, zkClient))
 
+  // ========================= handlers: will watch the different zk node event, different zk node will binding different handler ============
+  // 1. controller Change
   private val controllerChangeHandler = new ControllerChangeHandler(eventManager)
+  // 2. broker Change
   private val brokerChangeHandler = new BrokerChangeHandler(eventManager)
+  // 3. broker Modifications
   private val brokerModificationsHandlers: mutable.Map[Int, BrokerModificationsHandler] = mutable.Map.empty
+  // 4. topic Change
   private val topicChangeHandler = new TopicChangeHandler(eventManager)
+  // 5. topic Deletion
   private val topicDeletionHandler = new TopicDeletionHandler(eventManager)
+  // 6. partition Modifications
   private val partitionModificationsHandlers: mutable.Map[String, PartitionModificationsHandler] = mutable.Map.empty
+  // 7. partition Reassignment
   private val partitionReassignmentHandler = new PartitionReassignmentHandler(eventManager)
+  // 8.  preferred Replica Election
   private val preferredReplicaElectionHandler = new PreferredReplicaElectionHandler(eventManager)
+  // 9. ISR Change Notification
   private val isrChangeNotificationHandler = new IsrChangeNotificationHandler(eventManager)
+  // 10. logDir Event Notification
   private val logDirEventNotificationHandler = new LogDirEventNotificationHandler(eventManager)
 
   @volatile private var activeControllerId = -1
@@ -205,11 +244,15 @@ class KafkaController(val config: KafkaConfig,
    * elector
    */
   def startup() = {
+    // 1. register zk state change watch, used to monitor zookeeper session expiration
     zkClient.registerStateChangeHandler(new StateChangeHandler {
       override val name: String = StateChangeHandlers.ControllerHandler
+      // after initialize
       override def afterInitializingSession(): Unit = {
+        // register RegisterBrokerAndReelect event
         eventManager.put(RegisterBrokerAndReelect)
       }
+      // before initialize
       override def beforeInitializingSession(): Unit = {
         val queuedEvent = eventManager.clearAndPut(Expire)
 
@@ -218,6 +261,7 @@ class KafkaController(val config: KafkaConfig,
         queuedEvent.awaitProcessing()
       }
     })
+    // 2. kafkaController call process() method to handle "Startup" event
     eventManager.put(Startup)
     eventManager.start()
   }
@@ -283,11 +327,17 @@ class KafkaController(val config: KafkaConfig,
    * This ensures another controller election will be triggered and there will always be an actively serving controller
    */
   private def onControllerFailover(): Unit = {
+    // 1. Used for adaptation between kafka brokers of different versions
     maybeSetupFeatureVersioning()
 
     info("Registering handlers")
 
-    // before reading source of truth from zookeeper, register the listeners to get broker/topic callbacks
+    // 2. register zk node watch: before reading source of truth from zookeeper, register the listeners to get broker/topic callbacks
+    // brokerChange Handler: /brokers/ids
+    // topicChange Handler: /brokers/topics
+    // topicDeletion Handler: /admin/delete_topics
+    // logDirEventNotification Handler: /log_dir_event_notification
+    // isrChangeNotification Handler: /isr_change_notification
     val childChangeHandlers = Seq(brokerChangeHandler, topicChangeHandler, topicDeletionHandler, logDirEventNotificationHandler,
       isrChangeNotificationHandler)
     childChangeHandlers.foreach(zkClient.registerZNodeChildChangeHandler)
@@ -295,17 +345,25 @@ class KafkaController(val config: KafkaConfig,
     val nodeChangeHandlers = Seq(preferredReplicaElectionHandler, partitionReassignmentHandler)
     nodeChangeHandlers.foreach(zkClient.registerZNodeChangeHandlerAndCheckExistence)
 
+    // 3. Deletes all log dir event notifications. + Deletes all isr change notifications.
     info("Deleting log dir event notifications")
     zkClient.deleteLogDirEventNotifications(controllerContext.epochZkVersion)
     info("Deleting isr change notifications")
     zkClient.deleteIsrChangeNotifications(controllerContext.epochZkVersion)
+
+    // 4.Initializing controller context
     info("Initializing controller context")
     initializeControllerContext()
+
+    // 5. Fetching [topicsToBeDeleted + topicsIneligibleForDeletion]
     info("Fetching topic deletions in progress")
     val (topicsToBeDeleted, topicsIneligibleForDeletion) = fetchTopicDeletionsInProgress()
+
+    // 6. initialize topicDeletionManager to handle 5. Fetch
     info("Initializing topic deletion manager")
     topicDeletionManager.init(topicsToBeDeleted, topicsIneligibleForDeletion)
 
+    // 7. *UpdateMetadataRequest -> to let all brokers in cluster to update metadata like(Leader, ISR...)
     // We need to send UpdateMetadataRequest after the controller context is initialized and before the state machines
     // are started. The is because brokers need to receive the list of live brokers from UpdateMetadataRequest before
     // they can process the LeaderAndIsrRequests that are generated by replicaStateMachine.startup() and
@@ -313,21 +371,35 @@ class KafkaController(val config: KafkaConfig,
     info("Sending update metadata request")
     sendUpdateMetadataRequest(controllerContext.liveOrShuttingDownBrokerIds.toSeq, Set.empty)
 
+    // 8. you are leader now, so manage the replica +  partition
+    // 8.1
     replicaStateMachine.startup()
+    // 8.2
     partitionStateMachine.startup()
 
+    // ** important log can mark controller change
     info(s"Ready to serve as the new controller with epoch $epoch")
 
+    // 9. Initialize pending reassignments. This includes reassignments sent through /admin/reassign_partitions,
     initializePartitionReassignments()
+
+    // 10. try to do topic delete
     topicDeletionManager.tryTopicDeletion()
+
+    // 11. handle "pending" PreferredReplicaElections
     val pendingPreferredReplicaElections = fetchPendingPreferredReplicaElections()
     onReplicaElection(pendingPreferredReplicaElections, ElectionType.PREFERRED, ZkTriggered)
+
+    // 12. Starting the controller scheduler
     info("Starting the controller scheduler")
     kafkaScheduler.startup()
+
+    // 13. if config the "auto.leader.rebalance.enable", should do Auto Leader Rebalance Task
     if (config.autoLeaderRebalanceEnable) {
       scheduleAutoLeaderRebalanceTask(delay = 5, unit = TimeUnit.SECONDS)
     }
 
+    // 14. if config tokenAuthEnabled
     if (config.tokenAuthEnabled) {
       info("starting the token expiry check scheduler")
       tokenCleanScheduler.startup()
@@ -571,20 +643,30 @@ class KafkaController(val config: KafkaConfig,
    */
   private def onBrokerStartup(newBrokers: Seq[Int]): Unit = {
     info(s"New broker startup callback for ${newBrokers.mkString(",")}")
+    // 1.
     newBrokers.foreach(controllerContext.replicasOnOfflineDirs.remove)
+
     val newBrokersSet = newBrokers.toSet
     val existingBrokers = controllerContext.liveOrShuttingDownBrokerIds.diff(newBrokersSet)
+
+    // 2. send to "all the existing brokers in the cluster" -> "know about the new brokers"
     // Send update metadata request to all the existing brokers in the cluster so that they know about the new brokers
     // via this update. No need to include any partition states in the request since there are no partition state changes.
     sendUpdateMetadataRequest(existingBrokers.toSeq, Set.empty)
+
+    // 3. send to "all the new brokers in the cluster" -> "a full set of partition states for initialization"
     // Send update metadata request to all the new brokers in the cluster with a full set of partition states for initialization.
     // In cases of controlled shutdown leaders will not be elected when a new broker comes up. So at least in the
     // common controlled shutdown case, the metadata will reach the new brokers faster.
     sendUpdateMetadataRequest(newBrokers, controllerContext.partitionsWithLeaders)
+
+    // 4.
     // the very first thing to do when a new broker comes up is send it the entire list of partitions that it is
     // supposed to host. Based on that the broker starts the high watermark threads for the input list of partitions
     val allReplicasOnNewBrokers = controllerContext.replicasOnBrokers(newBrokersSet)
     replicaStateMachine.handleStateChanges(allReplicasOnNewBrokers.toSeq, OnlineReplica)
+
+    // 5.
     // when a new broker comes up, the controller needs to trigger leader election for all new and offline partitions
     // to see if these brokers can become leaders for some/all of those
     partitionStateMachine.triggerOnlinePartitionStateChange()
@@ -592,6 +674,8 @@ class KafkaController(val config: KafkaConfig,
     maybeResumeReassignments { (_, assignment) =>
       assignment.targetReplicas.exists(newBrokersSet.contains)
     }
+
+    // 6.
     // check if topic deletion needs to be resumed. If at least one replica that belongs to the topic being deleted exists
     // on the newly restarted brokers, there is a chance that topic deletion can resume
     val replicasForTopicsToBeDeleted = allReplicasOnNewBrokers.filter(p => topicDeletionManager.isTopicQueuedUpForDeletion(p.topic))
@@ -601,6 +685,8 @@ class KafkaController(val config: KafkaConfig,
         s"${newBrokers.mkString(",")}. Signaling restart of topic deletion for these topics")
       topicDeletionManager.resumeDeletionForTopics(replicasForTopicsToBeDeleted.map(_.topic))
     }
+
+    // 7. register BrokerModificationsHandler for newBrokers
     registerBrokerModificationsHandler(newBrokers)
   }
 
@@ -634,19 +720,26 @@ class KafkaController(val config: KafkaConfig,
    */
   private def onBrokerFailure(deadBrokers: Seq[Int]): Unit = {
     info(s"Broker failure callback for ${deadBrokers.mkString(",")}")
+    // 1. remove replicasOnOfflineDirs
     deadBrokers.foreach(controllerContext.replicasOnOfflineDirs.remove)
+
+    // 2. remove shuttingDownBrokerIds
     val deadBrokersThatWereShuttingDown =
       deadBrokers.filter(id => controllerContext.shuttingDownBrokerIds.remove(id))
     if (deadBrokersThatWereShuttingDown.nonEmpty)
       info(s"Removed ${deadBrokersThatWereShuttingDown.mkString(",")} from list of shutting down brokers.")
+
+    // 3. set all Replicas On DeadBrokers to "offline" state
     val allReplicasOnDeadBrokers = controllerContext.replicasOnBrokers(deadBrokers.toSet)
     onReplicasBecomeOffline(allReplicasOnDeadBrokers)
 
+    // 4. remove BrokerModificationsHandler
     unregisterBrokerModificationsHandler(deadBrokers)
   }
 
   private def onBrokerUpdate(updatedBrokerId: Int): Unit = {
     info(s"Broker info update callback for $updatedBrokerId")
+    // send UpdateMetadata Request to all brokers in cluster
     sendUpdateMetadataRequest(controllerContext.liveOrShuttingDownBrokerIds.toSeq, Set.empty)
   }
 
@@ -1234,8 +1327,11 @@ class KafkaController(val config: KafkaConfig,
    */
   private[controller] def sendUpdateMetadataRequest(brokers: Seq[Int], partitions: Set[TopicPartition]): Unit = {
     try {
+      // 1. create a new RequestBatch
       brokerRequestBatch.newBatch()
+      // 2. add UpdateMetadataRequest to RequestBatch
       brokerRequestBatch.addUpdateMetadataRequestForBrokers(brokers, partitions)
+      // 3. send RequestBatch to brokers (bring epoch For idempotence)
       brokerRequestBatch.sendRequestsToBrokers(epoch)
     } catch {
       case e: IllegalStateException =>
@@ -1471,7 +1567,11 @@ class KafkaController(val config: KafkaConfig,
   }
 
   private def processStartup(): Unit = {
+    // 1. register "/controller" watch and check is exist?
     zkClient.registerZNodeChangeHandlerAndCheckExistence(controllerChangeHandler)
+    // 2. handel elect
+    // case1: "/controller" exist -> get controller information from zk node
+    // case2: "/controller" not exist -> do controller elect
     elect()
   }
 
@@ -1607,18 +1707,27 @@ class KafkaController(val config: KafkaConfig,
     }
   }
 
+  /**
+   * process Broker state Change event: /brokers/ids
+   */
   private def processBrokerChange(): Unit = {
+    // 1. Returns true if this broker is the current controller
     if (!isActive) return
+    // 2. get cluster brokers from zookeeper -> [curBrokerIds]
     val curBrokerAndEpochs = zkClient.getAllBrokerAndEpochsInCluster
     val curBrokerIdAndEpochs = curBrokerAndEpochs map { case (broker, epoch) => (broker.id, epoch) }
     val curBrokerIds = curBrokerIdAndEpochs.keySet
+    // 3. get cluster brokers from controllerContext -> [liveOrShuttingDownBrokerIds]
     val liveOrShuttingDownBrokerIds = controllerContext.liveOrShuttingDownBrokerIds
+    // 4. get newBrokerIds + deadBrokerIds + bouncedBrokerIds
     val newBrokerIds = curBrokerIds.diff(liveOrShuttingDownBrokerIds)
     val deadBrokerIds = liveOrShuttingDownBrokerIds.diff(curBrokerIds)
     val bouncedBrokerIds = (curBrokerIds & liveOrShuttingDownBrokerIds)
       .filter(brokerId => curBrokerIdAndEpochs(brokerId) > controllerContext.liveBrokerIdAndEpochs(brokerId))
+    // 5. Broker And Epochs
     val newBrokerAndEpochs = curBrokerAndEpochs.filter { case (broker, _) => newBrokerIds.contains(broker.id) }
     val bouncedBrokerAndEpochs = curBrokerAndEpochs.filter { case (broker, _) => bouncedBrokerIds.contains(broker.id) }
+    // 6. use Ids sorted
     val newBrokerIdsSorted = newBrokerIds.toSeq.sorted
     val deadBrokerIdsSorted = deadBrokerIds.toSeq.sorted
     val liveBrokerIdsSorted = curBrokerIds.toSeq.sorted
@@ -1628,11 +1737,17 @@ class KafkaController(val config: KafkaConfig,
       s"bounced brokers: ${bouncedBrokerIdsSorted.mkString(",")}, " +
       s"all live brokers: ${liveBrokerIdsSorted.mkString(",")}")
 
+    // 7. handle newBrokers, start RequestSendThread
     newBrokerAndEpochs.keySet.foreach(controllerChannelManager.addBroker)
+
+    // 8. handle bouncedBrokers, remove RequestSendThread
     bouncedBrokerIds.foreach(controllerChannelManager.removeBroker)
+
     bouncedBrokerAndEpochs.keySet.foreach(controllerChannelManager.addBroker)
+    // 9. handle deadBrokers, remove RequestSendThread
     deadBrokerIds.foreach(controllerChannelManager.removeBroker)
 
+    // 10. handle newBrokers
     if (newBrokerIds.nonEmpty) {
       val (newCompatibleBrokerAndEpochs, newIncompatibleBrokerAndEpochs) =
         partitionOnFeatureCompatibility(newBrokerAndEpochs)
@@ -1643,6 +1758,7 @@ class KafkaController(val config: KafkaConfig,
       controllerContext.addLiveBrokers(newCompatibleBrokerAndEpochs)
       onBrokerStartup(newBrokerIdsSorted)
     }
+    // 11. handle bouncedBrokers
     if (bouncedBrokerIds.nonEmpty) {
       controllerContext.removeLiveBrokers(bouncedBrokerIds)
       onBrokerFailure(bouncedBrokerIdsSorted)
@@ -1655,6 +1771,7 @@ class KafkaController(val config: KafkaConfig,
       controllerContext.addLiveBrokers(bouncedCompatibleBrokerAndEpochs)
       onBrokerStartup(bouncedBrokerIdsSorted)
     }
+    // 12. handle deadBrokers
     if (deadBrokerIds.nonEmpty) {
       controllerContext.removeLiveBrokers(deadBrokerIds)
       onBrokerFailure(deadBrokerIdsSorted)
@@ -1665,16 +1782,25 @@ class KafkaController(val config: KafkaConfig,
     }
   }
 
+  /**
+   * process Broker information/data Change event: /brokers/ids/${id}
+   */
   private def processBrokerModification(brokerId: Int): Unit = {
     if (!isActive) return
+    // 1. get data from zk
     val newMetadataOpt = zkClient.getBroker(brokerId)
+    // 2. get data from controller
     val oldMetadataOpt = controllerContext.liveOrShuttingDownBroker(brokerId)
+
+    // 3. Compare metadata and maybe update
     if (newMetadataOpt.nonEmpty && oldMetadataOpt.nonEmpty) {
       val oldMetadata = oldMetadataOpt.get
       val newMetadata = newMetadataOpt.get
       if (newMetadata.endPoints != oldMetadata.endPoints || !oldMetadata.features.equals(newMetadata.features)) {
         info(s"Updated broker metadata: $oldMetadata -> $newMetadata")
+        // 3.1 controllerContext update
         controllerContext.updateBrokerMetadata(oldMetadata, newMetadata)
+        // 3.2 send UpdateMetadata Request to all brokers in cluster
         onBrokerUpdate(brokerId)
       }
     }
@@ -2595,69 +2721,100 @@ class KafkaController(val config: KafkaConfig,
   override def process(event: ControllerEvent): Unit = {
     try {
       event match {
+        // event1: Mock, just test
         case event: MockEvent =>
           // Used only in test cases
           event.process()
+        // event2: this event should be handled by ControllerEventThread, so log error
         case ShutdownEventThread =>
           error("Received a ShutdownEventThread event. This type of event is supposed to be handle by ControllerEventThread")
+        // event3: Preferred Replica Leader Election
         case AutoPreferredReplicaLeaderElection =>
           processAutoPreferredReplicaLeaderElection()
+        // event4: Replica Leader Election
         case ReplicaLeaderElection(partitions, electionType, electionTrigger, callback) =>
           processReplicaLeaderElection(partitions, electionType, electionTrigger, callback)
+        // event5: Unclean Leader Election
         case UncleanLeaderElectionEnable =>
           processUncleanLeaderElectionEnable()
+        // event6: Unclean Leader Election for specific Topic
         case TopicUncleanLeaderElectionEnable(topic) =>
           processTopicUncleanLeaderElectionEnable(topic)
+        // event7: Controller Shutdown
         case ControlledShutdown(id, brokerEpoch, callback) =>
           processControlledShutdown(id, brokerEpoch, callback)
+        // event8: Receive Leader and Isr Response
         case LeaderAndIsrResponseReceived(response, brokerId) =>
           processLeaderAndIsrResponseReceived(response, brokerId)
+        // event9: Receive Update Metadata Response
         case UpdateMetadataResponseReceived(response, brokerId) =>
           processUpdateMetadataResponseReceived(response, brokerId)
+        // event10: Receive topic delete stop replica Response
         case TopicDeletionStopReplicaResponseReceived(replicaId, requestError, partitionErrors) =>
           processTopicDeletionStopReplicaResponseReceived(replicaId, requestError, partitionErrors)
+        // event11: Broker Change
         case BrokerChange =>
           processBrokerChange()
+        // event12: specific Broker modify
         case BrokerModifications(brokerId) =>
           processBrokerModification(brokerId)
+        // event13: Controller Change
         case ControllerChange =>
           processControllerChange()
+        // event14: do Reelect
         case Reelect =>
           processReelect()
+        // event15: Register Broker And Reelect
         case RegisterBrokerAndReelect =>
           processRegisterBrokerAndReelect()
+        // event16: controller Expire
         case Expire =>
           processExpire()
+        // event17: topic change
         case TopicChange =>
           processTopicChange()
+        // event18: LogDir Event Notification
         case LogDirEventNotification =>
           processLogDirEventNotification()
+        // event19: specific Partition Modifications
         case PartitionModifications(topic) =>
           processPartitionModifications(topic)
+        // event20: topic delete
         case TopicDeletion =>
           processTopicDeletion()
+        // event21: Api Partition Reassignment
         case ApiPartitionReassignment(reassignments, callback) =>
           processApiPartitionReassignment(reassignments, callback)
+        // event22: Zk Partition Reassignment
         case ZkPartitionReassignment =>
           processZkPartitionReassignment()
+        // event23: List Partition Reassignments
         case ListPartitionReassignments(partitions, callback) =>
           processListPartitionReassignments(partitions, callback)
+        // event24: Update Features
         case UpdateFeatures(request, callback) =>
           processFeatureUpdates(request, callback)
+        // event25: Isr Change when Partition Reassignment
         case PartitionReassignmentIsrChange(partition) =>
           processPartitionReassignmentIsrChange(partition)
+        // event26: Isr Change Notification
         case IsrChangeNotification =>
           processIsrChangeNotification()
+        // event27: Receive Alter Partition response
         case AlterPartitionReceived(alterPartitionRequest, alterPartitionRequestVersion, callback) =>
           processAlterPartition(alterPartitionRequest, alterPartitionRequestVersion, callback)
+        // event28: Allocate Producer Ids
         case AllocateProducerIds(brokerId, brokerEpoch, callback) =>
           processAllocateProducerIds(brokerId, brokerEpoch, callback)
+        // event29: Startup [ KafkaController.Startup() do eventManager.put(Startup) + eventManager.start() ]
         case Startup =>
           processStartup()
       }
     } catch {
+      // ControllerMovedException, means the controller role is transferred to another broker
       case e: ControllerMovedException =>
         info(s"Controller moved to another broker when processing $event.", e)
+        // try to become controller
         maybeResign()
       case e: Throwable =>
         error(s"Error processing event $event", e)
@@ -2672,16 +2829,18 @@ class KafkaController(val config: KafkaConfig,
 }
 
 class BrokerChangeHandler(eventManager: ControllerEventManager) extends ZNodeChildChangeHandler {
+  // /brokers/ids
   override val path: String = BrokerIdsZNode.path
-
+  // eventManager will put BrokerChange event
   override def handleChildChange(): Unit = {
     eventManager.put(BrokerChange)
   }
 }
 
 class BrokerModificationsHandler(eventManager: ControllerEventManager, brokerId: Int) extends ZNodeChangeHandler {
+  // ${BrokerIdsZNode.path}/$id
   override val path: String = BrokerIdZNode.path(brokerId)
-
+  // put BrokerModifications(brokerId) to eventManager, KafkaController#processBrokerModification will handle this event
   override def handleDataChange(): Unit = {
     eventManager.put(BrokerModifications(brokerId))
   }
@@ -2746,11 +2905,18 @@ class PreferredReplicaElectionHandler(eventManager: ControllerEventManager) exte
   override def handleCreation(): Unit = eventManager.put(ReplicaLeaderElection(None, ElectionType.PREFERRED, ZkTriggered))
 }
 
+/**
+ * listener: listen the change of controller
+ * @param eventManager
+ */
 class ControllerChangeHandler(eventManager: ControllerEventManager) extends ZNodeChangeHandler {
+  // "/controller"
   override val path: String = ControllerZNode.path
-
+  // when node is created -> means someone broker become the leader -> handle ControllerChange event
   override def handleCreation(): Unit = eventManager.put(ControllerChange)
+  // when node is deleted -> means no leader exist-> handle Reelect event
   override def handleDeletion(): Unit = eventManager.put(Reelect)
+  // when node is changed -> means leader maybe changed -> handle ControllerChange event
   override def handleDataChange(): Unit = eventManager.put(ControllerChange)
 }
 

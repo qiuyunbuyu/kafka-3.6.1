@@ -98,11 +98,17 @@ class ControllerChannelManager(controllerEpoch: () => Int,
     }
   }
 
+  /**
+   * when a broker join the cluster, controller will can this method to "Bring brokers into management”
+   * @param broker
+   */
   def addBroker(broker: Broker): Unit = {
     // be careful here. Maybe the startup() API has already started the request send thread
     brokerLock synchronized {
       if (!brokerStateInfo.contains(broker.id)) {
+        // 1. step 1: Prepare network and thread settings
         addNewBroker(broker)
+        // 2. step 2
         startRequestSendThread(broker.id)
       }
     }
@@ -115,13 +121,21 @@ class ControllerChannelManager(controllerEpoch: () => Int,
   }
 
   private def addNewBroker(broker: Broker): Unit = {
+    // 1. create queue to store message
     val messageQueue = new LinkedBlockingQueue[QueueItem]
     debug(s"Controller ${config.brokerId} trying to connect to broker ${broker.id}")
+
+    // 2. get Communication <ListenerName + Protocol> between controller and broker
     val controllerToBrokerListenerName = config.controlPlaneListenerName.getOrElse(config.interBrokerListenerName)
     val controllerToBrokerSecurityProtocol = config.controlPlaneSecurityProtocol.getOrElse(config.interBrokerSecurityProtocol)
+
+    // 3. Build a connection to the broker
     val brokerNode = broker.node(controllerToBrokerListenerName)
     val logContext = new LogContext(s"[Controller id=${config.brokerId}, targetBrokerId=${brokerNode.idString}] ")
+
+    // 4. build network client and reconfigurable channelBuilder
     val (networkClient, reconfigurableChannelBuilder) = {
+      // 4.1 build channelBuilder
       val channelBuilder = ChannelBuilders.clientChannelBuilder(
         controllerToBrokerSecurityProtocol,
         JaasContext.Type.SERVER,
@@ -132,12 +146,14 @@ class ControllerChannelManager(controllerEpoch: () => Int,
         config.saslInterBrokerHandshakeRequestEnable,
         logContext
       )
+      // 4.2 if channelBuilder support reconfigurable
       val reconfigurableChannelBuilder = channelBuilder match {
         case reconfigurable: Reconfigurable =>
           config.addReconfigurable(reconfigurable)
           Some(reconfigurable)
         case _ => None
       }
+      // 4.3 build Selector
       val selector = new Selector(
         NetworkReceive.UNLIMITED,
         Selector.NO_IDLE_TIMEOUT_MS,
@@ -149,6 +165,7 @@ class ControllerChannelManager(controllerEpoch: () => Int,
         channelBuilder,
         logContext
       )
+      // 4.4 build networkClient
       val networkClient = new NetworkClient(
         selector,
         new ManualMetadataUpdater(Seq(brokerNode).asJava),
@@ -166,23 +183,29 @@ class ControllerChannelManager(controllerEpoch: () => Int,
         new ApiVersions,
         logContext
       )
+      // 4.5 return
       (networkClient, reconfigurableChannelBuilder)
     }
+
+    // 5. Build RequestSendThread
+    // 5.1 RequestSendThread name
     val threadName = threadNamePrefix match {
       case None => s"Controller-${config.brokerId}-to-broker-${broker.id}-send-thread"
       case Some(name) => s"$name:Controller-${config.brokerId}-to-broker-${broker.id}-send-thread"
     }
-
+    // 5.2 Metrics
     val requestRateAndQueueTimeMetrics = metricsGroup.newTimer(
       RequestRateAndQueueTimeMetricName, TimeUnit.MILLISECONDS, TimeUnit.SECONDS, brokerMetricTags(broker.id)
     )
-
+    // 5.3 build RequestSendThread and set unDaemon
     val requestThread = new RequestSendThread(config.brokerId, controllerEpoch, messageQueue, networkClient,
       brokerNode, config, time, requestRateAndQueueTimeMetrics, stateChangeLogger, threadName)
     requestThread.setDaemon(false)
 
+    // 6. queueSize metrics
     val queueSizeGauge = metricsGroup.newGauge(QueueSizeMetricName, () => messageQueue.size, brokerMetricTags(broker.id))
 
+    // 7. add the "new" broker info to brokerStateInfo
     brokerStateInfo.put(broker.id, ControllerBrokerStateInfo(networkClient, brokerNode, messageQueue,
       requestThread, queueSizeGauge, requestRateAndQueueTimeMetrics, reconfigurableChannelBuilder))
   }
@@ -195,12 +218,21 @@ class ControllerChannelManager(controllerEpoch: () => Int,
       // non-threadsafe classes as described in KAFKA-4959.
       // The call to shutdownLatch.await() in ShutdownableThread.shutdown() serves as a synchronization barrier that
       // hands off the NetworkClient from the RequestSendThread to the ZkEventThread.
+
+      // 1. remove reconfigurableChannelBuilder
       brokerState.reconfigurableChannelBuilder.foreach(config.removeReconfigurable)
+      // 2. shutdown requestSendThread
       brokerState.requestSendThread.shutdown()
+      // 3. close networkClient
       brokerState.networkClient.close()
+      // 4. clear up the messageQueue
       brokerState.messageQueue.clear()
+
+      // 5. remove metrics
       metricsGroup.removeMetric(QueueSizeMetricName, brokerMetricTags(brokerState.brokerNode.id))
       metricsGroup.removeMetric(RequestRateAndQueueTimeMetricName, brokerMetricTags(brokerState.brokerNode.id))
+
+      // remove this broker from brokerStateInfo
       brokerStateInfo.remove(brokerState.brokerNode.id)
     } catch {
       case e: Throwable => error("Error while removing broker by the controller", e)
@@ -208,9 +240,13 @@ class ControllerChannelManager(controllerEpoch: () => Int,
   }
 
   protected def startRequestSendThread(brokerId: Int): Unit = {
+    // 1. get RequestSendThread from brokerStateInfo by brokerId
     val requestThread = brokerStateInfo(brokerId).requestSendThread
-    if (requestThread.getState == Thread.State.NEW)
+    // 2. if Thread.State is NEW, will start the RequestSendThread
+    if (requestThread.getState == Thread.State.NEW) {
+      // start...
       requestThread.start()
+    }
   }
 }
 

@@ -126,18 +126,24 @@ class ControllerEventManager(controllerId: Int,
     logIdent = logPrefix
 
     override def doWork(): Unit = {
+      // 1. get event from queue
       val dequeued = pollFromEventQueue()
+      // 2. handle event
       dequeued.event match {
+        // case1
         case ShutdownEventThread => // The shutting down of the thread has been initiated at this point. Ignore this event.
+        // case2
         case controllerEvent =>
           _state = controllerEvent.state
-
+          // update the "How long the event is kept in the queue"
           eventQueueTimeHist.update(time.milliseconds() - dequeued.enqueueTimeMs)
 
           try {
+            // call ControllerEventProcessor to process event
             def process(): Unit = dequeued.process(processor)
 
             rateAndTimeMetrics.get(state) match {
+              // delayed scheduling
               case Some(timer) => timer.time(() => process())
               case None => process()
             }
@@ -156,6 +162,7 @@ class ControllerEventManager(controllerId: Int,
       val event  = queue.poll(eventQueueTimeTimeoutMs, TimeUnit.MILLISECONDS)
       if (event == null) {
         eventQueueTimeHist.clear()
+        // Block for some time until there is an event in the queue
         queue.take()
       } else {
         event
