@@ -580,31 +580,44 @@ class KafkaController(val config: KafkaConfig,
    */
   private def onControllerResignation(): Unit = {
     debug("Resigning")
-    // de-register listeners
+    // 1. de-register listeners
     zkClient.unregisterZNodeChildChangeHandler(isrChangeNotificationHandler.path)
     zkClient.unregisterZNodeChangeHandler(partitionReassignmentHandler.path)
     zkClient.unregisterZNodeChangeHandler(preferredReplicaElectionHandler.path)
     zkClient.unregisterZNodeChildChangeHandler(logDirEventNotificationHandler.path)
     unregisterBrokerModificationsHandler(brokerModificationsHandlers.keySet)
 
-    // shutdown leader rebalance scheduler
+    // 2. shutdown leader rebalance scheduler
     kafkaScheduler.shutdown()
 
-    // stop token expiry check scheduler
+    // 3. stop token expiry check scheduler
     tokenCleanScheduler.shutdown()
 
-    // de-register partition ISR listener for on-going partition reassignment task
+    // 4. de-register partition ISR listener for on-going partition reassignment task
     unregisterPartitionReassignmentIsrChangeHandlers()
-    // shutdown partition state machine
+
+    // 5. shutdown partition state machine
     partitionStateMachine.shutdown()
+
+    // 6. unregister "${BrokersZNode.path}/topics"
     zkClient.unregisterZNodeChildChangeHandler(topicChangeHandler.path)
+
+    // 7. unregister Partition Modifications Handlers
     unregisterPartitionModificationsHandlers(partitionModificationsHandlers.keys.toSeq)
+
+    // 8. unregister "${AdminZNode.path}/delete_topics"
     zkClient.unregisterZNodeChildChangeHandler(topicDeletionHandler.path)
-    // shutdown replica state machine
+
+    // 9. shutdown replica state machine
     replicaStateMachine.shutdown()
+
+    // 10. unregister "${BrokersZNode.path}/ids"
     zkClient.unregisterZNodeChildChangeHandler(brokerChangeHandler.path)
 
+    // 11. controllerChannelManager shutdown
     controllerChannelManager.shutdown()
+
+    // 12. Clear cluster metadata
     controllerContext.resetContext()
 
     info("Resigned")
@@ -1636,18 +1649,31 @@ class KafkaController(val config: KafkaConfig,
     }
   }
 
+  /**
+   * Resign may be required
+   */
   private def maybeResign(): Unit = {
+    // 1. judge broker self Was it a leader before?
     val wasActiveBeforeChange = isActive
+    // 2. register ZNodeChangeHandler
     zkClient.registerZNodeChangeHandlerAndCheckExistence(controllerChangeHandler)
+    // 3. get the broker ID of current controller
     activeControllerId = zkClient.getControllerId.getOrElse(-1)
+    // 4. if before is leader but Not anymore
     if (wasActiveBeforeChange && !isActive) {
+      // 5. Perform an offload operation
       onControllerResignation()
     }
   }
 
+  /**
+   * do elect
+   */
   private def elect(): Unit = {
+    // 1. get the broker ID of current controller
     activeControllerId = zkClient.getControllerId.getOrElse(-1)
-    /*
+
+    /* 2. There is already a controller, return directly
      * We can get here during the initial startup and the handleDeleted ZK callback. Because of the potential race condition,
      * it's possible that the controller has already been elected when we get here. This check will prevent the following
      * createEphemeralPath method from getting into an infinite loop if this broker is already the controller.
@@ -1658,6 +1684,9 @@ class KafkaController(val config: KafkaConfig,
     }
 
     try {
+      // 3. try to create /controller
+      // if create fail -> will throw ControllerMovedException, so Will not perform step 4
+      // if create success -> will do step 4, Perform subsequent actions after election
       val (epoch, epochZkVersion) = zkClient.registerControllerAndIncrementControllerEpoch(config.brokerId)
       controllerContext.epoch = epoch
       controllerContext.epochZkVersion = epochZkVersion
@@ -1666,11 +1695,12 @@ class KafkaController(val config: KafkaConfig,
       info(s"${config.brokerId} successfully elected as the controller. Epoch incremented to ${controllerContext.epoch} " +
         s"and epoch zk version is now ${controllerContext.epochZkVersion}")
 
+      // 4. leader elector on electing the current broker as the new controller
       onControllerFailover()
     } catch {
       case e: ControllerMovedException =>
+        // ** this Exception means other broker become the Controller, so Resign may be required
         maybeResign()
-
         if (activeControllerId != -1)
           debug(s"Broker $activeControllerId was elected as controller instead of broker ${config.brokerId}", e)
         else
