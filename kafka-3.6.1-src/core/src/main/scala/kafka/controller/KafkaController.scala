@@ -709,6 +709,7 @@ class KafkaController(val config: KafkaConfig,
 
   private def unregisterBrokerModificationsHandler(brokerIds: Iterable[Int]): Unit = {
     debug(s"Unregister BrokerModifications handler for $brokerIds")
+    // stop watch the ${BrokerIdsZNode.path}/$id
     brokerIds.foreach { brokerId =>
       brokerModificationsHandlers.remove(brokerId).foreach(handler => zkClient.unregisterZNodeChangeHandler(handler.path))
     }
@@ -1808,14 +1809,24 @@ class KafkaController(val config: KafkaConfig,
 
   private def processTopicChange(): Unit = {
     if (!isActive) return
+    // 1. get from zk: /brokers//topics
     val topics = zkClient.getAllTopicsInCluster(true)
+    // 2. find new topics
     val newTopics = topics -- controllerContext.allTopics
+    // 3. find to be deleted topics
     val deletedTopics = controllerContext.allTopics.diff(topics)
+
+    // 4. update topics data keep in controllerContext
     controllerContext.setAllTopics(topics)
 
+    // 5. register Partition attach hook
     registerPartitionModificationsHandlers(newTopics.toSeq)
+    // 6. get "newTopics" Partition Replica
     val addedPartitionReplicaAssignment = zkClient.getReplicaAssignmentAndTopicIdForTopics(newTopics)
+    // 7. remove deleted Topics
     deletedTopics.foreach(controllerContext.removeTopic)
+
+    // 8. update new topic Partition Replica
     processTopicIds(addedPartitionReplicaAssignment)
 
     addedPartitionReplicaAssignment.foreach { case TopicIdReplicaAssignment(_, _, newAssignments) =>
@@ -1823,8 +1834,11 @@ class KafkaController(val config: KafkaConfig,
         controllerContext.updatePartitionFullReplicaAssignment(topicAndPartition, newReplicaAssignment)
       }
     }
+    // * important log
     info(s"New topics: [$newTopics], deleted topics: [$deletedTopics], new partition replica assignment " +
       s"[$addedPartitionReplicaAssignment]")
+
+    // 9. if have "new added Partition", to do onNewPartitionCreation
     if (addedPartitionReplicaAssignment.nonEmpty) {
       val partitionAssignments = addedPartitionReplicaAssignment
         .map { case TopicIdReplicaAssignment(_, _, partitionsReplicas) => partitionsReplicas.keySet }
@@ -2945,6 +2959,7 @@ case class LeaderIsrAndControllerEpoch(leaderAndIsr: LeaderAndIsr, controllerEpo
 private[controller] class ControllerStats {
   private val metricsGroup = new KafkaMetricsGroup(this.getClass)
 
+  // per second "unclean leader" occurring
   val uncleanLeaderElectionRate = metricsGroup.newMeter("UncleanLeaderElectionsPerSec", "elections", TimeUnit.SECONDS)
 
   val rateAndTimeMetrics: Map[ControllerState, Timer] = ControllerState.values.flatMap { state =>

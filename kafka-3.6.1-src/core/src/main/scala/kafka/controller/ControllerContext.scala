@@ -74,22 +74,37 @@ case class ReplicaAssignment private (replicas: Seq[Int],
 }
 
 class ControllerContext extends ControllerChannelContext {
+  // controller state
   val stats = new ControllerStats
+  // offline Partition Count
   var offlinePartitionCount = 0
+  // preferred Replica Imbalance Count
   var preferredReplicaImbalanceCount = 0
+  // shutting Down BrokerIds
   val shuttingDownBrokerIds = mutable.Set.empty[Int]
+  // liveBrokers
   private val liveBrokers = mutable.Set.empty[Broker]
+  // the epoch of liveBrokers
   private val liveBrokerEpochs = mutable.Map.empty[Int, Long]
+
+  // "/controller_epoch" node in zk
+  // epoch: controller epoch, data save in zk node
+  // epochZkVersion: zk node self dataVersion
   var epoch: Int = KafkaController.InitialControllerEpoch
   var epochZkVersion: Int = KafkaController.InitialControllerEpochZkVersion
 
+  // topic related information: will be updated when the topic increases or decreases.
   val allTopics = mutable.Set.empty[String]
   var topicIds = mutable.Map.empty[String, Uuid]
   var topicNames = mutable.Map.empty[Uuid, String]
+
+  // partition related information
   val partitionAssignments = mutable.Map.empty[String, mutable.Map[Int, ReplicaAssignment]]
   private val partitionLeadershipInfo = mutable.Map.empty[TopicPartition, LeaderIsrAndControllerEpoch]
   val partitionsBeingReassigned = mutable.Set.empty[TopicPartition]
   val partitionStates = mutable.Map.empty[TopicPartition, PartitionState]
+
+  // replica related information
   val replicaStates = mutable.Map.empty[PartitionAndReplica, ReplicaState]
   val replicasOnOfflineDirs = mutable.Map.empty[Int, Set[TopicPartition]]
 
@@ -181,6 +196,10 @@ class ControllerContext extends ControllerChannelContext {
     }.toMap
   }
 
+  /**
+   * get all "Topic Partition" of broker
+   * @return Set[TopicPartition]
+   */
   def allPartitions: Set[TopicPartition] = {
     partitionAssignments.flatMap {
       case (topic, topicReplicaAssignment) => topicReplicaAssignment.map {
@@ -188,7 +207,7 @@ class ControllerContext extends ControllerChannelContext {
       }
     }.toSet
   }
-
+  // =============================== broker metadata manage
   def setLiveBrokers(brokerAndEpochs: Map[Broker, Long]): Unit = {
     clearLiveBrokers()
     addLiveBrokers(brokerAndEpochs)
@@ -230,6 +249,7 @@ class ControllerContext extends ControllerChannelContext {
       }
     }.toSet
   }
+  // =============================== broker metadata manage
 
   def isReplicaOnline(brokerId: Int, topicPartition: TopicPartition): Boolean = {
     isReplicaOnline(brokerId, topicPartition, includeShuttingDownBrokers = false)
@@ -401,12 +421,21 @@ class ControllerContext extends ControllerChannelContext {
     updatePartitionStateMetrics(partition, currentState, targetState)
   }
 
+  /**
+   * update Partition State Metrics
+   * @param partition
+   * @param currentState
+   * @param targetState
+   */
   private def updatePartitionStateMetrics(partition: TopicPartition,
                                           currentState: PartitionState,
                                           targetState: PartitionState): Unit = {
+    // if this topic is to be deleted in progress
     if (!isTopicDeletionInProgress(partition.topic)) {
+      // Convert partition state to Offline State
       if (currentState != OfflinePartition && targetState == OfflinePartition) {
         offlinePartitionCount = offlinePartitionCount + 1
+        // Convert partition state to not Offline State
       } else if (currentState == OfflinePartition && targetState != OfflinePartition) {
         offlinePartitionCount = offlinePartitionCount - 1
       }
