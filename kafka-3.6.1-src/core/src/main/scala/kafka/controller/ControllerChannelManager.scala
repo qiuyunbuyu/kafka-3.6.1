@@ -58,7 +58,7 @@ class ControllerChannelManager(controllerEpoch: () => Int,
   import ControllerChannelManager._
 
   private val metricsGroup = new KafkaMetricsGroup(this.getClass)
-
+  // * ControllerBrokerStateInfo contain the RequestSendThread
   protected val brokerStateInfo = new mutable.HashMap[Int, ControllerBrokerStateInfo]
   private val brokerLock = new Object
   this.logIdent = "[Channel manager on controller " + config.brokerId + "]: "
@@ -70,8 +70,9 @@ class ControllerChannelManager(controllerEpoch: () => Int,
   )
 
   def startup(initialBrokers: Set[Broker]):Unit = {
+    // 1. add each broker to brokerStateInfo
     initialBrokers.foreach(addNewBroker)
-
+    // 2. start RequestSendThread for each broker
     brokerLock synchronized {
       brokerStateInfo.foreach(brokerState => startRequestSendThread(brokerState._1))
     }
@@ -83,11 +84,19 @@ class ControllerChannelManager(controllerEpoch: () => Int,
     }
   }
 
+  /**
+   * send Request to specific broker BlockingQueue[QueueItem]
+   * @param brokerId
+   * @param request
+   * @param callback
+   */
   def sendRequest(brokerId: Int, request: AbstractControlRequest.Builder[_ <: AbstractControlRequest],
                   callback: AbstractResponse => Unit = null): Unit = {
     brokerLock synchronized {
+      // 1. get broker state
       val stateInfoOpt = brokerStateInfo.get(brokerId)
       stateInfoOpt match {
+        // 2. If the status matches, do send to queue
         case Some(stateInfo) =>
           stateInfo.messageQueue.put(QueueItem(request.apiKey, request, callback, time.milliseconds()))
         case None =>
@@ -108,12 +117,16 @@ class ControllerChannelManager(controllerEpoch: () => Int,
       if (!brokerStateInfo.contains(broker.id)) {
         // 1. step 1: Prepare network and thread settings
         addNewBroker(broker)
-        // 2. step 2
+        // 2. step 2: start RequestSendThread for this broker
         startRequestSendThread(broker.id)
       }
     }
   }
 
+  /**
+   * remove specific broker
+   * @param brokerId
+   */
   def removeBroker(brokerId: Int): Unit = {
     brokerLock synchronized {
       removeExistingBroker(brokerStateInfo(brokerId))
@@ -239,6 +252,10 @@ class ControllerChannelManager(controllerEpoch: () => Int,
     }
   }
 
+  /**
+   * start requestSend Thread for specific broker
+   * @param brokerId
+   */
   protected def startRequestSendThread(brokerId: Int): Unit = {
     // 1. get RequestSendThread from brokerStateInfo by brokerId
     val requestThread = brokerStateInfo(brokerId).requestSendThread
@@ -250,14 +267,21 @@ class ControllerChannelManager(controllerEpoch: () => Int,
   }
 }
 
+/**
+ * define the request(controller request) Format to put to the queue
+ * @param apiKey: Kafka APIs
+ * @param request: request must extends AbstractControlRequest
+ * @param callback
+ * @param enqueueTimeMs
+ */
 case class QueueItem(apiKey: ApiKeys, request: AbstractControlRequest.Builder[_ <: AbstractControlRequest],
                      callback: AbstractResponse => Unit, enqueueTimeMs: Long)
 
-class RequestSendThread(val controllerId: Int,
-                        controllerEpoch: () => Int,
-                        val queue: BlockingQueue[QueueItem],
+class RequestSendThread(val controllerId: Int, // the broker ID of current controller
+                        controllerEpoch: () => Int, // current controller Epoch
+                        val queue: BlockingQueue[QueueItem], // BlockingQueue to save (controller) request
                         val networkClient: NetworkClient,
-                        val brokerNode: Node,
+                        val brokerNode: Node, // target broker
                         val config: KafkaConfig,
                         val time: Time,
                         val requestRateAndQueueTimeMetrics: Timer,
@@ -273,49 +297,62 @@ class RequestSendThread(val controllerId: Int,
   override def doWork(): Unit = {
 
     def backoff(): Unit = pause(100, TimeUnit.MILLISECONDS)
-
+    // 1. get (controller) Request from BlockingQueue
     val QueueItem(apiKey, requestBuilder, callback, enqueueTimeMs) = queue.take()
+    // 2. update TimeMetrics
     requestRateAndQueueTimeMetrics.update(time.milliseconds() - enqueueTimeMs, TimeUnit.MILLISECONDS)
 
     var clientResponse: ClientResponse = null
     try {
       var isSendSuccessful = false
+      // 3. when isRunning and send fail, will always be executed
       while (isRunning && !isSendSuccessful) {
         // if a broker goes down for a long time, then at some point the controller's zookeeper listener will trigger a
         // removeBroker which will invoke shutdown() on this thread. At that point, we will stop retrying.
         try {
+          // 3.1 target broker is not Ready
           if (!brokerReady()) {
+            // mark fail and Waiting for retry
             isSendSuccessful = false
             backoff()
           }
           else {
+          // 3.2 target broker is Ready
+            // construct Request
             val clientRequest = networkClient.newClientRequest(brokerNode.idString, requestBuilder,
               time.milliseconds(), true)
+            // send Request and wait Response
             clientResponse = NetworkClientUtils.sendAndReceive(networkClient, clientRequest, time)
             isSendSuccessful = true
           }
         } catch {
+        // 3.3 find Exception
           case e: Throwable => // if the send was not successful, reconnect to broker and resend the message
             warn(s"Controller $controllerId epoch ${controllerEpoch()} fails to send request " +
               s"$requestBuilder " +
               s"to broker $brokerNode. Reconnecting to broker.", e)
+            // close connection with broker
             networkClient.close(brokerNode.idString)
+            // mark fail and Waiting for retry
             isSendSuccessful = false
             backoff()
         }
       }
+    // 4. get the Response
       if (clientResponse != null) {
+        // 4.1 get requestHeader
         val requestHeader = clientResponse.requestHeader
+        // 4.2 Determine whether it is a specific type three request
         val api = requestHeader.apiKey
         if (api != ApiKeys.LEADER_AND_ISR && api != ApiKeys.STOP_REPLICA && api != ApiKeys.UPDATE_METADATA)
           throw new KafkaException(s"Unexpected apiKey received: $apiKey")
-
+        // 4.3 get the Response
         val response = clientResponse.responseBody
 
         stateChangeLogger.withControllerEpoch(controllerEpoch()).trace(s"Received response " +
           s"$response for request $api with correlation id " +
           s"${requestHeader.correlationId} sent to broker $brokerNode")
-
+        // 4.4 handle callback
         if (callback != null) {
           callback(response)
         }
@@ -801,9 +838,9 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
 }
 
 case class ControllerBrokerStateInfo(networkClient: NetworkClient,
-                                     brokerNode: Node,
-                                     messageQueue: BlockingQueue[QueueItem],
-                                     requestSendThread: RequestSendThread,
+                                     brokerNode: Node,  // target brokerID
+                                     messageQueue: BlockingQueue[QueueItem], // (controller) Request BlockingQueue
+                                     requestSendThread: RequestSendThread, // thread to send Request
                                      queueSizeGauge: Gauge[Int],
                                      requestRateAndTimeMetrics: Timer,
                                      reconfigurableChannelBuilder: Option[Reconfigurable])

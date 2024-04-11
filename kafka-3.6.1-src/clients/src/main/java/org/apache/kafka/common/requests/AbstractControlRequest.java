@@ -52,8 +52,11 @@ public abstract class AbstractControlRequest extends AbstractRequest {
     public static final long UNKNOWN_BROKER_EPOCH = -1L;
 
     public static abstract class Builder<T extends AbstractRequest> extends AbstractRequest.Builder<T> {
+        // the broker ID of current controller
         protected final int controllerId;
+        // controller Epoch
         protected final int controllerEpoch;
+        // broker Epoch
         protected final long brokerEpoch;
         protected final boolean kraftController;
 
