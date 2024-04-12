@@ -3005,6 +3005,7 @@ private[controller] class ControllerStats {
 }
 
 sealed trait ControllerEvent {
+  // state
   def state: ControllerState
   // preempt() is not executed by `ControllerEventThread` but by the main thread.
   def preempt(): Unit

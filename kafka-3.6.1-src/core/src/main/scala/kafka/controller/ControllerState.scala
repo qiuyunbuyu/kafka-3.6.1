@@ -20,7 +20,7 @@ package kafka.controller
 import scala.collection.Seq
 
 sealed abstract class ControllerState {
-
+  // use Byte num to represent ControllerState, Start from 0
   def value: Byte
 
   def rateAndTimeMetricName: Option[String] =
