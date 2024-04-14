@@ -438,6 +438,7 @@ class Partition(val topicPartition: TopicPartition,
             topicId.foreach(log.assignTopicId)
           log
         case None =>
+          // call Partition createLog(...)
           createLog(isNew, isFutureReplica, offsetCheckpoints, topicId)
       }
     }

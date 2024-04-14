@@ -127,16 +127,24 @@ class KafkaApis(val requestChannel: RequestChannel,
     metadataSupport.forwardingManager.isDefined && request.context.principalSerde.isPresent
   }
 
+  /**
+   * maybe Forward Request to Controller
+   * @param request
+   * @param handler
+   */
   private def maybeForwardToController(
     request: RequestChannel.Request,
     handler: RequestChannel.Request => Unit
   ): Unit = {
+    // used for handling Controller Response and Send to Client
     def responseCallback(responseOpt: Option[AbstractResponse]): Unit = {
       responseOpt match {
+        // reponse not null
         case Some(response) => requestHelper.sendForwardedResponse(request, response)
         case None => handleInvalidVersionsDuringForwarding(request)
       }
     }
+    // Forward Request to Controller
     metadataSupport.maybeForward(request, handler, responseCallback)
   }
 
@@ -332,6 +340,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         s"controller ${leaderAndIsrRequest.controllerId} with epoch ${leaderAndIsrRequest.controllerEpoch}.")
       requestHelper.sendResponseExemptThrottle(request, leaderAndIsrRequest.getErrorResponse(0, Errors.STALE_BROKER_EPOCH.exception))
     } else {
+      // handle LeaderAndIsrRequest, become Leader or Follower
       val response = replicaManager.becomeLeaderOrFollower(correlationId, leaderAndIsrRequest,
         RequestHandlerHelper.onLeadershipChange(groupCoordinator, txnCoordinator, _, _))
       requestHelper.sendResponseExemptThrottle(request, response)
@@ -1947,9 +1956,11 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   def handleCreateTopicsRequest(request: RequestChannel.Request): Unit = {
+    // 1. Get key variables
     val zkSupport = metadataSupport.requireZkOrThrow(KafkaApis.shouldAlwaysForward(request))
     val controllerMutationQuota = quotas.controllerMutation.newQuotaFor(request, strictSinceVersion = 6)
 
+    // 2. define Response Callback
     def sendResponseCallback(results: CreatableTopicResultCollection): Unit = {
       def createResponse(requestThrottleMs: Int): AbstractResponse = {
         val responseData = new CreateTopicsResponseData()
@@ -1965,6 +1976,8 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     val createTopicsRequest = request.body[CreateTopicsRequest]
     val results = new CreatableTopicResultCollection(createTopicsRequest.data.topics.size)
+
+    // 3. if current broker is not controller, then throw Exception
     if (!zkSupport.controller.isActive) {
       createTopicsRequest.data.topics.forEach { topic =>
         results.add(new CreatableTopicResult().setName(topic.name)
@@ -1972,6 +1985,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
       sendResponseCallback(results)
     } else {
+    // 4. current broker is controller, do create
       createTopicsRequest.data.topics.forEach { topic =>
         results.add(new CreatableTopicResult().setName(topic.name))
       }
@@ -2041,6 +2055,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
         sendResponseCallback(results)
       }
+      // ** Actual do createTopics
       zkSupport.adminManager.createTopics(
         createTopicsRequest.data.timeoutMs,
         createTopicsRequest.data.validateOnly,
@@ -2052,10 +2067,12 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   def handleCreatePartitionsRequest(request: RequestChannel.Request): Unit = {
+    // 1. Get key variables
     val zkSupport = metadataSupport.requireZkOrThrow(KafkaApis.shouldAlwaysForward(request))
     val createPartitionsRequest = request.body[CreatePartitionsRequest]
     val controllerMutationQuota = quotas.controllerMutation.newQuotaFor(request, strictSinceVersion = 3)
 
+    // 2. define Response Callback
     def sendResponseCallback(results: Map[String, ApiError]): Unit = {
       def createResponse(requestThrottleMs: Int): AbstractResponse = {
         val createPartitionsResults = results.map {
@@ -2074,18 +2091,25 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestHelper.sendResponseMaybeThrottleWithControllerQuota(controllerMutationQuota, request, createResponse)
     }
 
+    // 3. if current broker is not controller, then throw Exception
     if (!zkSupport.controller.isActive) {
+      // Prepare result
       val result = createPartitionsRequest.data.topics.asScala.map { topic =>
         (topic.name, new ApiError(Errors.NOT_CONTROLLER, null))
       }.toMap
+      // return result
       sendResponseCallback(result)
     } else {
+    // 4. current broker is controller, do create
+
       // Special handling to add duplicate topics to the response
       val topics = createPartitionsRequest.data.topics.asScala.toSeq
       val dupes = topics.groupBy(_.name)
         .filter { _._2.size > 1 }
         .keySet
       val notDuped = topics.filterNot(topic => dupes.contains(topic.name))
+
+      // Related authentication logic processing
       val (authorized, unauthorized) = authHelper.partitionSeqByAuthorized(request.context, ALTER, TOPIC,
         notDuped)(_.name)
 
@@ -2097,6 +2121,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         unauthorized.map(_.name -> new ApiError(Errors.TOPIC_AUTHORIZATION_FAILED, "The topic authorization is failed.")) ++
         queuedForDeletion.map(_.name -> new ApiError(Errors.INVALID_TOPIC_EXCEPTION, "The topic is queued for deletion."))
 
+      // do create
       zkSupport.adminManager.createPartitions(
         createPartitionsRequest.data.timeoutMs,
         valid,

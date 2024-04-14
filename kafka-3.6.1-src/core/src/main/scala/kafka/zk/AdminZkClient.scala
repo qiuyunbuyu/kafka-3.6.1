@@ -172,6 +172,7 @@ class AdminZkClient(zkClient: KafkaZkClient,
 
       if (!isUpdate) {
         val topicIdOpt = if (usesTopicId) Some(Uuid.randomUuid()) else None
+        // **
         zkClient.createTopicAssignment(topic, topicIdOpt, assignment.map { case (k, v) => k -> v.replicas })
       } else {
         val topicIds = zkClient.getTopicIdsForTopics(Set(topic))

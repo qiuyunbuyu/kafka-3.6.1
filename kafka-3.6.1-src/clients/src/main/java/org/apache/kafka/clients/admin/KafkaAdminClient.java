@@ -470,12 +470,19 @@ public class KafkaAdminClient extends AdminClient {
         return throwable.getClass().getSimpleName();
     }
 
+    /**
+     * will create KafkaAdminClient
+     * @param config
+     * @param timeoutProcessorFactory
+     * @return
+     */
     static KafkaAdminClient createInternal(AdminClientConfig config, TimeoutProcessorFactory timeoutProcessorFactory) {
         return createInternal(config, timeoutProcessorFactory, null);
     }
 
     static KafkaAdminClient createInternal(AdminClientConfig config, TimeoutProcessorFactory timeoutProcessorFactory,
                                            HostResolver hostResolver) {
+        // 1. Prepare required objects
         Metrics metrics = null;
         NetworkClient networkClient = null;
         Time time = Time.SYSTEM;
@@ -486,11 +493,16 @@ public class KafkaAdminClient extends AdminClient {
         try {
             // Since we only request node information, it's safe to pass true for allowAutoTopicCreation (and it
             // simplifies communication with older brokers)
+            // 2. create AdminMetadataManager and set "retry.backoff.ms" + "metadata.max.age.ms"
             AdminMetadataManager metadataManager = new AdminMetadataManager(logContext,
                 config.getLong(AdminClientConfig.RETRY_BACKOFF_MS_CONFIG),
                 config.getLong(AdminClientConfig.METADATA_MAX_AGE_CONFIG));
+
+            // 3. Parse and verify the BOOTSTRAP_SERVERS address, and update metadata
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config);
             metadataManager.update(Cluster.bootstrap(addresses), time.milliseconds());
+
+            // 4. create MetricsReporter, and configure
             List<MetricsReporter> reporters = CommonClientConfigs.metricsReporters(clientId, config);
             Map<String, String> metricTags = Collections.singletonMap("client-id", clientId);
             MetricConfig metricConfig = new MetricConfig().samples(config.getInt(AdminClientConfig.METRICS_NUM_SAMPLES_CONFIG))
@@ -500,6 +512,8 @@ public class KafkaAdminClient extends AdminClient {
             MetricsContext metricsContext = new KafkaMetricsContext(JMX_PREFIX,
                     config.originalsWithPrefix(CommonClientConfigs.METRICS_CONTEXT_PREFIX));
             metrics = new Metrics(metricConfig, reporters, time, metricsContext);
+
+            // 5. create NetworkClient
             networkClient = ClientUtils.createNetworkClient(config,
                 clientId,
                 metrics,
@@ -511,6 +525,8 @@ public class KafkaAdminClient extends AdminClient {
                 (int) TimeUnit.HOURS.toMillis(1),
                 metadataManager.updater(),
                 (hostResolver == null) ? new DefaultHostResolver() : hostResolver);
+
+            // 6. return KafkaAdminClient, and will start AdminClientRunnable Thread
             return new KafkaAdminClient(config, clientId, time, metadataManager, metrics, networkClient,
                 timeoutProcessorFactory, logContext);
         } catch (Throwable exc) {
@@ -559,9 +575,12 @@ public class KafkaAdminClient extends AdminClient {
         this.metadataManager = metadataManager;
         this.metrics = metrics;
         this.client = client;
+
+        // AdminClientRunnable Thread Configuration
         this.runnable = new AdminClientRunnable();
         String threadName = NETWORK_THREAD_PREFIX + " | " + clientId;
         this.thread = new KafkaThread(threadName, runnable, true);
+        //
         this.timeoutProcessorFactory = (timeoutProcessorFactory == null) ?
             new TimeoutProcessorFactory() : timeoutProcessorFactory;
         this.maxRetries = config.getInt(AdminClientConfig.RETRIES_CONFIG);
@@ -569,6 +588,7 @@ public class KafkaAdminClient extends AdminClient {
         config.logUnused();
         AppInfoParser.registerAppInfo(JMX_PREFIX, clientId, metrics, time.milliseconds());
         log.debug("Kafka admin client initialized");
+        // AdminClientRunnable Thread start
         thread.start();
     }
 
@@ -681,12 +701,16 @@ public class KafkaAdminClient extends AdminClient {
      * Provides the controller node.
      */
     private class ControllerNodeProvider implements NodeProvider {
+        // offer an available Controller broker Node
         @Override
         public Node provide() {
+            // 1. metadataManager.isReady() + metadataManager.controller() != null
             if (metadataManager.isReady() &&
                     (metadataManager.controller() != null)) {
+                // directly return Controller broker Node
                 return metadataManager.controller();
             }
+            // 2. metadata update Request
             metadataManager.requestUpdate();
             return null;
         }
@@ -1067,6 +1091,7 @@ public class KafkaAdminClient extends AdminClient {
          */
         private boolean maybeDrainPendingCall(Call call, long now) {
             try {
+                // random get a broker node from NodeProvider
                 Node node = call.nodeProvider.provide();
                 if (node != null) {
                     log.trace("Assigned {} to node {}", call, node);
@@ -1196,10 +1221,14 @@ public class KafkaAdminClient extends AdminClient {
          * @param responses             The latest responses from KafkaClient.
          **/
         private void handleResponses(long now, List<ClientResponse> responses) {
+            // Traverse and process Response
             for (ClientResponse response : responses) {
+                // 1. get correlationId from response
                 int correlationId = response.requestHeader().correlationId();
-
+                // 2. get call from "correlationIdToCalls"(Maps correlation IDs to calls that have been sent.)
                 Call call = correlationIdToCalls.get(correlationId);
+
+                // 3. call is null
                 if (call == null) {
                     // If the server returns information about a correlation ID we didn't use yet,
                     // an internal server error has occurred. Close the connection and log an error message.
@@ -1210,7 +1239,7 @@ public class KafkaAdminClient extends AdminClient {
                     continue;
                 }
 
-                // Stop tracking this call.
+                // 4. Stop tracking this call.
                 correlationIdToCalls.remove(correlationId);
                 if (!callsInFlight.remove(response.destination(), call)) {
                     log.error("Internal server error on {}: ignoring call {} in correlationIdToCall " +
@@ -1218,10 +1247,11 @@ public class KafkaAdminClient extends AdminClient {
                     continue;
                 }
 
-                // Handle the result of the call. This may involve retrying the call, if we got a
-                // retriable exception.
+                // 5. Handle the result of the call. This may involve retrying the call, if we got a retriable exception.
+                // 5.1 Handle a failure
                 if (response.versionMismatch() != null) {
                     call.fail(now, response.versionMismatch());
+                // 5.2 Handle Disconnected
                 } else if (response.wasDisconnected()) {
                     AuthenticationException authException = client.authenticationException(call.curNode());
                     if (authException != null) {
@@ -1232,6 +1262,7 @@ public class KafkaAdminClient extends AdminClient {
                             call.callName, correlationId, response.destination())));
                     }
                 } else {
+                    // 5.3 For different responses, call corresponding handleResponse(xx)
                     try {
                         call.handleResponse(response.responseBody());
                         if (log.isTraceEnabled())
@@ -1309,6 +1340,7 @@ public class KafkaAdminClient extends AdminClient {
         public void run() {
             log.debug("Thread starting");
             try {
+                // handle Requests
                 processRequests();
             } finally {
                 closing = true;
@@ -1356,18 +1388,28 @@ public class KafkaAdminClient extends AdminClient {
 
                 // Choose nodes for our pending calls.
                 pollTimeout = Math.min(pollTimeout, maybeDrainPendingCalls(now));
+
+                // Determine whether metadata has expired
                 long metadataFetchDelayMs = metadataManager.metadataFetchDelayMs(now);
+
+                // "metadataFetchDelayMs == 0" means "no time delay" to get metadata
                 if (metadataFetchDelayMs == 0) {
+
+                    // update state to UPDATE_PENDING
                     metadataManager.transitionToUpdatePending(now);
+
+                    // generate MetadataRequest, and will send to "A random broker configured in bootstrap.servers"
+                    // return Call
                     Call metadataCall = makeMetadataCall(now);
+
                     // Create a new metadata fetch call and add it to the end of pendingCalls.
                     // Assign a node for just the new call (we handled the other pending nodes above).
-
                     if (!maybeDrainPendingCall(metadataCall, now))
                         pendingCalls.add(metadataCall);
                 }
-                pollTimeout = Math.min(pollTimeout, sendEligibleCalls(now));
 
+                //
+                pollTimeout = Math.min(pollTimeout, sendEligibleCalls(now));
                 if (metadataFetchDelayMs > 0) {
                     pollTimeout = Math.min(pollTimeout, metadataFetchDelayMs);
                 }
@@ -1386,6 +1428,8 @@ public class KafkaAdminClient extends AdminClient {
 
                 // Update the current time and handle the latest responses.
                 now = time.milliseconds();
+
+                // handle MetadataRequest -> Response
                 handleResponses(now, responses);
             }
         }
@@ -1465,6 +1509,8 @@ public class KafkaAdminClient extends AdminClient {
                 public void handleResponse(AbstractResponse abstractResponse) {
                     MetadataResponse response = (MetadataResponse) abstractResponse;
                     long now = time.milliseconds();
+
+                    // Receive new metadata, and transition into the QUIESCENT state.
                     metadataManager.update(response.buildCluster(), now);
 
                     // Unassign all unsent requests after a metadata refresh to allow for a new
@@ -1527,29 +1573,45 @@ public class KafkaAdminClient extends AdminClient {
         }
     }
 
+    /**
+     * @param newTopics The new topics to create.
+     * @param options   The options to use when creating the new topics.
+     * @return CreateTopicsResult
+     */
     @Override
     public CreateTopicsResult createTopics(final Collection<NewTopic> newTopics,
                                            final CreateTopicsOptions options) {
+        // 1. construct Future, client can call Future to "Monitor the success or failure of topic creation"
         final Map<String, KafkaFutureImpl<TopicMetadataAndConfig>> topicFutures = new HashMap<>(newTopics.size());
+        // 2. construct CreatableTopicCollection to "save topics to be created"
         final CreatableTopicCollection topics = new CreatableTopicCollection();
+        // 3. traverse newTopics
         for (NewTopic newTopic : newTopics) {
+            // 3.1 Returns true if a topic name cannot be represented in an RPC
             if (topicNameIsUnrepresentable(newTopic.name())) {
                 KafkaFutureImpl<TopicMetadataAndConfig> future = new KafkaFutureImpl<>();
                 future.completeExceptionally(new InvalidTopicException("The given topic name '" +
                     newTopic.name() + "' cannot be represented in a request."));
                 topicFutures.put(newTopic.name(), future);
+            // 3.2 if topicFutures not contain the "newTopic", then create blank KafkaFutureImpl
             } else if (!topicFutures.containsKey(newTopic.name())) {
                 topicFutures.put(newTopic.name(), new KafkaFutureImpl<>());
                 topics.add(newTopic.convertToCreatableTopic());
             }
         }
+        // 3.3 if topics not empty(), do create Topic
         if (!topics.isEmpty()) {
+            // 3.3.1 get current time
             final long now = time.milliseconds();
+            // 3.3.2 get deadline time
             final long deadline = calcDeadlineMs(now, options.timeoutMs());
+            // 3.3.3 construct Call object
             final Call call = getCreateTopicsCall(options, topicFutures, topics,
                 Collections.emptyMap(), now, deadline);
+            // 3.3.4 * Queue a call for sending.
             runnable.call(call, now);
         }
+      // 4. return Create Topics Result
         return new CreateTopicsResult(new HashMap<>(topicFutures));
     }
 
@@ -1559,7 +1621,9 @@ public class KafkaAdminClient extends AdminClient {
                                      final Map<String, ThrottlingQuotaExceededException> quotaExceededExceptions,
                                      final long now,
                                      final long deadline) {
+        // *
         return new Call("createTopics", deadline, new ControllerNodeProvider()) {
+            // build CreateTopicsRequest
             @Override
             public CreateTopicsRequest.Builder createRequest(int timeoutMs) {
                 return new CreateTopicsRequest.Builder(

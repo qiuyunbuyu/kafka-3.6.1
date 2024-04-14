@@ -49,10 +49,12 @@ object TopicCommand extends Logging {
     val opts = new TopicCommandOptions(args)
     opts.checkArgs()
 
+    // 1. use --bootstrap-server model: this step will create KafkaAdminClient and updateMetadata
     val topicService = TopicService(opts.commandConfig, opts.bootstrapServer)
 
     var exitCode = 0
     try {
+      // 2. --create
       if (opts.hasCreateOption)
         topicService.createTopic(opts)
       else if (opts.hasAlterOption)
@@ -198,12 +200,14 @@ object TopicCommand extends Logging {
   object TopicService {
     def createAdminClient(commandConfig: Properties, bootstrapServer: Option[String]): Admin = {
       bootstrapServer match {
+        // 1. if set the "bootstrap.servers"
         case Some(serverList) => commandConfig.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, serverList)
         case None =>
       }
+      // 2. create KafkaAdminClient
       Admin.create(commandConfig)
     }
-
+    // This method will be executed by default, will call createAdminClient
     def apply(commandConfig: Properties, bootstrapServer: Option[String]): TopicService =
       new TopicService(createAdminClient(commandConfig, bootstrapServer))
   }
@@ -212,36 +216,48 @@ object TopicCommand extends Logging {
 
     def createTopic(opts: TopicCommandOptions): Unit = {
       val topic = new CommandTopicPartition(opts)
+      // topics with a period ('.') or underscore ('_') could collide
       if (Topic.hasCollisionChars(topic.name))
         println("WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could " +
           "collide. To avoid issues it is best to use either, but not both.")
+      // create Topic
       createTopic(topic)
     }
 
     def createTopic(topic: CommandTopicPartition): Unit = {
+      // 1. replicationFactor num check
       if (topic.replicationFactor.exists(rf => rf > Short.MaxValue || rf < 1))
         throw new IllegalArgumentException(s"The replication factor must be between 1 and ${Short.MaxValue} inclusive")
+
+      // 2. partitions num check
       if (topic.partitions.exists(partitions => partitions < 1))
         throw new IllegalArgumentException(s"The partitions must be greater than 0")
 
+      // 3. Determine whether replicaAssignment is specified
       try {
+        // 3.1 replicaAssignment specified
         val newTopic = if (topic.hasReplicaAssignment)
           new NewTopic(topic.name, asJavaReplicaReassignment(topic.replicaAssignment.get))
         else {
+          // 3.2 replicaAssignment not specified
           new NewTopic(
             topic.name,
             topic.partitions.asJava,
             topic.replicationFactor.map(_.toShort).map(Short.box).asJava)
         }
 
+      // 4. Convert the value passed after --config into a map and setting for newTopic
         val configsMap = topic.configsToAdd.stringPropertyNames()
           .asScala
           .map(name => name -> topic.configsToAdd.getProperty(name))
           .toMap.asJava
-
         newTopic.configs(configsMap)
+
+      // 5. use KafkaAdminClient to createTopics
         val createResult = adminClient.createTopics(Collections.singleton(newTopic),
           new CreateTopicsOptions().retryOnQuotaViolation(false))
+
+      // 6. createTopics Result judge
         createResult.all().get()
         println(s"Created topic ${topic.name}.")
       } catch {

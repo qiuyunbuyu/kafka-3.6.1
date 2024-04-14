@@ -1906,7 +1906,7 @@ class ReplicaManager(val config: KafkaConfig,
           ) {
             updateStrayLogs(findStrayPartitionsFromLeaderAndIsr(allTopicPartitionsInRequest))
           }
-
+          // try to add Local LogDir
           maybeAddLogDirFetchers(partitions, highWatermarkCheckpoints, topicIdFromRequest)
 
           replicaFetcherManager.shutdownIdleFetcherThreads()
