@@ -89,7 +89,9 @@ class LogManager(logDirs: Seq[File],
   // from one log directory to another log directory on the same broker. The directory of the future log will be renamed
   // to replace the current log of the partition after the future log catches up with the current log
   private val futureLogs = new Pool[TopicPartition, UnifiedLog]()
-  // Each element in the queue contains the log object to be deleted and the time it is scheduled for deletion.
+
+  // * Each element in the queue contains the log object to be deleted and the time it is scheduled for deletion.
+  // independent thread: kafka-delete-logs | do deleteLogs() to delete the "Log files ending with .delete"
   private val logsToBeDeleted = new LinkedBlockingQueue[(UnifiedLog, Long)]()
 
   // Map of stray partition to stray log. This holds all stray logs detected on the broker.
@@ -1178,28 +1180,40 @@ class LogManager(logDirs: Seq[File],
                   isFuture: Boolean = false,
                   checkpoint: Boolean = true,
                   isStray: Boolean = false): Option[UnifiedLog] = {
+    // 1. Use synchronization locks to ensure thread safety
     val removedLog: Option[UnifiedLog] = logCreationOrDeletionLock synchronized {
+      // remove and return the Log of "mark for remove topicPartition in futureLogs and currentLogs"
       removeLogAndMetrics(if (isFuture) futureLogs else currentLogs, topicPartition)
     }
+
+    // 2. handle the above returned removedLog
     removedLog match {
       case Some(removedLog) =>
-        // We need to wait until there is no more cleaning task on the log to be deleted before actually deleting it.
+        // 2.1 We need to wait until there is no more cleaning task on the log to be deleted before actually deleting it.
         if (cleaner != null && !isFuture) {
+          // abort Cleaning
           cleaner.abortCleaning(topicPartition)
+          // update checkpoint
           if (checkpoint) {
             cleaner.updateCheckpoints(removedLog.parentDirFile, partitionToRemove = Option(topicPartition))
           }
         }
+
+        // 2.2 rename related dir "-stray" and "-delete"
         if (isStray) {
           // Move aside stray partitions, don't delete them
           removedLog.renameDir(UnifiedLog.logStrayDirName(topicPartition), false)
           warn(s"Log for partition ${removedLog.topicPartition} is marked as stray and renamed to ${removedLog.dir.getAbsolutePath}")
         } else {
           removedLog.renameDir(UnifiedLog.logDeleteDirName(topicPartition), false)
+          // * add removeLog to logsToBeDeleted, will be deleted asynchronously later
           addLogToBeDeleted(removedLog)
           info(s"Log for partition ${removedLog.topicPartition} is renamed to ${removedLog.dir.getAbsolutePath} and is scheduled for deletion")
         }
+
+        // 2.3 True if checkpoints must be written
         if (checkpoint) {
+          // handle checkpoints
           val logDir = removedLog.parentDirFile
           val logsToCheckpoint = logsInDir(logDir)
           checkpointRecoveryOffsetsInDir(logDir, logsToCheckpoint)
@@ -1211,7 +1225,7 @@ class LogManager(logDirs: Seq[File],
           throw new KafkaStorageException(s"Failed to delete log for ${if (isFuture) "future" else ""} $topicPartition because it may be in one of the offline directories ${offlineLogDirs.mkString(",")}")
         }
     }
-
+    // 3. return
     removedLog
   }
 

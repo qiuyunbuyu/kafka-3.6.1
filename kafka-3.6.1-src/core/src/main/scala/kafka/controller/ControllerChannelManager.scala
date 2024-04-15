@@ -715,7 +715,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
   }
 
   def handleUpdateMetadataResponse(response: UpdateMetadataResponse, broker: Int): Unit
-
+  // send StopReplicaRequest to related brokers
   private def sendStopReplicaRequests(controllerEpoch: Int, stateChangeLog: StateChangeLogger): Unit = {
     val traceEnabled = stateChangeLog.isTraceEnabled
     val metadataVersion = metadataVersionProvider.apply()
@@ -725,7 +725,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
       else if (metadataVersion.isAtLeast(IBP_2_4_IV1)) 2
       else if (metadataVersion.isAtLeast(IBP_2_2_IV0)) 1
       else 0
-
+    // The callback function that needs to be executed after StopReplicaRequest is executed successfully
     def responseCallback(brokerId: Int, isPartitionDeleted: TopicPartition => Boolean)
                         (response: AbstractResponse): Unit = {
       val stopReplicaResponse = response.asInstanceOf[StopReplicaResponse]
@@ -737,8 +737,10 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
           partitionErrorsForDeletingTopics += tp -> Errors.forCode(pe.errorCode)
         }
       }
-      if (partitionErrorsForDeletingTopics.nonEmpty)
+      if (partitionErrorsForDeletingTopics.nonEmpty) {
+        // *
         handleStopReplicaResponse(stopReplicaResponse, brokerId, partitionErrorsForDeletingTopics.toMap)
+      }
     }
 
     stopReplicaRequestMap.forKeyValue { (brokerId, partitionStates) =>

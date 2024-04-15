@@ -1718,6 +1718,12 @@ public class KafkaAdminClient extends AdminClient {
         };
     }
 
+    /**
+     * Wraps different ways(UsingNames/UsingIds) to delete a topic
+     * @param topics  The topics to delete.
+     * @param options The options to use when deleting the topics.
+     * @return DeleteTopicsResult
+     */
     @Override
     public DeleteTopicsResult deleteTopics(final TopicCollection topics,
                                            final DeleteTopicsOptions options) {
@@ -1731,26 +1737,39 @@ public class KafkaAdminClient extends AdminClient {
 
     private Map<String, KafkaFuture<Void>> handleDeleteTopicsUsingNames(final Collection<String> topicNames,
                                                                         final DeleteTopicsOptions options) {
+        // 1. create a map to store <TopicName, KafkaFutureImpl>
         final Map<String, KafkaFutureImpl<Void>> topicFutures = new HashMap<>(topicNames.size());
+        // 2. create a List to store valid Topic
         final List<String> validTopicNames = new ArrayList<>(topicNames.size());
+        // 3. Traverse topicNames
         for (String topicName : topicNames) {
+            // 3.1 check topicName is Unrepresentable
             if (topicNameIsUnrepresentable(topicName)) {
                 KafkaFutureImpl<Void> future = new KafkaFutureImpl<>();
                 future.completeExceptionally(new InvalidTopicException("The given topic name '" +
                     topicName + "' cannot be represented in a request."));
+                // topicFutures put the topicName and Corresponding exception
                 topicFutures.put(topicName, future);
+            // 3.2 if topicFutures not contain
             } else if (!topicFutures.containsKey(topicName)) {
+                // put topicName to topicFutures and validTopicNames
                 topicFutures.put(topicName, new KafkaFutureImpl<>());
                 validTopicNames.add(topicName);
             }
         }
+        // 4. if validTopicNames not empty
         if (!validTopicNames.isEmpty()) {
+            // 4.1 get current Time
             final long now = time.milliseconds();
+            // 4.2 calculate deadline Time
             final long deadline = calcDeadlineMs(now, options.timeoutMs());
+            // 4.3 create a Call object
             final Call call = getDeleteTopicsCall(options, topicFutures, validTopicNames,
                 Collections.emptyMap(), now, deadline);
+            // 4.4 call AdminClientRunnable to handle Call(DeleteTopics), and add "Call Object" to newCalls queue
             runnable.call(call, now);
         }
+        // 5. return result
         return new HashMap<>(topicFutures);
     }
 
@@ -1786,6 +1805,7 @@ public class KafkaAdminClient extends AdminClient {
                                      final long now,
                                      final long deadline) {
         return new Call("deleteTopics", deadline, new ControllerNodeProvider()) {
+            // create DeleteTopicsRequest and send to "controller node"
             @Override
             DeleteTopicsRequest.Builder createRequest(int timeoutMs) {
                 return new DeleteTopicsRequest.Builder(

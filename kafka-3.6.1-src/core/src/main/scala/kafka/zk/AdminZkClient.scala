@@ -192,6 +192,7 @@ class AdminZkClient(zkClient: KafkaZkClient,
   def deleteTopic(topic: String): Unit = {
     if (zkClient.topicExists(topic)) {
       try {
+        // /admin/delete_topics/{TopicName}
         zkClient.createDeleteTopicPath(topic)
       } catch {
         case _: NodeExistsException => throw new TopicAlreadyMarkedForDeletionException(

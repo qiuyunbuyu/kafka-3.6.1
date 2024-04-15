@@ -263,11 +263,14 @@ class ZkAdminManager(val config: KafkaConfig,
                    topics: Set[String],
                    controllerMutationQuota: ControllerMutationQuota,
                    responseCallback: Map[String, Errors] => Unit): Unit = {
+
     // 1. map over topics calling the asynchronous delete
     val metadata = topics.map { topic =>
         try {
           controllerMutationQuota.record(metadataCache.numPartitions(topic).getOrElse(0).toDouble)
+          // * /admin/delete_topics/{TopicName}
           adminZkClient.deleteTopic(topic)
+          // delete Topic Metadata
           DeleteTopicMetadata(topic, Errors.NONE)
         } catch {
           case _: TopicAlreadyMarkedForDeletionException =>
@@ -282,7 +285,7 @@ class ZkAdminManager(val config: KafkaConfig,
         }
     }
 
-    // 2. if timeout <= 0 or no topics can proceed return immediately
+    // 2. if timeout <= 0(Transmitted from the client) or no topics can proceed return immediately
     if (timeout <= 0 || !metadata.exists(_.error == Errors.NONE)) {
       val results = metadata.map { deleteTopicMetadata =>
         // ignore topics that already have errors

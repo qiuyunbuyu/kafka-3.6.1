@@ -174,7 +174,7 @@ class KafkaController(val config: KafkaConfig,
   val partitionStateMachine: PartitionStateMachine = new ZkPartitionStateMachine(config, stateChangeLogger, controllerContext, zkClient,
     new ControllerBrokerRequestBatch(config, controllerChannelManager, eventManager, controllerContext, stateChangeLogger))
 
-  // topic delete Manager: used for delete topic and log
+  // topic delete Manager: used for *delete topic and log*
   private val topicDeletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
     partitionStateMachine, new ControllerDeletionClient(this, zkClient))
 
@@ -1558,21 +1558,34 @@ class KafkaController(val config: KafkaConfig,
     }
   }
 
+  /**
+   * KafkaController should do "processTopicDeletionStopReplicaResponseReceived" after "single brokers done topic deleted"
+   * @param replicaId
+   * @param requestError
+   * @param partitionErrors
+   */
   private def processTopicDeletionStopReplicaResponseReceived(replicaId: Int,
                                                               requestError: Errors,
                                                               partitionErrors: Map[TopicPartition, Errors]): Unit = {
+    // 1. if not controller, return directly
     if (!isActive) return
     debug(s"Delete topic callback invoked on StopReplica response received from broker $replicaId: " +
       s"request error = $requestError, partition errors = $partitionErrors")
 
+    // 2. Get partitions with errors
     val partitionsInError = if (requestError != Errors.NONE)
       partitionErrors.keySet
     else
       partitionErrors.filter { case (_, error) => error != Errors.NONE }.keySet
 
+    // 3. Get replicas with errors of above corresponding partition
     val replicasInError = partitionsInError.map(PartitionAndReplica(_, replicaId))
+
+    // 4. Replicas deletion failure handling
     // move all the failed replicas to ReplicaDeletionIneligible
     topicDeletionManager.failReplicaDeletion(replicasInError)
+
+    // 5. Replicas deletion successful handling
     if (replicasInError.size != partitionErrors.size) {
       // some replicas could have been successfully deleted
       val deletedReplicas = partitionErrors.keySet.diff(partitionsInError)
@@ -1955,19 +1968,24 @@ class KafkaController(val config: KafkaConfig,
   }
 
   private def processTopicDeletion(): Unit = {
+    // 1. if not Controller, return directly
     if (!isActive) return
+    // 2. get topics to delete
     var topicsToBeDeleted = zkClient.getTopicDeletions.toSet
     debug(s"Delete topics listener fired for topics ${topicsToBeDeleted.mkString(",")} to be deleted")
+    // 3. Compare the list of topics to be deleted in zk and controllerContext, and determine topicsToBeDeleted
     val nonExistentTopics = topicsToBeDeleted -- controllerContext.allTopics
     if (nonExistentTopics.nonEmpty) {
       warn(s"Ignoring request to delete non-existing topics ${nonExistentTopics.mkString(",")}")
       zkClient.deleteTopicDeletions(nonExistentTopics.toSeq, controllerContext.epochZkVersion)
     }
     topicsToBeDeleted --= nonExistentTopics
+    // 4. delete topics
     if (config.deleteTopicEnable) {
       if (topicsToBeDeleted.nonEmpty) {
+        // important log
         info(s"Starting topic deletion for topics ${topicsToBeDeleted.mkString(",")}")
-        // mark topic ineligible for deletion if other state changes are in progress
+        // 4.1 mark topic ineligible for deletion if other state changes are in progress
         topicsToBeDeleted.foreach { topic =>
           val partitionReassignmentInProgress =
             controllerContext.partitionsBeingReassigned.map(_.topic).contains(topic)
@@ -1975,11 +1993,11 @@ class KafkaController(val config: KafkaConfig,
             topicDeletionManager.markTopicIneligibleForDeletion(Set(topic),
               reason = "topic reassignment in progress")
         }
-        // add topic to deletion list
+        // 4.2 add topic to deletion list
         topicDeletionManager.enqueueTopicsForDeletion(topicsToBeDeleted)
       }
     } else {
-      // If delete topic is disabled remove entries under zookeeper path : /admin/delete_topics
+      // 5. If delete topic is disabled remove entries under zookeeper path : /admin/delete_topics
       info(s"Removing $topicsToBeDeleted since delete topic is disabled")
       zkClient.deleteTopicDeletions(topicsToBeDeleted.toSeq, controllerContext.epochZkVersion)
     }

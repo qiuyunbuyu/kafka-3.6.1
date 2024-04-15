@@ -57,12 +57,16 @@ object TopicCommand extends Logging {
       // 2. --create
       if (opts.hasCreateOption)
         topicService.createTopic(opts)
+      // 3. --alter
       else if (opts.hasAlterOption)
         topicService.alterTopic(opts)
+      // 4. --list
       else if (opts.hasListOption)
         topicService.listTopics(opts)
+      // 5. --describe
       else if (opts.hasDescribeOption)
         topicService.describeTopic(opts)
+      // 6. --delete
       else if (opts.hasDeleteOption)
         topicService.deleteTopic(opts)
     } catch {
@@ -372,18 +376,24 @@ object TopicCommand extends Logging {
     }
 
     def deleteTopic(opts: TopicCommandOptions): Unit = {
+      // 1. get topics first
       val topics = getTopics(opts.topic, opts.excludeInternalTopics)
+      // 2. ensure Topic is Exist
       ensureTopicExists(topics, opts.topic, !opts.ifExists)
+      // 3. call adminClient to delete topic
       adminClient.deleteTopics(topics.asJavaCollection, new DeleteTopicsOptions().retryOnQuotaViolation(false))
         .all().get()
     }
 
     def getTopics(topicIncludeList: Option[String], excludeInternalTopics: Boolean = false): Seq[String] = {
       val allTopics = if (excludeInternalTopics) {
+        // 1. List the topics available in the cluster with the default options.
         adminClient.listTopics()
       } else {
+        // 2. list all internal topics.
         adminClient.listTopics(new ListTopicsOptions().listInternal(true))
       }
+      // 3. Returns a filtered topic result set based on given conditions
       doGetTopics(allTopics.names().get().asScala.toSeq.sorted, topicIncludeList, excludeInternalTopics)
     }
 
@@ -435,10 +445,13 @@ object TopicCommand extends Logging {
   }
 
   private def doGetTopics(allTopics: Seq[String], topicIncludeList: Option[String], excludeInternalTopics: Boolean): Seq[String] = {
+    // 1. if "topic Include List" not empty
     if (topicIncludeList.isDefined) {
+      // Returns a filtered topic result set based on given conditions
       val topicsFilter = new IncludeList(topicIncludeList.get)
       allTopics.filter(topicsFilter.isTopicAllowed(_, excludeInternalTopics))
     } else
+    // 2. if "topic Include List" empty, Filter based on whether internal topics are returned
     allTopics.filterNot(Topic.isInternal(_) && excludeInternalTopics)
   }
 

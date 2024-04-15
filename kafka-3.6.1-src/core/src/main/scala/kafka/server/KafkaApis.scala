@@ -364,6 +364,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         new StopReplicaResponseData().setErrorCode(Errors.STALE_BROKER_EPOCH.code)))
     } else {
       val partitionStates = stopReplicaRequest.partitionStates().asScala
+      // * Processing of offline Replicas
       val (result, error) = replicaManager.stopReplicas(
         request.context.correlationId,
         stopReplicaRequest.controllerId,
@@ -2066,6 +2067,10 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
   }
 
+  /**
+   * handle Create Topics/Partitions Request
+   * @param request
+   */
   def handleCreatePartitionsRequest(request: RequestChannel.Request): Unit = {
     // 1. Get key variables
     val zkSupport = metadataSupport.requireZkOrThrow(KafkaApis.shouldAlwaysForward(request))
@@ -2130,11 +2135,16 @@ class KafkaApis(val requestChannel: RequestChannel,
         result => sendResponseCallback(result ++ errors))
     }
   }
-
+  /**
+   * handle delete Topics Request
+   * @param request
+   */
   def handleDeleteTopicsRequest(request: RequestChannel.Request): Unit = {
+    // 1. Get or define key variables
     val zkSupport = metadataSupport.requireZkOrThrow(KafkaApis.shouldAlwaysForward(request))
     val controllerMutationQuota = quotas.controllerMutation.newQuotaFor(request, strictSinceVersion = 5)
 
+    // 2. define sendResponseCallback method
     def sendResponseCallback(results: DeletableTopicResultCollection): Unit = {
       def createResponse(requestThrottleMs: Int): AbstractResponse = {
         val responseData = new DeleteTopicsResponseData()
@@ -2147,9 +2157,12 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestHelper.sendResponseMaybeThrottleWithControllerQuota(controllerMutationQuota, request, createResponse)
     }
 
+    // 3. Get or define key variables
     val deleteTopicRequest = request.body[DeleteTopicsRequest]
     val results = new DeletableTopicResultCollection(deleteTopicRequest.numberOfTopics())
     val toDelete = mutable.Set[String]()
+
+    // 4. if current broker is not controller, then throw Exception
     if (!zkSupport.controller.isActive) {
       deleteTopicRequest.topics().forEach { topic =>
         results.add(new DeletableTopicResult()
@@ -2158,6 +2171,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           .setErrorCode(Errors.NOT_CONTROLLER.code))
       }
       sendResponseCallback(results)
+    // 5. if disable the "deleteTopic", then throw Exception
     } else if (!config.deleteTopicEnable) {
       val error = if (request.context.apiVersion < 3) Errors.INVALID_REQUEST else Errors.TOPIC_DELETION_DISABLED
       deleteTopicRequest.topics().forEach { topic =>
@@ -2167,27 +2181,34 @@ class KafkaApis(val requestChannel: RequestChannel,
           .setErrorCode(error.code))
       }
       sendResponseCallback(results)
+    // 6. handle deleteTopicRequest
     } else {
+      // 6.1 get topicIds From deleteTopicRequest
       val topicIdsFromRequest = deleteTopicRequest.topicIds().asScala.filter(topicId => topicId != Uuid.ZERO_UUID).toSet
+      // 6.2 forEach topics
       deleteTopicRequest.topics().forEach { topic =>
         if (topic.name() != null && topic.topicId() != Uuid.ZERO_UUID)
           throw new InvalidRequestException("Topic name and topic ID can not both be specified.")
+        // get name from topicId
         val name = if (topic.topicId() == Uuid.ZERO_UUID) topic.name()
         else zkSupport.controller.controllerContext.topicName(topic.topicId).orNull
         results.add(new DeletableTopicResult()
           .setName(name)
           .setTopicId(topic.topicId()))
       }
+
+      // 7. Filter topics that need to be described and deleted based on permissions
       val authorizedDescribeTopics = authHelper.filterByAuthorized(request.context, DESCRIBE, TOPIC,
         results.asScala.filter(result => result.name() != null))(_.name)
       val authorizedDeleteTopics = authHelper.filterByAuthorized(request.context, DELETE, TOPIC,
         results.asScala.filter(result => result.name() != null))(_.name)
+
+      // 8. Various error checks, Determine the final toDelete list
       results.forEach { topic =>
         val unresolvedTopicId = topic.topicId() != Uuid.ZERO_UUID && topic.name() == null
         if (unresolvedTopicId) {
           topic.setErrorCode(Errors.UNKNOWN_TOPIC_ID.code)
         } else if (topicIdsFromRequest.contains(topic.topicId) && !authorizedDescribeTopics.contains(topic.name)) {
-
           // Because the client does not have Describe permission, the name should
           // not be returned in the response. Note, however, that we do not consider
           // the topicId itself to be sensitive, so there is no reason to obscure
@@ -2199,13 +2220,17 @@ class KafkaApis(val requestChannel: RequestChannel,
         } else if (!metadataCache.contains(topic.name)) {
           topic.setErrorCode(Errors.UNKNOWN_TOPIC_OR_PARTITION.code)
         } else {
+          // Determine the final toDelete list
           toDelete += topic.name
         }
       }
+
       // If no authorized topics return immediately
+      // 9.1 if toDelete list is Empty, return result directly
       if (toDelete.isEmpty)
         sendResponseCallback(results)
       else {
+        // 9.2 handle Delete Topics
         def handleDeleteTopicsResults(errors: Map[String, Errors]): Unit = {
           errors.foreach {
             case (topicName, error) =>
@@ -2214,7 +2239,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           }
           sendResponseCallback(results)
         }
-
+        // call adminManager to delete Topics
         zkSupport.adminManager.deleteTopics(
           deleteTopicRequest.data.timeoutMs,
           toDelete,
