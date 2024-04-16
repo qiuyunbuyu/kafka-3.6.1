@@ -317,6 +317,7 @@ class KafkaController(val config: KafkaConfig,
 
   /**
    * This callback is invoked by the zookeeper leader elector on electing the current broker as the new controller.
+   *
    * It does the following things on the become-controller state change -
    * 1. Initializes the controller's context object that holds cache objects for current topics, live brokers and
    *    leaders for all existing partitions.
@@ -372,9 +373,10 @@ class KafkaController(val config: KafkaConfig,
     sendUpdateMetadataRequest(controllerContext.liveOrShuttingDownBrokerIds.toSeq, Set.empty)
 
     // 8. you are leader now, so manage the replica +  partition
-    // 8.1
+    // only leader can handle replica/partition state
+    // 8.1 start up replicaStateMachine
     replicaStateMachine.startup()
-    // 8.2
+    // 8.2 start up partitionStateMachine
     partitionStateMachine.startup()
 
     // ** important log can mark controller change

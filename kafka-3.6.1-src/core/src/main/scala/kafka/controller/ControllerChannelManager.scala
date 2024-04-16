@@ -485,12 +485,16 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
     updateType = AbstractControlRequest.Type.UNKNOWN
   }
 
+  /**
+   * 1. send LeaderAndIsrRequest to corresponding broker
+   * 2. send UpdateMetadataRequest to all Brokers
+   */
   def addLeaderAndIsrRequestForBrokers(brokerIds: Seq[Int],
                                        topicPartition: TopicPartition,
                                        leaderIsrAndControllerEpoch: LeaderIsrAndControllerEpoch,
                                        replicaAssignment: ReplicaAssignment,
                                        isNew: Boolean): Unit = {
-
+    // 1. send LeaderAndIsrRequest to corresponding broker
     brokerIds.filter(_ >= 0).foreach { brokerId =>
       val result = leaderAndIsrRequestMap.getOrElseUpdate(brokerId, mutable.Map.empty)
       val alreadyNew = result.get(topicPartition).exists(_.isNew)
@@ -514,7 +518,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
 
       result.put(topicPartition, partitionState)
     }
-
+    // 2. send UpdateMetadataRequest to all Brokers
     addUpdateMetadataRequestForBrokers(metadataInstance.liveOrShuttingDownBrokerIds.toSeq, Set(topicPartition))
   }
 
