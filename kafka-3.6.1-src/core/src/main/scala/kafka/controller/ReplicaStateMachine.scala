@@ -130,7 +130,7 @@ class ZkReplicaStateMachine(config: KafkaConfig,
         // 3. **** exercises the replica's state machine
         doHandleStateChanges(replicaId, replicas, targetState)
         }
-        // 4. send Controller Request to corresponding broker
+        // 4. controller need send Request to corresponding broker
         // ensures that every state transition happens from a legal previous state to the target state
         controllerBrokerRequestBatch.sendRequestsToBrokers(controllerContext.epoch)
       } catch {

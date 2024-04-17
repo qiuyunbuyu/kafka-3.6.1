@@ -38,8 +38,10 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
    * Invoked on successful controller election.
    */
   def startup(): Unit = {
+    // 1.
     info("Initializing partition state")
     initializePartitionState()
+    // 2.
     info("Triggering online partition state changes")
     triggerOnlinePartitionStateChange()
     debug(s"Started partition state machine with initial state -> ${controllerContext.partitionStates}")
@@ -54,10 +56,12 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
 
   /**
    * This API invokes the OnlinePartition state change on all partitions in either the NewPartition or OfflinePartition
-   * state. This is called on a successful controller election and on broker changes
+   * state. *This is called on a successful controller election and on broker changes*
    */
   def triggerOnlinePartitionStateChange(): Map[TopicPartition, Either[Throwable, LeaderAndIsr]] = {
+    // 1. get OfflinePartition and NewPartition sets from controllerContext
     val partitions = controllerContext.partitionsInStates(Set(OfflinePartition, NewPartition))
+    // 2. try to move all partitions in NewPartition or OfflinePartition state to OnlinePartition
     triggerOnlineStateChangeForPartitions(partitions)
   }
 
@@ -67,22 +71,23 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
   }
 
   private def triggerOnlineStateChangeForPartitions(partitions: collection.Set[TopicPartition]): Map[TopicPartition, Either[Throwable, LeaderAndIsr]] = {
-    // try to move all partitions in NewPartition or OfflinePartition state to OnlinePartition state except partitions
-    // that belong to topics to be deleted
+    // 1. try to move all partitions in NewPartition or OfflinePartition state to OnlinePartition state except partitions that belong to topics to be deleted
     val partitionsToTrigger = partitions.filter { partition =>
       !controllerContext.isTopicQueuedUpForDeletion(partition.topic)
     }.toSeq
 
+    // 2. Try to change the state of the given partitions to the given targetState: "OnlinePartition State"
     handleStateChanges(partitionsToTrigger, OnlinePartition, Some(OfflinePartitionLeaderElectionStrategy(false)))
     // TODO: If handleStateChanges catches an exception, it is not enough to bail out and log an error.
     // It is important to trigger leader election for those partitions.
   }
 
   /**
-   * Invoked on startup of the partition's state machine to set the initial state for all existing partitions in
+   * Invoked on startup of the partition's state machine to "set the initial state for all existing partitions" in
    * zookeeper
    */
   private def initializePartitionState(): Unit = {
+    // traverse all Partitions of all brokers
     for (topicPartition <- controllerContext.allPartitions) {
       // check if leader and isr path exists for partition. If not, then it is in NEW state
       controllerContext.partitionLeadershipInfo(topicPartition) match {
@@ -91,21 +96,24 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
           if (controllerContext.isReplicaOnline(currentLeaderIsrAndEpoch.leaderAndIsr.leader, topicPartition))
           // leader is alive
             controllerContext.putPartitionState(topicPartition, OnlinePartition)
-          else
+          else {
+            // set "OfflinePartition" State
             controllerContext.putPartitionState(topicPartition, OfflinePartition)
+          }
         case None =>
+          // if can not find PartitionInfo in zk, set "NewPartition" State
           controllerContext.putPartitionState(topicPartition, NewPartition)
       }
     }
   }
-
+  // handle State Changes
   def handleStateChanges(
     partitions: Seq[TopicPartition],
     targetState: PartitionState
   ): Map[TopicPartition, Either[Throwable, LeaderAndIsr]] = {
     handleStateChanges(partitions, targetState, None)
   }
-
+  // handle State Changes and select Leader according to the specified strategy
   def handleStateChanges(
     partitions: Seq[TopicPartition],
     targetState: PartitionState,
@@ -155,13 +163,17 @@ class ZkPartitionStateMachine(config: KafkaConfig,
   ): Map[TopicPartition, Either[Throwable, LeaderAndIsr]] = {
     if (partitions.nonEmpty) {
       try {
+        // 1. clear up controller Broker RequestBatch
         controllerBrokerRequestBatch.newBatch()
+        // 2. ***exercises the partition's state machine
         val result = doHandleStateChanges(
           partitions,
           targetState,
           partitionLeaderElectionStrategyOpt
         )
+        // 3. controller need send Request to corresponding broker
         controllerBrokerRequestBatch.sendRequestsToBrokers(controllerContext.epoch)
+        // 4. return result
         result
       } catch {
         case e: ControllerMovedException =>
@@ -210,52 +222,74 @@ class ZkPartitionStateMachine(config: KafkaConfig,
     targetState: PartitionState,
     partitionLeaderElectionStrategyOpt: Option[PartitionLeaderElectionStrategy]
   ): Map[TopicPartition, Either[Throwable, LeaderAndIsr]] = {
+    // help for Log
     val stateChangeLog = stateChangeLogger.withControllerEpoch(controllerContext.epoch)
     val traceEnabled = stateChangeLog.isTraceEnabled
+
+    // 1. Initializes all partition state as NonExistentPartition
     partitions.foreach(partition => controllerContext.putPartitionStateIfNotExists(partition, NonExistentPartition))
+    // 2. get all validPartitions and invalidPartitions
     val (validPartitions, invalidPartitions) = controllerContext.checkValidPartitionStateChange(partitions, targetState)
     invalidPartitions.foreach(partition => logInvalidTransition(partition, targetState))
 
     targetState match {
+      // case1: -> NewPartition
       case NewPartition =>
+        // traverse all validPartitions
         validPartitions.foreach { partition =>
           stateChangeLog.info(s"Changed partition $partition state from ${partitionState(partition)} to $targetState with " +
             s"assigned replicas ${controllerContext.partitionReplicaAssignment(partition).mkString(",")}")
+          // set Partition State to NewPartition
           controllerContext.putPartitionState(partition, NewPartition)
         }
         Map.empty
+
+      // case2: -> OnlinePartition
       case OnlinePartition =>
+        // a. get all uninitialized Partitions(Partitions in NewPartition State)
         val uninitializedPartitions = validPartitions.filter(partition => partitionState(partition) == NewPartition)
+        // b. get all "can elect Leader" Partitions(Partitions in OfflinePartition State or OnlinePartition state)
         val partitionsToElectLeader = validPartitions.filter(partition => partitionState(partition) == OfflinePartition || partitionState(partition) == OnlinePartition)
+
+        // c. handle above "uninitializedPartitions"
         if (uninitializedPartitions.nonEmpty) {
+          // c.1 try to write "Leader and ISR" to zk Node
           val successfulInitializations = initializeLeaderAndIsrForPartitions(uninitializedPartitions)
           successfulInitializations.foreach { partition =>
             stateChangeLog.info(s"Changed partition $partition from ${partitionState(partition)} to $targetState with state " +
               s"${controllerContext.partitionLeadershipInfo(partition).get.leaderAndIsr}")
+            // c.2 transfer partition state to  OnlinePartition
             controllerContext.putPartitionState(partition, OnlinePartition)
           }
         }
+        // d. handle above "partitionsToElectLeader"
         if (partitionsToElectLeader.nonEmpty) {
+          // d.1 call electLeaderForPartitions to get electionResults
           val electionResults = electLeaderForPartitions(
             partitionsToElectLeader,
             partitionLeaderElectionStrategyOpt.getOrElse(
               throw new IllegalArgumentException("Election strategy is a required field when the target state is OnlinePartition")
             )
           )
-
+          // d.2 traverse all electionResults
           electionResults.foreach {
+            // elect Leader success
             case (partition, Right(leaderAndIsr)) =>
               stateChangeLog.info(
                 s"Changed partition $partition from ${partitionState(partition)} to $targetState with state $leaderAndIsr"
               )
+              // transfer partition state to  OnlinePartition
               controllerContext.putPartitionState(partition, OnlinePartition)
+            // elect Leader fail
             case (_, Left(_)) => // Ignore; no need to update partition state on election error
           }
-
+          // return election Results
           electionResults
         } else {
           Map.empty
         }
+
+      // case3: -> OfflinePartition | NonExistentPartition
       case OfflinePartition | NonExistentPartition =>
         validPartitions.foreach { partition =>
           if (traceEnabled)
@@ -273,13 +307,17 @@ class ZkPartitionStateMachine(config: KafkaConfig,
    */
   private def initializeLeaderAndIsrForPartitions(partitions: Seq[TopicPartition]): Seq[TopicPartition] = {
     val successfulInitializations = mutable.Buffer.empty[TopicPartition]
+    // 1. get all Replicas of Partition
     val replicasPerPartition = partitions.map(partition => partition -> controllerContext.partitionReplicaAssignment(partition))
+    // 2. get all live Replicas of Partition
     val liveReplicasPerPartition = replicasPerPartition.map { case (partition, replicas) =>
         val liveReplicasForPartition = replicas.filter(replica => controllerContext.isReplicaOnline(replica, partition))
         partition -> liveReplicasForPartition
     }
+    // 3. classify "Seq[TopicPartition]" to two set
     val (partitionsWithoutLiveReplicas, partitionsWithLiveReplicas) = liveReplicasPerPartition.partition { case (_, liveReplicas) => liveReplicas.isEmpty }
 
+    // 4. handle partitionsWithoutLiveReplicas, Log Failed State Change Msg
     partitionsWithoutLiveReplicas.foreach { case (partition, _) =>
       val failMsg = s"Controller $controllerId epoch ${controllerContext.epoch} encountered error during state change of " +
         s"partition $partition from New to Online, assigned replicas are " +
@@ -287,11 +325,17 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         "replica is alive."
       logFailedStateChange(partition, NewPartition, OnlinePartition, new StateChangeFailedException(failMsg))
     }
+
+    // 5. handle partitionsWithLiveReplicas
     val leaderIsrAndControllerEpochs = partitionsWithLiveReplicas.map { case (partition, liveReplicas) =>
+      // 5.1 choose Leader
       val leaderAndIsr = LeaderAndIsr(liveReplicas.head, liveReplicas.toList)
+      // 5.2 choose ISR
       val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerContext.epoch)
       partition -> leaderIsrAndControllerEpoch
     }.toMap
+
+    // 6. try to write leader and ISR data to zk node
     val createResponses = try {
       zkClient.createTopicPartitionStatesRaw(leaderIsrAndControllerEpochs, controllerContext.epochZkVersion)
     } catch {
@@ -299,15 +343,19 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         error("Controller moved to another broker when trying to create the topic partition state znode", e)
         throw e
       case e: Exception =>
+        // if find Exception, Log Failed info, and add this Partition to "fail sets"
         partitionsWithLiveReplicas.foreach { case (partition, _) => logFailedStateChange(partition, partitionState(partition), NewPartition, e) }
         Seq.empty
     }
+
+    // 6. handle createResponses and "addLeaderAndIsrRequestForBrokers"
     createResponses.foreach { createResponse =>
       val code = createResponse.resultCode
       val partition = createResponse.ctx.get.asInstanceOf[TopicPartition]
       val leaderIsrAndControllerEpoch = leaderIsrAndControllerEpochs(partition)
       if (code == Code.OK) {
         controllerContext.putPartitionLeadershipInfo(partition, leaderIsrAndControllerEpoch)
+        // "addLeaderAndIsrRequestForBrokers"
         controllerBrokerRequestBatch.addLeaderAndIsrRequestForBrokers(leaderIsrAndControllerEpoch.leaderAndIsr.isr,
           partition, leaderIsrAndControllerEpoch, controllerContext.partitionFullReplicaAssignment(partition), isNew = true)
         successfulInitializations += partition
@@ -315,6 +363,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         logFailedStateChange(partition, NewPartition, OnlinePartition, code)
       }
     }
+    // 7. return successful initialize Partitions sets
     successfulInitializations
   }
 
@@ -329,25 +378,35 @@ class ZkPartitionStateMachine(config: KafkaConfig,
     partitions: Seq[TopicPartition],
     partitionLeaderElectionStrategy: PartitionLeaderElectionStrategy
   ): Map[TopicPartition, Either[Throwable, LeaderAndIsr]] = {
+
+    // 1. get or create key variables
     var remaining = partitions
     val finishedElections = mutable.Map.empty[TopicPartition, Either[Throwable, LeaderAndIsr]]
 
+    // 2. traverse remaining partitions to elect Leader
     while (remaining.nonEmpty) {
+      // 2.1 call doElectLeaderForPartitions to Elect Leader for Partitions, and classify results to (finished, updatesToRetry)
       val (finished, updatesToRetry) = doElectLeaderForPartitions(remaining, partitionLeaderElectionStrategy)
+
+      // 2.2 update "remaining"
       remaining = updatesToRetry
 
+      // 2.3 traverse "finished"
       finished.foreach {
+        // if elect Failed -> log
         case (partition, Left(e)) =>
           logFailedStateChange(partition, partitionState(partition), OnlinePartition, e)
+        // if elect Success -> do nothing
         case (_, Right(_)) => // Ignore; success so no need to log failed state change
       }
 
+      // 2.4 Cumulative successful partitions
       finishedElections ++= finished
 
       if (remaining.nonEmpty)
         logger.info(s"Retrying leader election with strategy $partitionLeaderElectionStrategy for partitions $remaining")
     }
-
+    // 3. return A map of failed and successful elections
     finishedElections.toMap
   }
 
@@ -367,35 +426,51 @@ class ZkPartitionStateMachine(config: KafkaConfig,
     partitions: Seq[TopicPartition],
     partitionLeaderElectionStrategy: PartitionLeaderElectionStrategy
   ): (Map[TopicPartition, Either[Exception, LeaderAndIsr]], Seq[TopicPartition]) = {
+
+    // get data from "${TopicPartitionZNode.path(partition)}/state" Node in zk
+    //    data example:
+    //      {"controller_epoch":60,"leader":3,"version":1,"leader_epoch":114,"isr":[2,3]}
     val getDataResponses = try {
       zkClient.getTopicPartitionStatesRaw(partitions)
     } catch {
       case e: Exception =>
         return (partitions.iterator.map(_ -> Left(e)).toMap, Seq.empty)
     }
+
+    // create two map to store [failedElections] and [validLeaderAndIsrs]
     val failedElections = mutable.Map.empty[TopicPartition, Either[Exception, LeaderAndIsr]]
     val validLeaderAndIsrs = mutable.Buffer.empty[(TopicPartition, LeaderAndIsr)]
 
+    // ============================ a. Determine which partitions can elect Leaders ==================
+    // traverse getDataResponses
     getDataResponses.foreach { getDataResponse =>
+      // 1 get partition from zk
       val partition = getDataResponse.ctx.get.asInstanceOf[TopicPartition]
+      // 2 get state of this partition in controllerContext
       val currState = partitionState(partition)
       if (getDataResponse.resultCode == Code.OK) {
+        // 3 Parse data from get from zk
         TopicPartitionStateZNode.decode(getDataResponse.data, getDataResponse.stat) match {
+          // can get leaderIsrAndControllerEpoch
           case Some(leaderIsrAndControllerEpoch) =>
+            // if controller_epoch in zk node > controllerContext.epoch, means this Partition Leader Elect have done by other new controller
+            // Terminate this election
             if (leaderIsrAndControllerEpoch.controllerEpoch > controllerContext.epoch) {
               val failMsg = s"Aborted leader election for partition $partition since the LeaderAndIsr path was " +
                 s"already written by another controller. This probably means that the current controller $controllerId went through " +
                 s"a soft failure and another controller was elected with epoch ${leaderIsrAndControllerEpoch.controllerEpoch}."
+              // put this partition to failedElections
               failedElections.put(partition, Left(new StateChangeFailedException(failMsg)))
             } else {
+              // put this partition to validLeaderAndIsrs
               validLeaderAndIsrs += partition -> leaderIsrAndControllerEpoch.leaderAndIsr
             }
-
+          // get nothing
           case None =>
             val exception = new StateChangeFailedException(s"LeaderAndIsr information doesn't exist for partition $partition in $currState state")
             failedElections.put(partition, Left(exception))
         }
-
+      // other case, put this partition to failedElections
       } else if (getDataResponse.resultCode == Code.NONODE) {
         val exception = new StateChangeFailedException(s"LeaderAndIsr information doesn't exist for partition $partition in $currState state")
         failedElections.put(partition, Left(exception))
@@ -403,12 +478,14 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         failedElections.put(partition, Left(getDataResponse.resultException.get))
       }
     }
-
+    // nothing Partition can elect Leader , return directly
     if (validLeaderAndIsrs.isEmpty) {
       return (failedElections.toMap, Seq.empty)
     }
 
+    // ============================ b. Start electing Leader ===================================
     val (partitionsWithoutLeaders, partitionsWithLeaders) = partitionLeaderElectionStrategy match {
+      // case1: Leader election triggered by Leader Replica offline
       case OfflinePartitionLeaderElectionStrategy(allowUnclean) =>
         val partitionsWithUncleanLeaderElectionState = collectUncleanLeaderElectionState(
           validLeaderAndIsrs,
@@ -420,27 +497,47 @@ class ZkPartitionStateMachine(config: KafkaConfig,
           partitionsWithUncleanLeaderElectionState
         ).partition(_.leaderAndIsr.isEmpty)
 
+      // case2: Leader election triggered by reassign Partition
       case ReassignPartitionLeaderElectionStrategy =>
         leaderForReassign(controllerContext, validLeaderAndIsrs).partition(_.leaderAndIsr.isEmpty)
+
+      // case3: Leader election triggered by Preferred Replica
       case PreferredReplicaPartitionLeaderElectionStrategy =>
         leaderForPreferredReplica(controllerContext, validLeaderAndIsrs).partition(_.leaderAndIsr.isEmpty)
+
+      // case4: Leader election triggered by Controller Shutdown
       case ControlledShutdownPartitionLeaderElectionStrategy =>
         leaderForControlledShutdown(controllerContext, validLeaderAndIsrs).partition(_.leaderAndIsr.isEmpty)
     }
+
+    // ============================ c. update metadata ===================================
+    // 1. handle partitionsWithoutLeaders
     partitionsWithoutLeaders.foreach { electionResult =>
       val partition = electionResult.topicPartition
       val failMsg = s"Failed to elect leader for partition $partition under strategy $partitionLeaderElectionStrategy"
+      // add this Partition to "fail sets"
       failedElections.put(partition, Left(new StateChangeFailedException(failMsg)))
     }
+
+    // 2. get data from above partitionsWithLeaders
+    // AR List
     val recipientsPerPartition = partitionsWithLeaders.map(result => result.topicPartition -> result.liveReplicas).toMap
+    // ISR List
     val adjustedLeaderAndIsrs = partitionsWithLeaders.map(result => result.topicPartition -> result.leaderAndIsr.get).toMap
+
+    // 3. use [new Leader] + [new ISR] to update "${TopicPartitionZNode.path(partition)}/state" Node in zk
     val UpdateLeaderAndIsrResult(finishedUpdates, updatesToRetry) = zkClient.updateLeaderAndIsr(
       adjustedLeaderAndIsrs, controllerContext.epoch, controllerContext.epochZkVersion)
+
+    // 4. parse finishedUpdates
     finishedUpdates.forKeyValue { (partition, result) =>
       result.foreach { leaderAndIsr =>
+        // 4.1 get replicaAssignment from controllerContext
         val replicaAssignment = controllerContext.partitionFullReplicaAssignment(partition)
+        // 4.2 init LeaderAndIsr Request, and add this request to controller "Collection of requests to be sent"
         val leaderIsrAndControllerEpoch = LeaderIsrAndControllerEpoch(leaderAndIsr, controllerContext.epoch)
         controllerContext.putPartitionLeadershipInfo(partition, leaderIsrAndControllerEpoch)
+        // 4.3 add LeaderAndIsr Request for Brokers
         controllerBrokerRequestBatch.addLeaderAndIsrRequestForBrokers(recipientsPerPartition(partition), partition,
           leaderIsrAndControllerEpoch, replicaAssignment, isNew = false)
       }
@@ -452,7 +549,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
           s"Attempted to write state ${adjustedLeaderAndIsrs(partition)}, but failed with bad ZK version. This will be retried.")
       }
     }
-
+    // ============================ d. return ===================================
     (finishedUpdates ++ failedElections, updatesToRetry)
   }
 
@@ -529,8 +626,11 @@ class ZkPartitionStateMachine(config: KafkaConfig,
 }
 
 object PartitionLeaderElectionAlgorithms {
+  // Leader Election Strategy1
   def offlinePartitionLeaderElection(assignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int], uncleanLeaderElectionEnabled: Boolean, controllerContext: ControllerContext): Option[Int] = {
+    // first [ live and inISR ] Replica
     assignment.find(id => liveReplicas.contains(id) && isr.contains(id)).orElse {
+      // if allow unclean Leader Election: only need choose [ live ] Replica (not require in ISR)
       if (uncleanLeaderElectionEnabled) {
         val leaderOpt = assignment.find(liveReplicas.contains)
         if (leaderOpt.isDefined)
@@ -541,28 +641,37 @@ object PartitionLeaderElectionAlgorithms {
       }
     }
   }
-
+  // Leader Election Strategy2
   def reassignPartitionLeaderElection(reassignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int]): Option[Int] = {
+    // find first [ live and inISR ] Replica in "reassignment"
     reassignment.find(id => liveReplicas.contains(id) && isr.contains(id))
   }
-
+  // Leader Election Strategy3
   def preferredReplicaPartitionLeaderElection(assignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int]): Option[Int] = {
+    // find first [ live and inISR ] Replica in "assignment"
     assignment.headOption.filter(id => liveReplicas.contains(id) && isr.contains(id))
   }
-
+  // Leader Election Strategy4
   def controlledShutdownPartitionLeaderElection(assignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int], shuttingDownBrokers: Set[Int]): Option[Int] = {
+    // find first [ live and inISR and not in shuttingDownBrokers ] Replica in "assignment"
     assignment.find(id => liveReplicas.contains(id) && isr.contains(id) && !shuttingDownBrokers.contains(id))
   }
 }
 
 sealed trait PartitionLeaderElectionStrategy
+// Leader election triggered by Leader Replica offline
 final case class OfflinePartitionLeaderElectionStrategy(allowUnclean: Boolean) extends PartitionLeaderElectionStrategy
+// Leader election triggered by reassign Partition
 final case object ReassignPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
+// Leader election triggered by Preferred Replica
 final case object PreferredReplicaPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
+// Leader election triggered by Controller Shutdown
 final case object ControlledShutdownPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
 
 sealed trait PartitionState {
+  // use Byte to represent state
   def state: Byte
+  // define valid Previous States
   def validPreviousStates: Set[PartitionState]
 }
 
