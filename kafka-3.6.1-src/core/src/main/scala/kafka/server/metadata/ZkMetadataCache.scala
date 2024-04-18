@@ -354,10 +354,12 @@ class ZkMetadataCache(
   // if the leader is known but corresponding node with the listener name is not available, return Some(NO_NODE)
   def getPartitionLeaderEndpoint(topic: String, partitionId: Int, listenerName: ListenerName): Option[Node] = {
     val snapshot = metadataSnapshot
+    // get the Partitions of Topic
     snapshot.partitionStates.get(topic).flatMap(_.get(partitionId)) map { partitionInfo =>
       val leaderId = partitionInfo.leader
-
+      // get the BrokerID of Leader Replica of specific partition
       snapshot.aliveNodes.get(leaderId) match {
+        // if get success, return listenerName and Node info
         case Some(nodeMap) =>
           nodeMap.getOrElse(listenerName, Node.noNode)
         case None =>
@@ -432,6 +434,7 @@ class ZkMetadataCache(
   // This method returns the deleted TopicPartitions received from UpdateMetadataRequest
   def updateMetadata(correlationId: Int, updateMetadataRequest: UpdateMetadataRequest): Seq[TopicPartition] = {
     inWriteLock(partitionMetadataLock) {
+      // zk, raft related adaptations
       if (
         updateMetadataRequest.isKRaftController &&
         updateMetadataRequest.updateType() == AbstractControlRequest.Type.FULL
@@ -451,9 +454,11 @@ class ZkMetadataCache(
           }
         }
       }
-
+      // 1. create key variables to store info
       val aliveBrokers = new mutable.LongMap[Broker](metadataSnapshot.aliveBrokers.size)
       val aliveNodes = new mutable.LongMap[collection.Map[ListenerName, Node]](metadataSnapshot.aliveNodes.size)
+
+      // 2. get Broker ID of current Controller from UpdateMetadataRequest
       val controllerIdOpt: Option[CachedControllerId] = updateMetadataRequest.controllerId match {
         case id if id < 0 => None
         case id =>
@@ -463,6 +468,7 @@ class ZkMetadataCache(
             Some(ZkCachedControllerId(id))
       }
 
+      // 3. traverse all liveBrokers in updateMetadataRequest
       updateMetadataRequest.liveBrokers.forEach { broker =>
         // `aliveNodes` is a hot path for metadata requests for large clusters, so we use java.util.HashMap which
         // is a bit faster than scala.collection.mutable.HashMap. When we drop support for Scala 2.10, we could
@@ -477,12 +483,15 @@ class ZkMetadataCache(
         aliveBrokers(broker.id) = Broker(broker.id, endPoints, Option(broker.rack))
         aliveNodes(broker.id) = nodes.asScala
       }
+
+      // 4. parse current broker <listenerName, Node> from aliveNodes
       aliveNodes.get(brokerId).foreach { listenerMap =>
         val listeners = listenerMap.keySet
         if (!aliveNodes.values.forall(_.keySet == listeners))
           error(s"Listeners are not identical across brokers: $aliveNodes")
       }
 
+      // 5. get all topicState info from updateMetadataRequest
       val topicIds = mutable.Map.empty[String, Uuid]
       topicIds ++= metadataSnapshot.topicIds
       val (newTopicIds, newZeroIds) = updateMetadataRequest.topicStates().asScala
@@ -491,6 +500,7 @@ class ZkMetadataCache(
       newZeroIds.foreach { case (zeroIdTopic, _) => topicIds.remove(zeroIdTopic) }
       topicIds ++= newTopicIds.toMap
 
+      // 6. handle Partitions
       val deletedPartitions = new mutable.ArrayBuffer[TopicPartition]
       if (!updateMetadataRequest.partitionStates.iterator.hasNext) {
         metadataSnapshot = MetadataSnapshot(metadataSnapshot.partitionStates, topicIds.toMap,
