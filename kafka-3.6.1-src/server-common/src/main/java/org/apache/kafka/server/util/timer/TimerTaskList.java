@@ -32,6 +32,7 @@ class TimerTaskList implements Delayed {
     // TimerTaskList forms a doubly linked cyclic list using a dummy root entry
     // root.next points to the head
     // root.prev points to the tail
+    // o(1) to add and delete
     private final TimerTaskEntry root;
 
     TimerTaskList(
@@ -60,33 +61,32 @@ class TimerTaskList implements Delayed {
         return expiration.get();
     }
 
-    public synchronized void foreach(Consumer<TimerTask> f) {
-        TimerTaskEntry entry = root.next;
-        while (entry != root) {
-            TimerTaskEntry nextEntry = entry.next;
-            if (!entry.cancelled()) f.accept(entry.timerTask);
-            entry = nextEntry;
-        }
-    }
-
+    /**
+     * try to add TimerTaskEntry to TimerTaskList
+     * @param timerTaskEntry
+     */
     public void add(TimerTaskEntry timerTaskEntry) {
         boolean done = false;
         while (!done) {
+            // 1.
             // Remove the timer task entry if it is already in any other list
             // We do this outside of the sync block below to avoid deadlocking.
             // We may retry until timerTaskEntry.list becomes null.
             timerTaskEntry.remove();
 
+            // 2. Doubly linked list insert tail operation
             synchronized (this) {
                 synchronized (timerTaskEntry) {
                     if (timerTaskEntry.list == null) {
-                        // put the timer task entry to the end of the list. (root.prev points to the tail entry)
+                        // 2.1 put the timer task entry to the end of the list. (root.prev points to the tail entry)
                         TimerTaskEntry tail = root.prev;
                         timerTaskEntry.next = root;
                         timerTaskEntry.prev = tail;
                         timerTaskEntry.list = this;
                         tail.next = timerTaskEntry;
                         root.prev = timerTaskEntry;
+
+                        // 2.2 update taskCounter of this TimerTaskList
                         taskCounter.incrementAndGet();
                         done = true;
                     }
@@ -95,6 +95,10 @@ class TimerTaskList implements Delayed {
         }
     }
 
+    /**
+     * try to remove TimerTaskEntry from TimerTaskList
+     * @param timerTaskEntry
+     */
     public synchronized void remove(TimerTaskEntry timerTaskEntry) {
         synchronized (timerTaskEntry) {
             if (timerTaskEntry.list == this) {
@@ -108,6 +112,10 @@ class TimerTaskList implements Delayed {
         }
     }
 
+    /**
+     * do "f" for each TimerTaskEntry in TimerTaskList and remove
+     * @param f
+     */
     public synchronized void flush(Consumer<TimerTaskEntry> f) {
         TimerTaskEntry head = root.next;
         while (head != root) {
@@ -116,6 +124,19 @@ class TimerTaskList implements Delayed {
             head = root.next;
         }
         expiration.set(-1L);
+    }
+
+    /**
+     * do "f" for each TimerTaskEntry in TimerTaskList
+     * @param f
+     */
+    public synchronized void foreach(Consumer<TimerTask> f) {
+        TimerTaskEntry entry = root.next;
+        while (entry != root) {
+            TimerTaskEntry nextEntry = entry.next;
+            if (!entry.cancelled()) f.accept(entry.timerTask);
+            entry = nextEntry;
+        }
     }
 
     @Override

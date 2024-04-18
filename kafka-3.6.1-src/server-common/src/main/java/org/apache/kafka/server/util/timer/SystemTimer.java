@@ -28,9 +28,13 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class SystemTimer implements Timer {
     // timeout timer
+    // Single Thread pool to do TimerTask
     private final ExecutorService taskExecutor;
+    // queue save all TimerTaskList
     private final DelayQueue<TimerTaskList> delayQueue;
+    // the sum of all TimerTasks
     private final AtomicInteger taskCounter;
+    // TimingWheel
     private final TimingWheel timingWheel;
 
     // Locks used to protect data structures while ticking
@@ -62,10 +66,13 @@ public class SystemTimer implements Timer {
     }
 
     public void add(TimerTask timerTask) {
+        // 1. get readLock first
         readLock.lock();
         try {
+            // 2. call addTimerTaskEntry() to add TimerTask to TimingWheel
             addTimerTaskEntry(new TimerTaskEntry(timerTask, timerTask.delayMs + Time.SYSTEM.hiResClockMs()));
         } finally {
+            // 3. release readLock
             readLock.unlock();
         }
     }
@@ -74,6 +81,7 @@ public class SystemTimer implements Timer {
         if (!timingWheel.add(timerTaskEntry)) {
             // Already expired or cancelled
             if (!timerTaskEntry.cancelled()) {
+                // add timerTask to ExecutorService
                 taskExecutor.submit(timerTaskEntry.timerTask);
             }
         }
@@ -89,8 +97,11 @@ public class SystemTimer implements Timer {
             writeLock.lock();
             try {
                 while (bucket != null) {
+                    // only update currentTimeMs for TimingWheel
                     timingWheel.advanceClock(bucket.getExpiration());
+                    // get all TimerTaskEntries of this bucket and do "addTimerTaskEntry" for each TimerTaskEntry
                     bucket.flush(this::addTimerTaskEntry);
+                    // get next bucket
                     bucket = delayQueue.poll();
                 }
             } finally {

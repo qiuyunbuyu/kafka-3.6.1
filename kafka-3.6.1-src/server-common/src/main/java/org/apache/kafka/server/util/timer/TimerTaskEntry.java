@@ -17,10 +17,15 @@
 package org.apache.kafka.server.util.timer;
 
 public class TimerTaskEntry {
-    public final TimerTask timerTask;
     public final long expirationMs;
     volatile TimerTaskList list;
+
+    // The structure of a doubly linked list
+    // "data"
+    public final TimerTask timerTask;
+    // next "pointer"
     TimerTaskEntry next;
+    // pre "pointer"
     TimerTaskEntry prev;
 
     public TimerTaskEntry(
@@ -37,10 +42,12 @@ public class TimerTaskEntry {
         }
     }
 
+    // Determine whether timerTask has been canceled
     public boolean cancelled() {
         return timerTask.getTimerTaskEntry() != this;
     }
 
+    // call TimerTaskList to remove "TimerTaskEntrySelf"
     public void remove() {
         TimerTaskList currentList = list;
         // If remove is called when another thread is moving the entry from a task entry list to another,

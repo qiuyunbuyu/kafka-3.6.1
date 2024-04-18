@@ -98,7 +98,7 @@ public class TimingWheel {
     private final long tickMs;
     private final long startMs;
     private final int wheelSize;
-    private final AtomicInteger taskCounter;
+    private final AtomicInteger taskCounter; // the sum of tasks in this flow TimingWheel
     private final DelayQueue<TimerTaskList> queue;
     private final long interval;
     private final TimerTaskList[] buckets;
@@ -130,35 +130,48 @@ public class TimingWheel {
         }
     }
 
+    /**
+     * try to add Overflow TimerWheel
+     */
     private synchronized void addOverflowWheel() {
         if (overflowWheel == null) {
+            // The properties of Overflow TimerWheel are closely related to the properties of Lowerflow TimerWheel.
             overflowWheel = new TimingWheel(
-                interval,
-                wheelSize,
-                currentTimeMs,
+                interval, // Overflow TimerWheel "tickMs" = Lowerflow TimerWheel "interval"
+                wheelSize, // Overflow TimerWheel "wheelSize" = Lowerflow TimerWheel "wheelSize"
+                currentTimeMs, // Overflow TimerWheel "startMs" = Lowerflow TimerWheel "currentTimeMs"
                 taskCounter,
                 queue
             );
         }
     }
 
+    /**
+     * try to add timerTaskEntry to TimerWheel
+     * @param timerTaskEntry
+     * @return
+     */
     public boolean add(TimerTaskEntry timerTaskEntry) {
+        // 1. Get the expiration timestamp of the timerTaskEntry
         long expiration = timerTaskEntry.expirationMs;
 
+        // 2. TimerTaskEntry situation determination
         if (timerTaskEntry.cancelled()) {
-            // Cancelled
+            // 2.1 Cancelled
             return false;
         } else if (expiration < currentTimeMs + tickMs) {
-            // Already expired
+            // 2.2 Already expired
             return false;
         } else if (expiration < currentTimeMs + interval) {
-            // Put in its own bucket
+            // 2.3 Current floor can handle this TimerTaskEntry
+
+            // a. Put in its own bucket
             long virtualId = expiration / tickMs;
             int bucketId = (int) (virtualId % (long) wheelSize);
             TimerTaskList bucket = buckets[bucketId];
             bucket.add(timerTaskEntry);
 
-            // Set the bucket expiration time
+            // b. Set the bucket expiration time
             if (bucket.setExpiration(virtualId * tickMs)) {
                 // The bucket needs to be enqueued because it was an expired bucket
                 // We only need to enqueue the bucket when its expiration time has changed, i.e. the wheel has advanced
@@ -170,12 +183,20 @@ public class TimingWheel {
 
             return true;
         } else {
-            // Out of the interval. Put it into the parent timer
+            // 2.4 Out of the interval. Current floor can not handle this TimerTaskEntry, Put it into the parent timer
+
+            // a. if overflowWheel == null, try to create
             if (overflowWheel == null) addOverflowWheel();
+
+            // b. parent timer try to add
             return overflowWheel.add(timerTaskEntry);
         }
     }
 
+    /**
+     * try to advance the clock of the all flow Timer wheel
+     * @param timeMs
+     */
     public void advanceClock(long timeMs) {
         if (timeMs >= currentTimeMs + tickMs) {
             currentTimeMs = timeMs - (timeMs % tickMs);

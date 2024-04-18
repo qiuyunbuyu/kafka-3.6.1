@@ -25,6 +25,7 @@ public abstract class TimerTask implements Runnable {
         this.delayMs = delayMs;
     }
 
+    // cancel TimerTask, remove from "Doubly linked list"
     public void cancel() {
         synchronized (this) {
             if (timerTaskEntry != null) timerTaskEntry.remove();
@@ -32,6 +33,7 @@ public abstract class TimerTask implements Runnable {
         }
     }
 
+    // attach TimerTask to TimerTaskEntry
     void setTimerTaskEntry(TimerTaskEntry entry) {
         synchronized (this) {
             // if this timerTask is already held by an existing timer task entry,

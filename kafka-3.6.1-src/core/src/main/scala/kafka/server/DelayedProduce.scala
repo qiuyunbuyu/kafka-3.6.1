@@ -118,6 +118,9 @@ class DelayedProduce(delayMs: Long,
       false
   }
 
+  /**
+   * Execute when task times out
+   */
   override def onExpiration(): Unit = {
     produceMetadata.produceStatus.forKeyValue { (topicPartition, status) =>
       if (status.acksPending) {
