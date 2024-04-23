@@ -107,6 +107,7 @@ public class PlaintextTransportLayer implements TransportLayer {
     */
     @Override
     public int read(ByteBuffer dst) throws IOException {
+        // call Native socketChannel ability
         return socketChannel.read(dst);
     }
 
