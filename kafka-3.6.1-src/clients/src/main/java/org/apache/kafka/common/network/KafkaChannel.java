@@ -401,6 +401,7 @@ public class KafkaChannel implements AutoCloseable {
             // in maybeCompleteSend() can know that send will be set null when wrote completed
             // so when send != null means " not wrote completed "
             throw new IllegalStateException("Attempt to begin a send operation with prior send operation still in progress, connection id is " + id);
+        // binding data
         this.send = send;
         // add attention to the write event
         this.transportLayer.addInterestOps(SelectionKey.OP_WRITE);

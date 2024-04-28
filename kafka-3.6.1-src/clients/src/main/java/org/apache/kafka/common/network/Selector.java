@@ -269,10 +269,10 @@ public class Selector implements Selectable, AutoCloseable {
             configureSocketChannel(socketChannel, sendBufferSize, receiveBufferSize);
             // connect broker
             boolean connected = doConnect(socketChannel, address);
-            // channel register OP_CONNECT on selector <-> Contact the finishConnect() method of KafkaChannel
+            // * channel register OP_CONNECT on selector <-> Contact the finishConnect() method of KafkaChannel
             key = registerChannel(id, socketChannel, SelectionKey.OP_CONNECT);
 
-            // if connected immediately
+            // if connected immediately, if not connected immediately, later KSelector.finishConnect() will determine whether to connect
             if (connected) {
                 // OP_CONNECT won't trigger for immediately connected channels
                 log.debug("Immediately connected to node {}", id);
@@ -433,7 +433,7 @@ public class Selector implements Selectable, AutoCloseable {
     /**
      * Queue the given request for sending in the subsequent {@link #poll(long)} calls
      * Ready to send
-     * @param send The request to send
+     * @param send The request to send: selector.send(new NetworkSend(clientRequest.destination(), send));
      */
     public void send(NetworkSend send) {
         // get destinationId
