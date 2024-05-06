@@ -454,7 +454,7 @@ public class NetworkClient implements KafkaClient {
      * Are we connected and ready and able to send more requests to the given connection?
      * Condition 1: node connect is ready
      * Condition 2: node channel is ready
-     * Condition 2: inFlightRequests can add more request
+     * Condition 3: inFlightRequests can add more request
      * @param node The node
      * @param now the current timestamp
      */
@@ -574,22 +574,28 @@ public class NetworkClient implements KafkaClient {
             completeResponses(responses);
             return responses;
         }
+        // Part 1: metadata handle
         // determine whether meta needs to be updated
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
+
+        // Part 2: Do I/O. Reads, writes, connection establishment, etc.
         try {
-            // Call selector to perform network IO, where reading and writing actually occur
+            // **Call selector to perform network IO, where reading and writing actually occur
             this.selector.poll(Utils.min(timeout, metadataTimeout, defaultRequestTimeoutMs));
         } catch (IOException e) {
             log.error("Unexpected error during I/O", e);
         }
 
-        // process completed actions
         long updatedNow = this.time.milliseconds();
         List<ClientResponse> responses = new ArrayList<>();
+
+        // part3: process completed actions
         // Completed Sends: handle [List<NetworkSend> completedSends]
         handleCompletedSends(responses, updatedNow);
         // Completed Receives: handle [LinkedHashMap<String, NetworkReceive> completedReceives]
         handleCompletedReceives(responses, updatedNow);
+
+        // part4: process connection state management related
         // Disconnects
         handleDisconnections(responses, updatedNow);
         // Connects
@@ -598,9 +604,10 @@ public class NetworkClient implements KafkaClient {
         handleInitiateApiVersionRequests(updatedNow);
         // TimedOut Connections
         handleTimedOutConnections(responses, updatedNow);
-        // TimedOut Requests
+        // TimedOut Requests in inFlightRequests
         handleTimedOutRequests(responses, updatedNow);
-        // handle callback
+
+        // part5: handle RequestCompletionHandler callback
         completeResponses(responses);
 
         return responses;
@@ -805,7 +812,7 @@ public class NetworkClient implements KafkaClient {
      * Post process disconnection of a node
      *
      * @param responses The list of responses to update
-     * @param nodeId Id of the node to be disconnected
+     * @param nodeId Id of the node to be disc2onnected
      * @param now The current time
      * @param disconnectState The state of the disconnected channel
      * @param timedOut {@code true} if the connection is disconnected because of a timeout (request or connection)
@@ -851,6 +858,7 @@ public class NetworkClient implements KafkaClient {
      * @param now The current time
      */
     private void handleTimedOutRequests(List<ClientResponse> responses, long now) {
+        // Returns a list of nodes with pending in-flight request, that need to be timed out
         List<String> nodeIds = this.inFlightRequests.nodesWithTimedOutRequests(now);
         for (String nodeId : nodeIds) {
             // close connection to the node
@@ -882,6 +890,7 @@ public class NetworkClient implements KafkaClient {
                 "The timeout value is {} ms.",
                 nodeId,
                 connectionStates.connectionSetupTimeoutMs(nodeId));
+            // will last call processDisconnection()
             processTimeoutDisconnection(responses, nodeId, now);
         }
     }
@@ -899,7 +908,7 @@ public class NetworkClient implements KafkaClient {
         // Determine whether a response is required
             if (!request.expectResponse) {
                 this.inFlightRequests.completeLastSent(send.destinationId());
-                // if no need response
+                // if no need response, construct "null" callback
                 responses.add(request.completed(null, now));
             }
         }
@@ -950,9 +959,10 @@ public class NetworkClient implements KafkaClient {
                 // handle metadata response
                 metadataUpdater.handleSuccessfulResponse(req.header, now, (MetadataResponse) response);
             else if (req.isInternalRequest && response instanceof ApiVersionsResponse)
-                // handle internal response
+                // handle ApiVersion response
                 handleApiVersionsResponse(responses, req, now, (ApiVersionsResponse) response);
             else
+                // handle common response
                 responses.add(req.completed(response, now));
         }
     }
@@ -961,9 +971,11 @@ public class NetworkClient implements KafkaClient {
                                            InFlightRequest req, long now, ApiVersionsResponse apiVersionsResponse) {
         final String node = req.destination;
         if (apiVersionsResponse.data().errorCode() != Errors.NONE.code()) {
+            // Exception response
             if (req.request.version() == 0 || apiVersionsResponse.data().errorCode() != Errors.UNSUPPORTED_VERSION.code()) {
                 log.warn("Received error {} from node {} when making an ApiVersionsRequest with correlation id {}. Disconnecting.",
                         Errors.forCode(apiVersionsResponse.data().errorCode()), node, req.header.correlationId());
+                // Connection close processing
                 this.selector.close(node);
                 processDisconnection(responses, node, now, ChannelState.LOCAL_CLOSE);
             } else {
@@ -981,11 +993,15 @@ public class NetworkClient implements KafkaClient {
             }
             return;
         }
+        // Update the NetworkClient.apiVersions collection (which maintains the mapping relationship between NodeId → ApiKey → ApiVersion)
+        // When the NetworkClient.doSend() method creates a request, apiVersions will be used to determine the protocol versions of different Nodes to create requests of the same version.
         NodeApiVersions nodeVersionInfo = new NodeApiVersions(
             apiVersionsResponse.data().apiKeys(),
             apiVersionsResponse.data().supportedFeatures(),
             apiVersionsResponse.data().zkMigrationReady());
+        // update version
         apiVersions.update(node, nodeVersionInfo);
+        // change connection state to ready
         this.connectionStates.ready(node);
         log.debug("Node {} has finalized features epoch: {}, finalized features: {}, supported features: {}, ZK migration ready: {}, API versions: {}.",
                 node, apiVersionsResponse.data().finalizedFeaturesEpoch(), apiVersionsResponse.data().finalizedFeatures(),
@@ -1000,6 +1016,7 @@ public class NetworkClient implements KafkaClient {
      */
     private void handleDisconnections(List<ClientResponse> responses, long now) {
         for (Map.Entry<String, ChannelState> entry : this.selector.disconnected().entrySet()) {
+            // get target broker node
             String node = entry.getKey();
             log.info("Node {} disconnected.", node);
             processDisconnection(responses, node, now, entry.getValue());
@@ -1030,6 +1047,7 @@ public class NetworkClient implements KafkaClient {
         while (iter.hasNext()) {
             Map.Entry<String, ApiVersionsRequest.Builder> entry = iter.next();
             String node = entry.getKey();
+            // Determine whether the request can be sent
             if (selector.isChannelReady(node) && inFlightRequests.canSendMore(node)) {
                 log.debug("Initiating API versions fetch from node {}.", node);
                 // We transition the connection to the CHECKING_API_VERSIONS state only when
@@ -1037,8 +1055,10 @@ public class NetworkClient implements KafkaClient {
                 // could remain in the CHECKING_API_VERSIONS state forever if the channel does
                 // not before ready.
                 this.connectionStates.checkingApiVersions(node);
+                // construct Request
                 ApiVersionsRequest.Builder apiVersionRequestBuilder = entry.getValue();
                 ClientRequest clientRequest = newClientRequest(node, apiVersionRequestBuilder, now, true);
+                // try to send
                 doSend(clientRequest, true, now);
                 iter.remove();
             }

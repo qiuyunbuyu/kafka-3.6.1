@@ -612,7 +612,7 @@ public class Sender implements Runnable {
         } else {
             // normal response
             log.trace("Received produce response from node {} with correlation id {}", response.destination(), correlationId);
-            // if we have a response, parse it
+            // if we have a response, means ack != 0, parse it
             if (response.hasResponse()) {
                 // Sender should exercise PartitionProduceResponse rather than ProduceResponse.PartitionResponse
                 // https://issues.apache.org/jira/browse/KAFKA-10696
@@ -670,6 +670,7 @@ public class Sender implements Runnable {
             maybeRemoveAndDeallocateBatch(batch);
             this.sensors.recordBatchSplit();
         } else if (error != Errors.NONE) {
+            // can retry Exception
             if (canRetry(batch, response, now)) {
                 log.warn(
                     "Got error produce response with correlation id {} on topic-partition {}, retrying ({} attempts left). Error: {}",
@@ -732,8 +733,9 @@ public class Sender implements Runnable {
         if (transactionManager != null) {
             transactionManager.handleCompletedBatch(batch, response);
         }
-
+        // do producer callback
         if (batch.complete(response.baseOffset, response.logAppendTime)) {
+            // try to release batch
             maybeRemoveAndDeallocateBatch(batch);
         }
     }
@@ -899,7 +901,7 @@ public class Sender implements Runnable {
                         .setTimeoutMs(timeout)
                         .setTransactionalId(transactionalId)
                         .setTopicData(tpd));
-        // create callback
+        // create RequestCompletionHandler callback
         RequestCompletionHandler callback = response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
 
         // create ClientRequest, ProduceRequest contained in ClientRequest and N batch

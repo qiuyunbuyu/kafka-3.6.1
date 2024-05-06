@@ -108,7 +108,7 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
 
         return AbstractResponse.parseResponse(apiKey, buffer, apiVersion);
     }
-
+    // Parse out the corresponding type of response
     public static AbstractResponse parseResponse(ApiKeys apiKey, ByteBuffer responseBuffer, short version) {
         switch (apiKey) {
             case PRODUCE:

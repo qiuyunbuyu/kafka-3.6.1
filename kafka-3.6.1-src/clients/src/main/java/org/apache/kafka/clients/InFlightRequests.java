@@ -160,6 +160,7 @@ final class InFlightRequests {
 
     private Boolean hasExpiredRequest(long now, Deque<NetworkClient.InFlightRequest> deque) {
         for (NetworkClient.InFlightRequest request : deque) {
+            // If there is a timed-out request, the connection to the broker is considered to have timed out.
             if (request.timeElapsedSinceSendMs(now) > request.requestTimeoutMs)
                 return true;
         }
