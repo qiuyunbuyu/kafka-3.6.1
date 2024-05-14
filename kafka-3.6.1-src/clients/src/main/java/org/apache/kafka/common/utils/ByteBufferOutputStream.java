@@ -114,6 +114,7 @@ public class ByteBufferOutputStream extends OutputStream {
      * @param remainingBytesRequired The number of bytes required
      */
     public void ensureRemaining(int remainingBytesRequired) {
+        // Expand capacity when "required" is greater than "remaining"
         if (remainingBytesRequired > buffer.remaining())
             expandBuffer(remainingBytesRequired);
     }

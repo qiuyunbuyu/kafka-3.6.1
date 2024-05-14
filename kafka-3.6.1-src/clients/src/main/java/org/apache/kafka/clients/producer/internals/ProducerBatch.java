@@ -63,13 +63,13 @@ public final class ProducerBatch {
     private enum FinalState { ABORTED, FAILED, SUCCEEDED }
     // ProducerBatch createdMs
     final long createdMs;
-    // ProducerBatch <-> TopicPartition [N:1]
+    // *** ProducerBatch <-> TopicPartition [N:1]
     final TopicPartition topicPartition;
-    // The future of the request result
+    // *** The future of the request result
     final ProduceRequestResult produceFuture;
-    // list to save Callback and FutureRecordMetadata
+    // *** list to save Callback and FutureRecordMetadata
     private final List<Thunk> thunks = new ArrayList<>();
-    // encapsulation MemoryRecordsBuilder to save records ByteBuffer
+    // *** encapsulation MemoryRecordsBuilder to save records ByteBuffer
     private final MemoryRecordsBuilder recordsBuilder;
     // ProducerBatch number of failed retries
     private final AtomicInteger attempts = new AtomicInteger(0);
@@ -85,7 +85,7 @@ public final class ProducerBatch {
     private long lastAttemptMs;
     // last Append Ms(update when append record to ProducerBatch)
     private long lastAppendTime;
-    // The time for the sub-thread(sender) to pull the ProducerBatch
+    // ** The time for the sub-thread(sender) to pull the ProducerBatch
     private long drainedMs;
     // Determine whether retrying now
     private boolean retry;

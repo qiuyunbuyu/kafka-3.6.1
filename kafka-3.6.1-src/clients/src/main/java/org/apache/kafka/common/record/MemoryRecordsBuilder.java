@@ -56,6 +56,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     private final TimestampType timestampType;
     // compression Type
     private final CompressionType compressionType;
+    // **
     // Used to hold a reference to the underlying ByteBuffer so that we can write the record batch header and access
     // the written bytes. *ByteBufferOutputStream allocates a new ByteBuffer if the existing one is not large enough*,
     // so it's not safe to hold a direct reference to the underlying ByteBuffer.
@@ -79,7 +80,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     // Use a conservative estimate of the compression ratio. The producer overrides this using statistics
     // from previous batches before appending any records.
     private float estimatedCompressionRatio = 1.0F;
-    // Used to append records, may compress data on the fly
+    // ** Used to append records, may compress data on the fly
     private DataOutputStream appendStream;
     // is Transactional
     private boolean isTransactional;
@@ -154,7 +155,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         this.writeLimit = writeLimit;
         // initial Position [ buffer.position() ]
         this.initialPosition = bufferStream.position();
-        // calculate Header size based on different versions
+        // calculate Header size based on different versions, Return the size of the record batch header.
         this.batchHeaderSizeInBytes = AbstractRecords.recordBatchHeaderSizeInBytes(magic, compressionType);
         // adjust position
         bufferStream.position(initialPosition + batchHeaderSizeInBytes);
@@ -467,12 +468,13 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             // check timestamp
             if (timestamp < 0 && timestamp != RecordBatch.NO_TIMESTAMP)
                 throw new IllegalArgumentException("Invalid negative timestamp " + timestamp);
-            // check header with magic(only v2 has header)
+            // check header with magic(** only v2 has header)
             if (magic < RecordBatch.MAGIC_VALUE_V2 && headers != null && headers.length > 0)
                 throw new IllegalArgumentException("Magic v" + magic + " does not support record headers");
             // baseTimestamp handle
             if (baseTimestamp == null)
                 baseTimestamp = timestamp;
+            // Divide version for record write
             // v2 record write
             if (magic > RecordBatch.MAGIC_VALUE_V1) {
                 appendDefaultRecord(offset, timestamp, key, value, headers);
@@ -750,7 +752,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         int offsetDelta = (int) (offset - baseOffset);
         // Calculate time[ timestamp, baseTimestamp ] difference
         long timestampDelta = timestamp - baseTimestamp;
-        // call DefaultRecord.writeTo(...) to write to appendStream and return the sizeInBytes(Message size before compression)
+        // call DefaultRecord.writeTo(...) to write to "appendStream" and return the sizeInBytes(Message size before compression)
         int sizeInBytes = DefaultRecord.writeTo(appendStream, offsetDelta, timestampDelta, key, value, headers);
         // After the message is written successfully, update the metadata of the RecordBatch
         recordWritten(offset, timestamp, sizeInBytes);
@@ -788,7 +790,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         numRecords += 1;
         // records size inBytes ( before compression )
         uncompressedRecordsSizeInBytes += size;
-        // update lastOffset
+        // update lastOffset, From this we can know that the input parameter offset represents the last offset of the "Bytbuffer" that you want to write.
         lastOffset = offset;
         // update timestamp, v0 has no timestamp
         if (magic > RecordBatch.MAGIC_VALUE_V0 && timestamp > maxTimestamp) {
@@ -846,17 +848,18 @@ public class MemoryRecordsBuilder implements AutoCloseable {
      * re-allocation in the underlying byte buffer stream.
      */
     public boolean hasRoomFor(long timestamp, ByteBuffer key, ByteBuffer value, Header[] headers) {
+        // 1.
         // case 1: appendStream state
         // case 2: estimated Bytes Written
         if (isFull())
             return false;
 
-        // We always allow at least one record to be appended (the ByteBufferOutputStream will grow as needed)
+        // 2. We always allow at least one record to be appended (the ByteBufferOutputStream will grow as needed)
         if (numRecords == 0)
             return true;
 
         final int recordSize;
-        // Estimated record size
+        // 3.1 Estimated record size
         if (magic < RecordBatch.MAGIC_VALUE_V2) {
             // v0 / v1
             recordSize = Records.LOG_OVERHEAD + LegacyRecord.recordSize(magic, key, value);
@@ -894,6 +897,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     }
 
     private long nextSequentialOffset() {
+        // lastOffset add for new Record write
         return lastOffset == null ? baseOffset : lastOffset + 1;
     }
 
