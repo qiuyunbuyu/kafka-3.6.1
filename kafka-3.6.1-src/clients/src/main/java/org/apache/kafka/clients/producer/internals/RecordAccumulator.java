@@ -72,13 +72,15 @@ public class RecordAccumulator {
     private final AtomicInteger appendsInProgress;
     // the maxsize of each ProducerBatch(ByteBuffer)
     private final int batchSize;
+    // the type of Compression
     private final CompressionType compression;
-    // How long to delay(lingerMs) before sending, if the batch is not full
+    // ** How long to delay(lingerMs) before sending, if the batch is not full
     private final int lingerMs;
     private final long retryBackoffMs;
     private final int deliveryTimeoutMs;
     private final long partitionAvailabilityTimeoutMs;  // latency threshold for marking partition temporary unavailable
     private final boolean enableAdaptivePartitioning;
+    // *
     private final BufferPool free;
     private final Time time;
     private final ApiVersions apiVersions;

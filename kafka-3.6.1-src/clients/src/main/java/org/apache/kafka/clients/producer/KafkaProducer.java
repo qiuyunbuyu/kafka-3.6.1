@@ -462,7 +462,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             this.apiVersions = new ApiVersions();
             // 11. transactionManager
             this.transactionManager = configureTransactionState(config, logContext);
-            // 12. BufferPool
+            // 12. RecordAccumulator & BufferPool
             this.totalMemorySize = config.getLong(ProducerConfig.BUFFER_MEMORY_CONFIG);
             this.accumulator = new RecordAccumulator(logContext,
                     batchSize,
