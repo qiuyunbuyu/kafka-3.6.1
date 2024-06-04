@@ -125,13 +125,17 @@ public class ConsumerNetworkClient implements Closeable {
                                               AbstractRequest.Builder<?> requestBuilder,
                                               int requestTimeoutMs) {
         long now = time.milliseconds();
+        // 1.
         RequestFutureCompletionHandler completionHandler = new RequestFutureCompletionHandler();
+        // 2.
         ClientRequest clientRequest = client.newClientRequest(node.idString(), requestBuilder, now, true,
             requestTimeoutMs, completionHandler);
+        // 3. use "unsent" to store "clientRequest" need to be sent
         unsent.put(node, clientRequest);
 
-        // wakeup the client in case it is blocking in poll so that we can send the queued request
+        // 4. wakeup the client in case it is blocking in poll so that we can send the queued request
         client.wakeup();
+        // 5.
         return completionHandler.future;
     }
 
@@ -258,7 +262,7 @@ public class ConsumerNetworkClient implements Closeable {
      * @param disableWakeup If TRUE disable triggering wake-ups
      */
     public void poll(Timer timer, PollCondition pollCondition, boolean disableWakeup) {
-        // there may be handlers which need to be invoked if we woke up the previous call to poll
+        // 1. there may be handlers which need to be invoked if we woke up the previous call to poll
         firePendingCompletedRequests();
 
         lock.lock();
@@ -266,7 +270,7 @@ public class ConsumerNetworkClient implements Closeable {
             // Handle async disconnects prior to attempting any sends
             handlePendingDisconnects();
 
-            // * [ send all the requests we can send now ]
+            // *2. [ send all the requests we can send now ]
             long pollDelayMs = trySend(timer.currentTimeMs());
 
             // check whether the poll is still needed by the caller. Note that if the expected completion
@@ -302,7 +306,7 @@ public class ConsumerNetworkClient implements Closeable {
             // fail requests that couldn't be sent if they have expired
             failExpiredRequests(timer.currentTimeMs());
 
-            // clean unsent requests collection to keep the map from growing indefinitely
+            // * clean unsent requests collection to keep the map from growing indefinitely
             unsent.clean();
         } finally {
             lock.unlock();
@@ -628,7 +632,9 @@ public class ConsumerNetworkClient implements Closeable {
 
         @Override
         public void onComplete(ClientResponse response) {
+            // update response
             this.response = response;
+            // add "self" to pendingCompletion, will call firePendingCompletedRequests() in ConsumerNetworkClient.poll()
             pendingCompletion.add(this);
         }
     }

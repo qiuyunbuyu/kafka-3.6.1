@@ -78,7 +78,7 @@ public class SubscriptionState {
         NONE,   // initial value
         AUTO_TOPICS, // specify topic and automatically assign partitions
         AUTO_PATTERN,   // Regular expression matching subscription topic and automatically assign partitions
-        USER_ASSIGNED   //
+        USER_ASSIGNED   // user use "assign(Collection<TopicPartition> partitions"
     }
 
     /* the type of subscription */
@@ -96,6 +96,7 @@ public class SubscriptionState {
     private Set<String> groupSubscription;
 
     /* the partitions that are currently assigned, note that the order of partition matters (see FetchBuilder for more details) */
+    /* "TopicPartitionState" saves the consumption status of each partition */
     private final PartitionStates<TopicPartitionState> assignment;
 
     /* Default offset reset strategy : Affects consumers’ consume position after restarting */
@@ -224,6 +225,7 @@ public class SubscriptionState {
      * whose input partitions are provided from the subscribed topics.
      */
     public synchronized boolean assignFromUser(Set<TopicPartition> partitions) {
+        // 1. set SubscriptionType-USER_ASSIGNED
         setSubscriptionType(SubscriptionType.USER_ASSIGNED);
 
         if (this.assignment.partitionSet().equals(partitions))
@@ -231,7 +233,7 @@ public class SubscriptionState {
 
         assignmentId++;
 
-        // update the subscribed topics
+        // 2. update the subscribed topics
         Set<String> manualSubscribedTopics = new HashSet<>();
         Map<TopicPartition, TopicPartitionState> partitionToState = new HashMap<>();
         for (TopicPartition partition : partitions) {
@@ -242,7 +244,7 @@ public class SubscriptionState {
 
             manualSubscribedTopics.add(partition.topic());
         }
-
+        // 3. PartitionStates save info
         this.assignment.set(partitionToState);
         return changeSubscription(manualSubscribedTopics);
     }
@@ -778,7 +780,7 @@ public class SubscriptionState {
     private static class TopicPartitionState {
 
         private FetchState fetchState;
-        private FetchPosition position; // last consumed position
+        private FetchPosition position; // last consumed position, [The starting offset for the next pull()]
 
         private Long highWatermark; // the high watermark from last fetch
         private Long logStartOffset; // the log start offset

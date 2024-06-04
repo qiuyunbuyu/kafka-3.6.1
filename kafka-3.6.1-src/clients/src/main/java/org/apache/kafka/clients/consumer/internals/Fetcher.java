@@ -84,6 +84,7 @@ public class Fetcher<K, V> extends AbstractFetch<K, V> {
                 @Override
                 public void onSuccess(ClientResponse resp) {
                     synchronized (Fetcher.this) {
+                        // Implements the core logic for a successful fetch request/response.
                         handleFetchResponse(fetchTarget, data, resp);
                     }
                 }
@@ -95,7 +96,7 @@ public class Fetcher<K, V> extends AbstractFetch<K, V> {
                     }
                 }
             };
-            // 2.5 true send ApiKeys.FETCH
+            // 2.5 true send ApiKeys.FETCH to "Send Buffer"
             final RequestFuture<ClientResponse> future = client.send(fetchTarget, request);
             future.addListener(listener);
         }

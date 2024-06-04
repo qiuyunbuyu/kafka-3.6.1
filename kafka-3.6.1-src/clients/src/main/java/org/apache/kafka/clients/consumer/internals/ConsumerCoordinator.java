@@ -485,6 +485,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         if (autoCommitEnabled)
             this.nextAutoCommitTimer.updateAndReset(autoCommitIntervalMs);
 
+        // SubscriptionState save the "assign results"
         subscriptions.assignFromSubscribed(assignedPartitions);
 
         // Add partitions that were not previously owned but are now assigned
@@ -1127,7 +1128,9 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             lookupCoordinator().addListener(new RequestFutureListener<Void>() {
                 @Override
                 public void onSuccess(Void value) {
+                    // if "FindCoordinatorRequest" success
                     pendingAsyncCommits.decrementAndGet();
+                    // do "sendOffsetCommitRequest"
                     doCommitOffsetsAsync(offsets, callback);
                     client.pollNoWakeup();
                 }
@@ -1204,8 +1207,10 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             if (coordinatorUnknownAndUnreadySync(timer)) {
                 return false;
             }
-
+            // Commit offsets for the specified list of topics and partitions.
             RequestFuture<Void> future = sendOffsetCommitRequest(offsets);
+
+            // Call NIO underlying network operations
             client.poll(future, timer);
 
             // We may have had in-flight offset commits when the synchronous commit began. If so, ensure that

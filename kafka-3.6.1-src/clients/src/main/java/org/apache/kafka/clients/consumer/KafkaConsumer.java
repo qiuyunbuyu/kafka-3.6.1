@@ -1090,19 +1090,24 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             } else if (partitions.isEmpty()) {
                 this.unsubscribe();
             } else {
+				// 1.
                 for (TopicPartition tp : partitions) {
                     String topic = (tp != null) ? tp.topic() : null;
                     if (Utils.isBlank(topic))
                         throw new IllegalArgumentException("Topic partitions to assign to cannot have null or empty topic");
                 }
+				// 2.
                 fetcher.clearBufferedDataForUnassignedPartitions(partitions);
 
-                // make sure the offsets of topic partitions the consumer is unsubscribing from
+                // 3.
+	            // make sure the offsets of topic partitions the consumer is unsubscribing from
                 // are committed since there will be no following rebalance
                 if (coordinator != null)
                     this.coordinator.maybeAutoCommitOffsetsAsync(time.milliseconds());
 
+				// 4.
                 log.info("Assigned to partition(s): {}", Utils.join(partitions, ", "));
+				// SubscriptionState to save info and update metadata
                 if (this.subscriptions.assignFromUser(new HashSet<>(partitions)))
                     metadata.requestUpdateForNewTopics();
             }
@@ -1201,10 +1206,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * @throws KafkaException if the rebalance callback throws exception
      */
     private ConsumerRecords<K, V> poll(final Timer timer, final boolean includeMetadataInTimeout) {
+		//	check1: The consumer "thread is not safe", so ensure that only one thread do "poll()" for each consumer.
         acquireAndEnsureOpen();
         try {
             this.kafkaConsumerMetrics.recordPollStart(timer.currentTimeMs());
-
+			// check2: Subscriptions Content Check
             if (this.subscriptions.hasNoSubscriptionOrUserAssignment()) {
                 throw new IllegalStateException("Consumer is not subscribed to any topics or assigned any partitions");
             }
@@ -1238,7 +1244,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                         log.trace("Returning empty records from `poll()` "
                                 + "since the consumer's position has advanced for at least one topic partition");
                     }
-
+					// *3 use "interceptors" to modify consumer records
                     return this.interceptors.onConsume(new ConsumerRecords<>(fetch.records()));
                 }
             } while (timer.notExpired());
@@ -1257,10 +1263,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
     boolean updateAssignmentMetadataIfNeeded(final Timer timer, final boolean waitForJoinGroup) {
 		// coordinator.poll: Interact with the broker side
+	    // if coordinator.poll(...) return true means "this consumer join consumer group successful
         if (coordinator != null && !coordinator.poll(timer, waitForJoinGroup)) {
             return false;
         }
-
+		// Set the fetch position to the committed position
         return updateFetchPositions(timer);
     }
 
@@ -1273,7 +1280,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 Math.min(coordinator.timeToNextPoll(timer.currentTimeMs()), timer.remainingMs());
 
         // 2. if data is available already, return it immediately
-        final Fetch<K, V> fetch = fetcher.collectFetch();
+        final Fetch<K, V> fetch = fetcher.collectFetch(); // ConcurrentLinkedQueue<CompletedFetch<K, V>>
         if (!fetch.isEmpty()) {
             return fetch;
         }
@@ -1293,7 +1300,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         log.trace("Polling for fetches with timeout {}", pollTimeout);
 
         Timer pollTimer = time.timer(pollTimeout);
-		// 4. network client send request
+		// 4. network client send request, triggering underlying NIO communication
         client.poll(pollTimer, () -> {
             // since a fetch might be completed by the background thread, we need this poll condition
             // to ensure that we do not block unnecessarily in poll()
