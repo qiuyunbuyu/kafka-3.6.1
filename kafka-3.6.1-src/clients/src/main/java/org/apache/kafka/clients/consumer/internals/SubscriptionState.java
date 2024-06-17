@@ -172,6 +172,7 @@ public class SubscriptionState {
         registerRebalanceListener(listener);
         // Automatically allocate partitions based on subscribed topics
         setSubscriptionType(SubscriptionType.AUTO_TOPICS);
+        // Determine whether the subscriptions before and after are consistent
         return changeSubscription(topics);
     }
 

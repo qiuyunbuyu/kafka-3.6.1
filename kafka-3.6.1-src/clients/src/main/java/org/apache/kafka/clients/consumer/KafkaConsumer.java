@@ -572,40 +572,51 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     final Metrics metrics;
 	// Consumer monitoring
     final KafkaConsumerMetrics kafkaConsumerMetrics;
-
+	private final Time time;
     private Logger log;
+
+	// ============================ Core Components of KafkaConsumer ============================
 	// clientID
     private final String clientId;
 	// groupId
     private final Optional<String> groupId;
+
 	// Consumer Coordinator
     private final ConsumerCoordinator coordinator;
+
+	// Deserializer attach
     private final Deserializer<K> keyDeserializer;
     private final Deserializer<V> valueDeserializer;
+
 	// message fetcher: send FetchRequest and handle FetchResponse
     private final Fetcher<K, V> fetcher;
     private final OffsetFetcher offsetFetcher;
     private final TopicMetadataFetcher topicMetadataFetcher;
+
 	// consumer interceptors
     private final ConsumerInterceptors<K, V> interceptors;
 
 	// READ_UNCOMMITTED or READ_COMMITTED
     private final IsolationLevel isolationLevel;
 
-    private final Time time;
 	// NetworkClient
     private final ConsumerNetworkClient client;
+
 	// Track the relationship between TopicPartition and offset
     private final SubscriptionState subscriptions;
+
 	// ConsumerMetadata
     private final ConsumerMetadata metadata;
+
+	// consumer allocator list: Partition allocation strategy
+	private final List<ConsumerPartitionAssignor> assignors;
+	// ============================ Core Components of KafkaConsumer ============================
+
     private final long retryBackoffMs;
     private final long requestTimeoutMs;
     private final int defaultApiTimeoutMs;
 	// mark whether the consumer has closed?
     private volatile boolean closed = false;
-	// consumer allocator list: Partition allocation strategy
-    private final List<ConsumerPartitionAssignor> assignors;
 
     // currentThread holds the threadId of the current thread accessing KafkaConsumer
     // and is used to prevent multi-threaded access
@@ -695,6 +706,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             this.groupId = Optional.ofNullable(groupRebalanceConfig.groupId);
 			// clientId
             this.clientId = config.getString(CommonClientConfigs.CLIENT_ID_CONFIG);
+			// determine log style
             LogContext logContext = createLogContext(config, groupRebalanceConfig);
             this.log = logContext.logger(getClass());
 			// enableAutoCommit?
@@ -706,12 +718,14 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             });
 
             log.debug("Initializing the Kafka consumer");
-			// important params setting
+			// important time attach params setting
             this.requestTimeoutMs = config.getInt(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG);
             this.defaultApiTimeoutMs = config.getInt(ConsumerConfig.DEFAULT_API_TIMEOUT_MS_CONFIG);
+	        this.retryBackoffMs = config.getLong(ConsumerConfig.RETRY_BACKOFF_MS_CONFIG);
+
             this.time = Time.SYSTEM;
             this.metrics = createMetrics(config, time);
-            this.retryBackoffMs = config.getLong(ConsumerConfig.RETRY_BACKOFF_MS_CONFIG);
+	        FetchMetricsManager fetchMetricsManager = createFetchMetricsManager(metrics);
 
 			// ConsumerInterceptor
             List<ConsumerInterceptor<K, V>> interceptorList = createConsumerInterceptors(config);
@@ -723,16 +737,16 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
 			// OffsetResetStrategy
             this.subscriptions = createSubscriptionState(config, logContext);
+
 			// clusterResourceListeners
             ClusterResourceListeners clusterResourceListeners = configureClusterResourceListeners(this.keyDeserializer,
                     this.valueDeserializer, metrics.reporters(), interceptorList);
+
 			// metadata
             this.metadata = new ConsumerMetadata(config, subscriptions, logContext, clusterResourceListeners);
 			// broker setting
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config);
             this.metadata.bootstrap(addresses);
-
-            FetchMetricsManager fetchMetricsManager = createFetchMetricsManager(metrics);
 
 			// transaction isolation level
             this.isolationLevel = createIsolationLevel(config);
@@ -801,7 +815,6 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             this.topicMetadataFetcher = new TopicMetadataFetcher(logContext, client, retryBackoffMs);
 
             this.kafkaConsumerMetrics = new KafkaConsumerMetrics(metrics, CONSUMER_METRIC_GROUP_PREFIX);
-
             config.logUnused();
             AppInfoParser.registerAppInfo(CONSUMER_JMX_PREFIX, clientId, metrics, time.milliseconds());
             log.debug("Kafka consumer initialized");
@@ -929,22 +942,24 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     public void subscribe(Collection<String> topics, ConsumerRebalanceListener listener) {
         acquireAndEnsureOpen();
         try {
+			// check GroupId
             maybeThrowInvalidGroupIdException();
             if (topics == null)
                 throw new IllegalArgumentException("Topic collection to subscribe to cannot be null");
             if (topics.isEmpty()) {
-                // treat subscribing to empty topic list as the same as unsubscribing
+                // * treat subscribing to empty topic list as the same as unsubscribing
                 this.unsubscribe();
             } else {
                 for (String topic : topics) {
                     if (Utils.isBlank(topic))
                         throw new IllegalArgumentException("Topic collection to subscribe to cannot contain null or empty topic");
                 }
-
+				// check Assignors
                 throwIfNoAssignorsConfigured();
 				// Considering the situation of multiple subscribe to different topics,
-	            // it is necessary to clear the data of the topics that have been pulled but are not subscribed this time.
+	            // it is necessary to clear the data of "the topics that have been pulled but are not subscribed this time"
                 fetcher.clearBufferedDataForUnassignedTopics(topics);
+
                 log.info("Subscribed to topic(s): {}", Utils.join(topics, ", "));
 				// Determine whether the subscribed topic needs to be updated
                 if (this.subscriptions.subscribe(new HashSet<>(topics), listener))

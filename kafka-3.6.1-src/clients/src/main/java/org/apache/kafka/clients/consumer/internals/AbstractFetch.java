@@ -274,7 +274,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
         int recordsRemaining = fetchConfig.maxPollRecords;
 
         try {
-            // If  "polled message" does not reach "max.poll.records 500"
+            // only can reach "max.poll.records 500"
             while (recordsRemaining > 0) {
                 // case1: "nextInLineFetch" "Finished" : Initialize a "CompletedFetch" object to "nextInLineFetch"
                 if (nextInLineFetch == null || nextInLineFetch.isConsumed) {
