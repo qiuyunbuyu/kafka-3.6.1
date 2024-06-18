@@ -1242,16 +1242,19 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                         log.warn("Still waiting for metadata");
                     }
                 }
-				// *2 fetch by partition allocation plan
+				// *2 fetch by partition allocation plan | max poll 500 ConsumerRecords
                 final Fetch<K, V> fetch = pollForFetches(timer);
                 if (!fetch.isEmpty()) {
-                    // before returning the fetched records, we can send off the next round of fetches
+                    // ******* Consumer built-in optimization *******
+	                // "Although I have pulled the data, I need more"
+	                // before returning the fetched records, we can send off the next round of fetches
                     // and avoid block waiting for their responses to enable pipelining while the user
                     // is handling the fetched records.
-                    //
+                    // *******
                     // NOTE: since the consumed position has already been updated, we must not allow
                     // wakeups or any other errors to be triggered prior to returning the fetched records.
                     if (sendFetches() > 0 || client.hasPendingRequests()) {
+						// will call client.poll(....)
                         client.transmitSends();
                     }
 
@@ -1262,7 +1265,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 					// *3 use "interceptors" to modify consumer records
                     return this.interceptors.onConsume(new ConsumerRecords<>(fetch.records()));
                 }
-            } while (timer.notExpired());
+            } while (timer.notExpired()); //timeout is "poll(final Duration timeout)"
 
             return ConsumerRecords.empty();
         } finally {
@@ -1290,7 +1293,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * @throws KafkaException if the rebalance callback throws exception
      */
     private Fetch<K, V> pollForFetches(Timer timer) {
-		// 1. Calculate the waiting time for poll
+		// 1. Calculate the waiting time for poll Min(userSetting time, heartbeat interval)
         long pollTimeout = coordinator == null ? timer.remainingMs() :
                 Math.min(coordinator.timeToNextPoll(timer.currentTimeMs()), timer.remainingMs());
 

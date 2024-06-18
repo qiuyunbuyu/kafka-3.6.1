@@ -85,6 +85,7 @@ public class Fetcher<K, V> extends AbstractFetch<K, V> {
                 public void onSuccess(ClientResponse resp) {
                     synchronized (Fetcher.this) {
                         // Implements the core logic for a successful fetch request/response.
+                        // put "records" to completedFetches | [ completedFetches.add(completedFetch) ]
                         handleFetchResponse(fetchTarget, data, resp);
                     }
                 }

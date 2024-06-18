@@ -258,6 +258,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
     /**
      * Return the fetched records, empty the record buffer and update the consumed position.
      *
+     * first poll from "nextInLineFetch", second poll from "completedFetches head"
      * </p>
      *
      * NOTE: returning an {@link Fetch#isEmpty empty} fetch guarantees the consumed position is not updated.
@@ -276,7 +277,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
         try {
             // only can reach "max.poll.records 500"
             while (recordsRemaining > 0) {
-                // case1: "nextInLineFetch" "Finished" : Initialize a "CompletedFetch" object to "nextInLineFetch"
+                // [case1]: "nextInLineFetch" "Finished" : Initialize a "CompletedFetch" object to "nextInLineFetch"
                 if (nextInLineFetch == null || nextInLineFetch.isConsumed) {
                     CompletedFetch<K, V> records = completedFetches.peek();
                     if (records == null) break;
@@ -298,16 +299,18 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                         }
                     } else {
                         nextInLineFetch = records;
-                    }
+                    } // delete from "completedFetches" head
                     completedFetches.poll();
-                } else if (subscriptions.isPaused(nextInLineFetch.partition)) { // case2: The user has actively paused some "partition consumption"
+                } // [case2]: The user has actively paused some "partition consumption"
+                else if (subscriptions.isPaused(nextInLineFetch.partition)) {
                     // when the partition is paused we add the records back to the completedFetches queue instead of draining
                     // them so that they can be returned on a subsequent poll if the partition is resumed at that time
                     log.debug("Skipping fetching records for assigned partition {} because it is paused", nextInLineFetch.partition);
                     pausedCompletedFetches.add(nextInLineFetch);
                     nextInLineFetch = null;
                 } else {
-                // case3: get records from "nextInLineFetch" and update fetchOffset
+                // [case3]: get records from "nextInLineFetch" and update fetchOffset
+                // contain deserializing the key / value
                     Fetch<K, V> nextFetch = fetchRecords(recordsRemaining);
                     recordsRemaining -= nextFetch.numRecords();
                     fetch.add(nextFetch);
@@ -342,6 +345,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
             }
 
             if (nextInLineFetch.nextFetchOffset == position.offset) {
+                // deserializing the key / value | CompletedFetch<K, V> to List<ConsumerRecord<K, V>>
                 List<ConsumerRecord<K, V>> partRecords = nextInLineFetch.fetchRecords(maxRecords);
 
                 log.trace("Returning {} fetched records at offset {} for assigned partition {}",
