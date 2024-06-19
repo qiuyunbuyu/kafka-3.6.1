@@ -1262,7 +1262,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                         log.trace("Returning empty records from `poll()` "
                                 + "since the consumer's position has advanced for at least one topic partition");
                     }
-					// *3 use "interceptors" to modify consumer records
+					// *3 **use "interceptors" to modify consumer records**
                     return this.interceptors.onConsume(new ConsumerRecords<>(fetch.records()));
                 }
             } while (timer.notExpired()); //timeout is "poll(final Duration timeout)"

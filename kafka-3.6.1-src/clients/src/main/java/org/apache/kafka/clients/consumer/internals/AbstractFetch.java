@@ -310,7 +310,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                     nextInLineFetch = null;
                 } else {
                 // [case3]: get records from "nextInLineFetch" and update fetchOffset
-                // contain deserializing the key / value
+                // ** contain deserializing the key / value **
                     Fetch<K, V> nextFetch = fetchRecords(recordsRemaining);
                     recordsRemaining -= nextFetch.numRecords();
                     fetch.add(nextFetch);
