@@ -402,7 +402,7 @@ public abstract class AbstractCoordinator implements Closeable {
         }
         // 2. try to start Heartbeat connect with coordinator
         startHeartbeatThreadIfNeeded();
-        // 3. consumer truly try to joinGroup
+        // 3. consumer truly try to joinGroup | ApiKeys.JOIN_GROUP
         return joinGroupIfNeeded(timer);
     }
 
@@ -491,7 +491,7 @@ public abstract class AbstractCoordinator implements Closeable {
                 if (!hasGenerationReset(generationSnapshot) && stateSnapshot == MemberState.STABLE) {
                     // Duplicate the buffer in case `onJoinComplete` does not complete and needs to be retried.
                     ByteBuffer memberAssignment = future.value().duplicate();
-                    // 3. if JOIN_GROUP success, then call onJoinComplete to get "Partition Allocation Plan"
+                    // 3. **** if JOIN_GROUP success, then call onJoinComplete to get "Partition Allocation Plan"
                     onJoinComplete(generationSnapshot.generationId, generationSnapshot.memberId, generationSnapshot.protocolName, memberAssignment);
 
                     // Generally speaking we should always resetJoinGroupFuture once the future is done, but here
@@ -656,9 +656,10 @@ public abstract class AbstractCoordinator implements Closeable {
                             log.info("Successfully joined group with generation {}", AbstractCoordinator.this.generation);
 
                             if (joinResponse.isLeader()) {
-                                // is leader
+                                // is leader : count assign plan + send ApiKeys.SYNC_GROUP
                                 onLeaderElected(joinResponse).chain(future);
                             } else {
+                                // is follower: send ApiKeys.SYNC_GROUP
                                 onJoinFollower().chain(future);
                             }
                         }
@@ -752,6 +753,7 @@ public abstract class AbstractCoordinator implements Closeable {
 
     private RequestFuture<ByteBuffer> onLeaderElected(JoinGroupResponse joinResponse) {
         try {
+            // 1. prepare assign plan
             // perform the leader synchronization and send back the assignment for the group
             Map<String, ByteBuffer> groupAssignment = onLeaderElected(
                 joinResponse.data().leader(),
@@ -768,7 +770,7 @@ public abstract class AbstractCoordinator implements Closeable {
                 );
             }
 
-            // ApiKeys.SYNC_GROUP
+            // 2. build ApiKeys.SYNC_GROUP with "assign plan"
             SyncGroupRequest.Builder requestBuilder =
                     new SyncGroupRequest.Builder(
                             new SyncGroupRequestData()
@@ -781,6 +783,7 @@ public abstract class AbstractCoordinator implements Closeable {
                                     .setAssignments(groupAssignmentList)
                     );
             log.debug("Sending leader SyncGroup to coordinator {}: {}", this.coordinator, requestBuilder);
+            // 3. send | ApiKeys.SYNC_GROUP
             return sendSyncGroupRequest(requestBuilder);
         } catch (RuntimeException e) {
             return RequestFuture.failure(e);
@@ -1492,7 +1495,7 @@ public abstract class AbstractCoordinator implements Closeable {
 
                         client.pollNoWakeup();
                         long now = time.milliseconds();
-
+                        // Check if we know who the coordinator is and we have an active connection
                         if (coordinatorUnknown()) {
                             if (findCoordinatorFuture != null) {
                                 // clear the future so that after the backoff, if the hb still sees coordinator unknown in
@@ -1525,6 +1528,7 @@ public abstract class AbstractCoordinator implements Closeable {
                             AbstractCoordinator.this.wait(rebalanceConfig.retryBackoffMs);
                         } else {
                             heartbeat.sentHeartbeat(now);
+                            // sendHeartbeatRequest
                             final RequestFuture<Void> heartbeatFuture = sendHeartbeatRequest();
                             heartbeatFuture.addListener(new RequestFutureListener<Void>() {
                                 @Override
@@ -1537,6 +1541,7 @@ public abstract class AbstractCoordinator implements Closeable {
                                 @Override
                                 public void onFailure(RuntimeException e) {
                                     synchronized (AbstractCoordinator.this) {
+                                        // Discovered "Rebalance In Progress" by heartbeat
                                         if (e instanceof RebalanceInProgressException) {
                                             // it is valid to continue heartbeating while the group is rebalancing. This
                                             // ensures that the coordinator keeps the member in the group for as long

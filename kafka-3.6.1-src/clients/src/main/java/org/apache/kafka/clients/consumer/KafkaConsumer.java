@@ -1279,13 +1279,19 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         return fetcher.sendFetches();
     }
 
+	/**
+	 * Consumer group initialization & partition assignment
+	 * @param timer
+	 * @param waitForJoinGroup
+	 * @return
+	 */
     boolean updateAssignmentMetadataIfNeeded(final Timer timer, final boolean waitForJoinGroup) {
-		// coordinator.poll: Interact with the broker side
+		// 1. coordinator.poll: Interact with the broker side
 	    // if coordinator.poll(...) return true means "this consumer join consumer group successful
         if (coordinator != null && !coordinator.poll(timer, waitForJoinGroup)) {
             return false;
         }
-		// Set the fetch position to the committed position
+		// 2. Set the fetch position to the committed position
         return updateFetchPositions(timer);
     }
 

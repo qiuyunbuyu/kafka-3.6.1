@@ -285,6 +285,7 @@ public class SubscriptionState {
 
         Map<TopicPartition, TopicPartitionState> assignedPartitionStates = new HashMap<>(assignments.size());
         for (TopicPartition tp : assignments) {
+            // update TP & TPState(position, highWatermark.....)
             TopicPartitionState state = this.assignment.stateValue(tp);
             if (state == null)
                 state = new TopicPartitionState();

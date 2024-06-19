@@ -546,15 +546,18 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 throw new IllegalStateException("User configured " + ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG +
                     " to empty while trying to subscribe for group protocol to auto assign partitions");
             }
-            // 3.2 send Heartbeat
+            // 3.2 *** send Heartbeat
             // Always update the heartbeat last poll time so that the heartbeat thread does not leave the
             // group proactively due to application inactivity even if (say) the coordinator cannot be found.
             pollHeartbeat(timer.currentTimeMs());
+
             // 3.3 if not found coordinator, call AbstractCoordinator.ensureCoordinatorReady to ensure connect with coordinator
+            // ApiKeys.FIND_COORDINATOR
             if (coordinatorUnknownAndUnreadySync(timer)) {
                 return false;
             }
-            // 3.4 rejoin needed
+
+            // 3.4 rejoin needed (rebalance)
             if (rejoinNeededOrPending()) {
                 // due to a race condition between the initial metadata fetch and the initial rebalance,
                 // we need to ensure that the metadata is fresh before joining initially. This ensures
@@ -578,7 +581,9 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     maybeUpdateSubscriptionMetadata();
                 }
 
-                // 3.5 if not wait for join group, we would just use a timer of 0
+                // 3.5 If the consumer group is not joined or the heartbeat thread detects changes in the consumer group,
+                // should do "Joins the group ..." | ApiKeys.JOIN_GROUP + ApiKeys.SYNC_GROUP(already get assign plan)
+                // if not wait for join group, we would just use a timer of 0
                 if (!ensureActiveGroup(waitForJoinGroup ? timer : time.timer(0L))) {
                     // since we may use a different timer in the callee, we'd still need
                     // to update the original timer's current time after the call
@@ -720,7 +725,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         log.debug("Performing assignment using strategy {} with subscriptions {}", assignorName, subscriptions);
 
-        // 2. Partition Allocation Plan
+        // 2. Partition Allocation Plan: Calculate the "assign plan" based on the "assignor algorithm" and "metadata"
         Map<String, Assignment> assignments = assignor.assign(metadata.fetch(), new GroupSubscription(subscriptions)).groupAssignment();
 
         // skip the validation for built-in cooperative sticky assignor since we've considered
@@ -737,6 +742,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         log.info("Finished assignment for group at generation {}: {}", generation().generationId, assignments);
 
+        // 3. Serialize into Byte that can be transmitted over the network
         Map<String, ByteBuffer> groupAssignment = new HashMap<>();
         for (Map.Entry<String, Assignment> assignmentEntry : assignments.entrySet()) {
             ByteBuffer buffer = ConsumerProtocol.serializeAssignment(assignmentEntry.getValue());
