@@ -136,11 +136,11 @@ public class ConsumerNetworkClient implements Closeable {
         ClientRequest clientRequest = client.newClientRequest(node.idString(), requestBuilder, now, true,
             requestTimeoutMs, completionHandler);
         // 3. use "unsent" to store "clientRequest" need to be sent
+        // ConcurrentMap<Node, ConcurrentLinkedQueue<ClientRequest>>
         unsent.put(node, clientRequest);
-
         // 4. wakeup the client in case it is blocking in poll so that we can send the queued request
         client.wakeup();
-        // 5.
+        // 5. return RequestFuture
         return completionHandler.future;
     }
 
@@ -235,6 +235,7 @@ public class ConsumerNetworkClient implements Closeable {
      * @throws InterruptException if the calling thread is interrupted
      */
     public boolean poll(RequestFuture<?> future, Timer timer, boolean disableWakeup) {
+        // do...while Block
         do {
             poll(timer, future, disableWakeup);
         } while (!future.isDone() && timer.notExpired());
@@ -275,7 +276,7 @@ public class ConsumerNetworkClient implements Closeable {
             // Handle async disconnects prior to attempting any sends
             handlePendingDisconnects();
 
-            // *2. [ send all the requests we can send now ]
+            // *2. [ send all the requests we can send now, Iterate over the unsent collection]
             long pollDelayMs = trySend(timer.currentTimeMs());
 
             // check whether the poll is still needed by the caller. Note that if the expected completion
@@ -317,7 +318,7 @@ public class ConsumerNetworkClient implements Closeable {
             lock.unlock();
         }
 
-        // called without the lock to avoid deadlock potential if handlers need to acquire locks
+        // * called without the lock to avoid deadlock potential if handlers need to acquire locks
         firePendingCompletedRequests();
 
         metadata.maybeThrowAnyException();
@@ -429,10 +430,12 @@ public class ConsumerNetworkClient implements Closeable {
     private void firePendingCompletedRequests() {
         boolean completedRequestsFired = false;
         for (;;) {
+            // 1. get completionHandler
             RequestFutureCompletionHandler completionHandler = pendingCompletion.poll();
+            // 2. judge completionHandler
             if (completionHandler == null)
                 break;
-
+            // 3. actual do callback
             completionHandler.fireCompletion();
             completedRequestsFired = true;
         }
