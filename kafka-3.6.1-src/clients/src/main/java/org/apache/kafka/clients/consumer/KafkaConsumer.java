@@ -752,7 +752,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             this.isolationLevel = createIsolationLevel(config);
 
             ApiVersions apiVersions = new ApiVersions();
-			// netClient
+			// conusmerNetClient[init]
             this.client = createConsumerNetworkClient(config,
                     metrics,
                     logContext,

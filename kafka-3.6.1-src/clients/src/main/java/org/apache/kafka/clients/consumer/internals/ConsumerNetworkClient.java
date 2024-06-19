@@ -57,13 +57,17 @@ public class ConsumerNetworkClient implements Closeable {
     // the mutable state of this class is protected by the object's monitor (excluding the wakeup
     // flag and the request completion queue below).
     private final Logger log;
+    // NetWorkClient
     private final KafkaClient client;
+    // ConcurrentMap<Node, ConcurrentLinkedQueue<ClientRequest>>
     private final UnsentRequests unsent = new UnsentRequests();
     private final Metadata metadata;
     private final Time time;
     private final long retryBackoffMs;
     private final int maxPollTimeoutMs;
     private final int requestTimeoutMs;
+
+    // Whether to disable wakeup() ? sometimes no need to do wakeup Selector.poll()
     private final AtomicBoolean wakeupDisabled = new AtomicBoolean();
 
     // We do not need high throughput, so use a fair lock to try to avoid starvation
@@ -73,6 +77,7 @@ public class ConsumerNetworkClient implements Closeable {
     // is to avoid invoking them while holding this object's monitor which can open the door for deadlocks.
     private final ConcurrentLinkedQueue<RequestFutureCompletionHandler> pendingCompletion = new ConcurrentLinkedQueue<>();
 
+    // save the Disconnects nodes
     private final ConcurrentLinkedQueue<Node> pendingDisconnects = new ConcurrentLinkedQueue<>();
 
     // this flag allows the client to be safely woken up without waiting on the lock above. It is
@@ -125,9 +130,9 @@ public class ConsumerNetworkClient implements Closeable {
                                               AbstractRequest.Builder<?> requestBuilder,
                                               int requestTimeoutMs) {
         long now = time.milliseconds();
-        // 1.
+        // 1. define do something when request is done
         RequestFutureCompletionHandler completionHandler = new RequestFutureCompletionHandler();
-        // 2.
+        // 2. build ClientRequest
         ClientRequest clientRequest = client.newClientRequest(node.idString(), requestBuilder, now, true,
             requestTimeoutMs, completionHandler);
         // 3. use "unsent" to store "clientRequest" need to be sent
@@ -609,7 +614,9 @@ public class ConsumerNetworkClient implements Closeable {
             this.future = new RequestFuture<>();
         }
 
+        // actual do callback
         public void fireCompletion() {
+            // case1: exception handle
             if (e != null) {
                 future.raise(e);
             } else if (response.authenticationException() != null) {
@@ -621,12 +628,14 @@ public class ConsumerNetworkClient implements Closeable {
             } else if (response.versionMismatch() != null) {
                 future.raise(response.versionMismatch());
             } else {
+            // case2: normal handle
                 future.complete(response);
             }
         }
 
         public void onFailure(RuntimeException e) {
             this.e = e;
+            // put RuntimeException to pendingCompletion
             pendingCompletion.add(this);
         }
 

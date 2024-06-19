@@ -126,6 +126,7 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
 
             if (!result.compareAndSet(INCOMPLETE_SENTINEL, value))
                 throw new IllegalStateException("Invalid attempt to complete a request future which is already complete");
+            // handle success response
             fireSuccess();
         } finally {
             completedLatch.countDown();
@@ -163,9 +164,11 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
     private void fireSuccess() {
         T value = value();
         while (true) {
+            // 1. get all RequestFutureListeners
             RequestFutureListener<T> listener = listeners.poll();
             if (listener == null)
                 break;
+            // 2. call onSuccess
             listener.onSuccess(value);
         }
     }
