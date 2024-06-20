@@ -1291,7 +1291,8 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         if (coordinator != null && !coordinator.poll(timer, waitForJoinGroup)) {
             return false;
         }
-		// 2. Set the fetch position to the committed position
+		// 2. Set the fetch position to the committed position (if there is one)
+		//    or reset it using the offset reset policy[earliest, latest] the user has configured.
         return updateFetchPositions(timer);
     }
 
@@ -2505,25 +2506,29 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * @return true iff the operation completed without timing out
      */
     private boolean updateFetchPositions(final Timer timer) {
-        // If any partitions have been truncated due to a leader change, we need to validate the offsets
+        // 1. If any partitions have been truncated due to a leader change, we need to validate the offsets
         offsetFetcher.validatePositionsIfNeeded();
 
+		// 2. if subscriptions already get "Positions", return directly
         cachedSubscriptionHasAllFetchPositions = subscriptions.hasAllFetchPositions();
         if (cachedSubscriptionHasAllFetchPositions) return true;
 
-        // If there are any partitions which do not have a valid position and are not
+        // 3.
+	    // If there are any partitions which do not have a valid position and are not
         // awaiting reset, then we need to fetch committed offsets. We will only do a
         // coordinator lookup if there are partitions which have missing positions, so
         // a consumer with manually assigned partitions can avoid a coordinator dependence
         // by always ensuring that assigned partitions have an initial position.
         if (coordinator != null && !coordinator.refreshCommittedOffsetsIfNeeded(timer)) return false;
 
-        // If there are partitions still needing a position and a reset policy is defined,
+        // 4.
+	    // If there are partitions still needing a position and a reset policy is defined,
         // request reset using the default policy. If no reset strategy is defined and there
         // are partitions with a missing position, then we will raise an exception.
         subscriptions.resetInitializingPositions();
 
-        // Finally send an asynchronous request to look up and update the positions of any
+        // 5.
+	    // Finally send an asynchronous request to look up and update the positions of any
         // partitions which are awaiting reset.
         offsetFetcher.resetPositionsIfNeeded();
 

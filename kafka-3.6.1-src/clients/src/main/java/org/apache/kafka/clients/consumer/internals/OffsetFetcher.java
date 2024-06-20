@@ -156,7 +156,7 @@ public class OffsetFetcher {
                     synchronized (future) {
                         result.fetchedOffsets.putAll(value.fetchedOffsets);
                         remainingToSearch.keySet().retainAll(value.partitionsToRetry);
-
+                        // when ListOffsetResponse success should update  SubscriptionState
                         offsetFetcherUtils.updateSubscriptionState(value.fetchedOffsets, isolationLevel);
                     }
                 }
@@ -205,7 +205,7 @@ public class OffsetFetcher {
             Map<TopicPartition, Long> timestampsToSearch = partitions.stream()
                     .distinct()
                     .collect(Collectors.toMap(Function.identity(), tp -> timestamp));
-
+            // [ LATEST, EARLIEST ] The essence is still fetch Offsets By Times
             ListOffsetResult result = fetchOffsetsByTimes(timestampsToSearch, timer, false);
 
             return result.fetchedOffsets.entrySet().stream()

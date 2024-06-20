@@ -789,7 +789,7 @@ public class SubscriptionState {
         private Long lastStableOffset;
         private boolean paused;  // whether this partition has been paused by the user
         private boolean pendingRevocation;
-        private OffsetResetStrategy resetStrategy;  // the strategy to use if the offset needs resetting
+        private OffsetResetStrategy resetStrategy;  // the strategy to use if the offset needs resetting [LATEST, EARLIEST, NONE;]
         private Long nextRetryTimeMs;
         private Integer preferredReadReplica;
         private Long preferredReadReplicaExpireTimeMs;
