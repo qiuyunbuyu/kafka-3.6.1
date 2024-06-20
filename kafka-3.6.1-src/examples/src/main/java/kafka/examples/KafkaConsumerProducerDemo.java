@@ -48,7 +48,7 @@ public class KafkaConsumerProducerDemo {
             boolean isAsync = args.length == 1 || !args[1].trim().equalsIgnoreCase("sync");
 
             // stage 1: clean any topics left from previous runs
-            Utils.recreateTopics(KafkaProperties.BOOTSTRAP_SERVERS, -1, TOPIC_NAME);
+            Utils.recreateTopics(KafkaProperties.BOOTSTRAP_SERVERS, 1, TOPIC_NAME);
             CountDownLatch latch = new CountDownLatch(2);
 
             // stage 2: produce records to topic1
