@@ -647,6 +647,7 @@ public abstract class AbstractCoordinator implements Closeable {
                             // we only need to enable heartbeat thread whenever we transit to
                             // COMPLETING_REBALANCE state since we always transit from this state to STABLE
                             if (heartbeatThread != null)
+                                // Wake up the heartbeatThread thread
                                 heartbeatThread.enable();
 
                             AbstractCoordinator.this.generation = new Generation(
@@ -1481,6 +1482,7 @@ public abstract class AbstractCoordinator implements Closeable {
                             return;
 
                         if (!enabled) {
+                            // "pollHeartbeat(long now)" method will notify()
                             AbstractCoordinator.this.wait();
                             continue;
                         }
