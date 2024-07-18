@@ -111,11 +111,14 @@ public class ProducerMetadata extends Metadata {
      */
     @Override
     public synchronized boolean retainTopic(String topic, boolean isInternal, long nowMs) {
+        // 1. get expireMs = "nowMs + metadataIdleMs", define in add(....)
         Long expireMs = topics.get(topic);
         if (expireMs == null) {
             return false;
+        // 2. newTopic handle
         } else if (newTopics.contains(topic)) {
             return true;
+        // 3. topic metadata expire, do remove and return false
         } else if (expireMs <= nowMs) {
             log.debug("Removing unused topic {} from the metadata list, expiryMs {} now {}", topic, expireMs, nowMs);
             topics.remove(topic);
@@ -156,8 +159,9 @@ public class ProducerMetadata extends Metadata {
      */
     @Override
     public synchronized void update(int requestVersion, MetadataResponse response, boolean isPartialUpdate, long nowMs) {
+        // 1.
         super.update(requestVersion, response, isPartialUpdate, nowMs);
-
+        // 2.
         // Remove all topics in the response that are in the new topic set. Note that if an error was encountered for a
         // new topic's metadata, then any work to resolve the error will include the topic in a full metadata update.
         if (!newTopics.isEmpty()) {
@@ -166,7 +170,7 @@ public class ProducerMetadata extends Metadata {
                 newTopics.remove(metadata.topic());
             }
         }
-        // notify awaitUpdate
+        // 3. notify awaitUpdate
         notifyAll();
     }
 

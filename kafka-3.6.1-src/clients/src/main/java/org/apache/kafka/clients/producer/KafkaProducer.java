@@ -460,7 +460,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // 9. time
             // 10. apiVersions
             this.apiVersions = new ApiVersions();
-            // 11. transactionManager
+            // 11. transactionManager, default "Instantiated an idempotent producer"
             this.transactionManager = configureTransactionState(config, logContext);
             // 12. RecordAccumulator & BufferPool
             this.totalMemorySize = config.getLong(ProducerConfig.BUFFER_MEMORY_CONFIG);
@@ -1031,6 +1031,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             long nowMs = time.milliseconds();
             ClusterAndWaitTime clusterAndWaitTime;
             try {
+                // Wait for cluster metadata including partitions for the given topic to be available.
                 clusterAndWaitTime = waitOnMetadata(record.topic(), record.partition(), nowMs, maxBlockTimeMs);
             } catch (KafkaException e) {
                 if (metadata.isClosed())
@@ -1207,6 +1208,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // no block, wake up now
             sender.wakeup();
             try {
+                // block for metadata update success
                 metadata.awaitUpdate(version, remainingWaitMs);
             } catch (TimeoutException ex) {
                 // Rethrow with original maxWaitMs to prevent logging exception with remainingWaitMs

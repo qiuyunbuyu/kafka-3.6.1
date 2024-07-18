@@ -346,7 +346,7 @@ public class Sender implements Runnable {
         }
 
         long currentTimeMs = time.milliseconds();
-        // * create request ready send to broker
+        // * create request ready send to broker : [ RecordAccumulator."data" ->  ProduceRequest ]
         long pollTimeout = sendProducerData(currentTimeMs);
 
         // actual read/write

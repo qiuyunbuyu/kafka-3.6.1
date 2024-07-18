@@ -103,7 +103,7 @@ public class RecordAccumulator {
      * Create a new record accumulator
      *
      * @param logContext The log context used for logging
-     * @param batchSize The size to use when allocating {@link MemoryRecords} instances
+     * @param batchSize The size to use when allocating {@link MemoryRecords} instances, default 16kb
      * @param compression The compression codec for the records
      * @param lingerMs An artificial delay time to add before declaring a records instance that isn't full ready for
      *        sending. This allows time for more records to arrive. Setting a non-zero lingerMs will trade off some

@@ -60,8 +60,8 @@ import static org.apache.kafka.common.record.RecordBatch.NO_PARTITION_LEADER_EPO
  */
 public class Metadata implements Closeable {
     private final Logger log;
-    private final long refreshBackoffMs;
-    private final long metadataExpireMs;
+    private final long refreshBackoffMs; // default 100ms
+    private final long metadataExpireMs; // default 5min
     private int updateVersion;  // bumped on every metadata response
     private int requestVersion; // bumped on every new topic addition
     private long lastRefreshMs;
@@ -238,6 +238,7 @@ public class Metadata implements Closeable {
     }
 
     public synchronized void bootstrap(List<InetSocketAddress> addresses) {
+        // call when producer/consumer init
         // need full update when Producer init
         this.needFullUpdate = true;
         this.updateVersion += 1;
@@ -280,8 +281,10 @@ public class Metadata implements Closeable {
         }
         // get previous ClusterId
         String previousClusterId = cache.clusterResource().clusterId();
-        // parse response to construct MetadataCache
+
+        // **** parse response to construct MetadataCache ****
         this.cache = handleMetadataResponse(response, isPartialUpdate, nowMs);
+
         // get cluster info from MetadataCache
         Cluster cluster = cache.cluster();
         maybeSetMetadataError(cluster);
@@ -333,6 +336,7 @@ public class Metadata implements Closeable {
         List<MetadataResponse.PartitionMetadata> partitions = new ArrayList<>();
         Map<String, Uuid> topicIds = new HashMap<>();
         Map<String, Uuid> oldTopicIds = cache.topicIds();
+
         // Traverse MetadataResponse
         for (MetadataResponse.TopicMetadata metadata : metadataResponse.topicMetadata()) {
             String topicName = metadata.topic();
@@ -347,9 +351,11 @@ public class Metadata implements Closeable {
                 topicId = null;
             }
 
+            // Determine whether the metadata of this topic should be retained
             if (!retainTopic(topicName, metadata.isInternal(), nowMs))
                 continue;
 
+            // is Internal
             if (metadata.isInternal())
                 internalTopics.add(topicName);
 
@@ -360,6 +366,7 @@ public class Metadata implements Closeable {
                     updateLatestMetadata(partitionMetadata, metadataResponse.hasReliableLeaderEpochs(), topicId, oldTopicId)
                         .ifPresent(partitions::add);
 
+                    // partitionMetadata.error handle
                     if (partitionMetadata.error.exception() instanceof InvalidMetadataException) {
                         log.debug("Requesting metadata update for partition {} due to error {}",
                                 partitionMetadata.topicPartition, partitionMetadata.error);
@@ -367,11 +374,11 @@ public class Metadata implements Closeable {
                     }
                 }
             } else {
+                // metadata.error handle
                 if (metadata.error().exception() instanceof InvalidMetadataException) {
                     log.debug("Requesting metadata update for topic {} due to error {}", topicName, metadata.error());
                     requestUpdate();
                 }
-
                 if (metadata.error() == Errors.INVALID_TOPIC_EXCEPTION)
                     invalidTopics.add(topicName);
                 else if (metadata.error() == Errors.TOPIC_AUTHORIZATION_FAILED)

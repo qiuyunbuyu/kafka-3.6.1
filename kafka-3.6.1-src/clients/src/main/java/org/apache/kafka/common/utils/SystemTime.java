@@ -45,13 +45,14 @@ public class SystemTime implements Time {
     public void waitObject(Object obj, Supplier<Boolean> condition, long deadlineMs) throws InterruptedException {
         synchronized (obj) {
             while (true) {
+                // 1. condition judge
                 if (condition.get())
                     return;
-
+                // 2. expire time exception
                 long currentTimeMs = milliseconds();
                 if (currentTimeMs >= deadlineMs)
                     throw new TimeoutException("Condition not satisfied before deadline");
-
+                // 3. block for wait
                 obj.wait(deadlineMs - currentTimeMs);
             }
         }
