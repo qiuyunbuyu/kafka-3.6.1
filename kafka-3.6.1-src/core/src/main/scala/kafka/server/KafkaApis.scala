@@ -1262,14 +1262,22 @@ class KafkaApis(val requestChannel: RequestChannel,
     errorUnavailableEndpoints: Boolean,
     errorUnavailableListeners: Boolean
   ): Seq[MetadataResponseTopic] = {
+
+    // 1. try get metadata from metadataCache
     val topicResponses = metadataCache.getTopicMetadata(topics, listenerName,
       errorUnavailableEndpoints, errorUnavailableListeners)
 
+    // 2. judge all "need topic" get in metadataCache ?
     if (topics.isEmpty || topicResponses.size == topics.size || fetchAllTopics) {
+      // 2.1 return directly
       topicResponses
     } else {
+      // 2.2.1 find non Existing Topics
       val nonExistingTopics = topics.diff(topicResponses.map(_.name).toSet)
+      // 2.2.2 handle non Existing Topics, accord "allowAutoTopicCreation?"
+
       val nonExistingTopicResponses = if (allowAutoTopicCreation) {
+        // a. try to "auto create noExist topic"
         val controllerMutationQuota = quotas.controllerMutation.newPermissiveQuotaFor(request)
         autoTopicCreationManager.createTopics(nonExistingTopics, controllerMutationQuota, Some(request.context))
       } else {
@@ -1281,7 +1289,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             case _: InvalidTopicException =>
               Errors.INVALID_TOPIC_EXCEPTION
           }
-
+          // fail nonExistingTopicResponses
           metadataResponseTopic(
             error,
             topic,
@@ -1291,7 +1299,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           )
         }
       }
-
+    // 3. return two part
       topicResponses ++ nonExistingTopicResponses
     }
   }
@@ -1322,6 +1330,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     val unknownTopicIdsTopicMetadata = unknownTopicIds.map(topicId =>
         metadataResponseTopic(Errors.UNKNOWN_TOPIC_ID, null, topicId, false, util.Collections.emptyList())).toSeq
 
+    // topic names
     val topics = if (metadataRequest.isAllTopics)
       metadataCache.getAllTopics()
     else if (useTopicId)
@@ -1329,13 +1338,16 @@ class KafkaApis(val requestChannel: RequestChannel,
     else
       metadataRequest.topics.asScala.toSet
 
+    // authorized.....
     val authorizedForDescribeTopics = authHelper.filterByAuthorized(request.context, DESCRIBE, TOPIC,
       topics, logIfDenied = !metadataRequest.isAllTopics)(identity)
     var (authorizedTopics, unauthorizedForDescribeTopics) = topics.partition(authorizedForDescribeTopics.contains)
     var unauthorizedForCreateTopics = Set[String]()
 
+    // just  to get "authorizedTopics"
     if (authorizedTopics.nonEmpty) {
       val nonExistingTopics = authorizedTopics.filterNot(metadataCache.contains)
+      // if allow "autoCreateTopics"
       if (metadataRequest.allowAutoTopicCreation && config.autoCreateTopicsEnable && nonExistingTopics.nonEmpty) {
         if (!authHelper.authorize(request.context, CREATE, CLUSTER, CLUSTER_NAME, logIfDenied = false)) {
           val authorizedForCreateTopics = authHelper.filterByAuthorized(request.context, CREATE, TOPIC,
@@ -1345,7 +1357,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
       }
     }
-
+    // construct "Errors.TOPIC_AUTHORIZATION_FAILED" response for "unauthorized For Create Topic"
     val unauthorizedForCreateTopicMetadata = unauthorizedForCreateTopics.map(topic =>
       // Set topicId to zero since we will never create topic which topicId
       metadataResponseTopic(Errors.TOPIC_AUTHORIZATION_FAILED, topic, Uuid.ZERO_UUID, isInternal(topic), util.Collections.emptyList()))
@@ -1373,6 +1385,8 @@ class KafkaApis(val requestChannel: RequestChannel,
     val errorUnavailableListeners = requestVersion >= 6
 
     val allowAutoCreation = config.autoCreateTopicsEnable && metadataRequest.allowAutoTopicCreation && !metadataRequest.isAllTopics
+
+    // ***
     val topicMetadata = getTopicMetadata(request, metadataRequest.isAllTopics, allowAutoCreation, authorizedTopics,
       request.context.listenerName, errorUnavailableEndpoints, errorUnavailableListeners)
 
@@ -1398,7 +1412,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         setTopicAuthorizedOperations(topicMetadata)
       }
     }
-
+    // all handle "complete Topic Metadata" for response
     val completeTopicMetadata =  unknownTopicIdsTopicMetadata ++
       topicMetadata ++ unauthorizedForCreateTopicMetadata ++ unauthorizedForDescribeTopicMetadata
 
@@ -1406,6 +1420,8 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     trace("Sending topic metadata %s and brokers %s for correlation id %d to client %s".format(completeTopicMetadata.mkString(","),
       brokers.mkString(","), request.header.correlationId, request.header.clientId))
+
+    // controllerId
     val controllerId = {
       metadataCache.getControllerId.flatMap {
         case ZkCachedControllerId(id) => Some(id)
@@ -2316,9 +2332,10 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   def handleInitProducerIdRequest(request: RequestChannel.Request, requestLocal: RequestLocal): Unit = {
+    // 1. Analytical data from request
     val initProducerIdRequest = request.body[InitProducerIdRequest]
     val transactionalId = initProducerIdRequest.data.transactionalId
-
+    // 2. transactionalId handle
     if (transactionalId != null) {
       if (!authHelper.authorize(request.context, WRITE, TRANSACTIONAL_ID, transactionalId)) {
         requestHelper.sendErrorResponseMaybeThrottle(request, Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED.exception)
@@ -2329,7 +2346,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestHelper.sendErrorResponseMaybeThrottle(request, Errors.CLUSTER_AUTHORIZATION_FAILED.exception)
       return
     }
-
+    // 3. define sendResponseCallback
     def sendResponseCallback(result: InitProducerIdResult): Unit = {
       def createResponse(requestThrottleMs: Int): AbstractResponse = {
         val finalError =
@@ -2351,16 +2368,21 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
       requestHelper.sendResponseMaybeThrottle(request, createResponse)
     }
-
+    // 4. judge "producerId + producerEpoch"
     val producerIdAndEpoch = (initProducerIdRequest.data.producerId, initProducerIdRequest.data.producerEpoch) match {
+      // [-1, -1]
       case (RecordBatch.NO_PRODUCER_ID, RecordBatch.NO_PRODUCER_EPOCH) => Right(None)
+      // INVALID_REQUEST
       case (RecordBatch.NO_PRODUCER_ID, _) | (_, RecordBatch.NO_PRODUCER_EPOCH) => Left(Errors.INVALID_REQUEST)
+      // Some...
       case (_, _) => Right(Some(new ProducerIdAndEpoch(initProducerIdRequest.data.producerId, initProducerIdRequest.data.producerEpoch)))
     }
-
+    // 5. Call callback according to the construction result
     producerIdAndEpoch match {
+      // right handle: handleInitProducerId
       case Right(producerIdAndEpoch) => txnCoordinator.handleInitProducerId(transactionalId, initProducerIdRequest.data.transactionTimeoutMs,
         producerIdAndEpoch, sendResponseCallback, requestLocal)
+      // left handle
       case Left(error) => requestHelper.sendErrorResponseMaybeThrottle(request, error.exception)
     }
   }

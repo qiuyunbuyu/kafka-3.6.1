@@ -71,6 +71,7 @@ trait ProducerIdManager {
 }
 
 object ZkProducerIdManager {
+  // TODO: fishyu need read later
   def getNewProducerIdBlock(brokerId: Int, zkClient: KafkaZkClient, logger: Logging): ProducerIdsBlock = {
     // Get or create the existing PID block from ZK and attempt to update it. We retry in a loop here since other
     // brokers may be generating PID blocks during a rolling upgrade
@@ -219,7 +220,7 @@ class RPCProducerIdManager(brokerId: Int,
 
       if (nextProducerIdBlock.get == null &&
         requestInFlight.compareAndSet(false, true) ) {
-
+        // will send "ALLOCATE_PRODUCER_IDS"
         sendRequest()
         // Reset backoff after a successful send.
         backoffDeadlineMs.set(NoRetry)
