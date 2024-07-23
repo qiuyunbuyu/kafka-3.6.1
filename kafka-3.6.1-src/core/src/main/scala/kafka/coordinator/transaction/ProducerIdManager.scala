@@ -77,10 +77,10 @@ object ZkProducerIdManager {
     // brokers may be generating PID blocks during a rolling upgrade
     var zkWriteComplete = false
     while (!zkWriteComplete) {
-      // refresh current producerId block from zookeeper again
+      // 1. get current producerId block from zookeeper again: "/latest_producer_id_block"
       val (dataOpt, zkVersion) = zkClient.getDataAndVersion(ProducerIdBlockZNode.path)
 
-      // generate the new producerId block
+      // 2. generate the new producerId block
       val newProducerIdBlock = dataOpt match {
         case Some(data) =>
           val currProducerIdBlock = ProducerIdBlockZNode.parseProducerIdBlockData(data)
@@ -98,12 +98,12 @@ object ZkProducerIdManager {
           new ProducerIdsBlock(brokerId, 0L, ProducerIdsBlock.PRODUCER_ID_BLOCK_SIZE)
       }
 
+      // 3. try to write the new producerId block into zookeeper
       val newProducerIdBlockData = ProducerIdBlockZNode.generateProducerIdBlockJson(newProducerIdBlock)
-
-      // try to write the new producerId block into zookeeper
       val (succeeded, version) = zkClient.conditionalUpdatePath(ProducerIdBlockZNode.path, newProducerIdBlockData, zkVersion, None)
       zkWriteComplete = succeeded
 
+      // 4. return newProducerIdBlock
       if (zkWriteComplete) {
         logger.info(s"Acquired new producerId block $newProducerIdBlock by writing to Zk with path version $version")
         return newProducerIdBlock
@@ -181,7 +181,9 @@ class RPCProducerIdManager(brokerId: Int,
     var result: Try[Long] = null
     var iteration = 0
     while (result == null) {
+      // 1. first try to get producerId from "memory", sometimes need handle 2 special cases
       currentProducerIdBlock.get.claimNextId().asScala match {
+        // special cases1: nothing get from "memory", should send AllocateProducerIds Request to controller
         case None =>
           // Check the next block if current block is full
           val block = nextProducerIdBlock.getAndSet(null)
@@ -195,13 +197,14 @@ class RPCProducerIdManager(brokerId: Int,
             requestInFlight.set(false)
             iteration = iteration + 1
           }
-
+        // special cases2:  nextProducerId exceeded the maximum available segment size
         case Some(nextProducerId) =>
           // Check if we need to prefetch the next block
           val prefetchTarget = currentProducerIdBlock.get.firstProducerId + (currentProducerIdBlock.get.size * ProducerIdManager.PidPrefetchThreshold).toLong
           if (nextProducerId == prefetchTarget) {
             maybeRequestNextBlock()
           }
+        // success case
           result = Success(nextProducerId)
       }
       if (iteration == IterationLimit) {
@@ -247,6 +250,7 @@ class RPCProducerIdManager(brokerId: Int,
   }
 
   // Visible for testing
+  // update "ProducerId" info from
   private[transaction] def handleAllocateProducerIdsResponse(response: AllocateProducerIdsResponse): Unit = {
     val data = response.data
     var successfulResponse = false

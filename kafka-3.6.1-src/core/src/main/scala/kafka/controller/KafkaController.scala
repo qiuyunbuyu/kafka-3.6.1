@@ -2751,6 +2751,7 @@ class KafkaController(val config: KafkaConfig,
     }
 
     val maybeNewProducerIdsBlock = try {
+      // ** Interacting with zk
       Try(ZkProducerIdManager.getNewProducerIdBlock(brokerId, zkClient, this))
     } catch {
       case ke: KafkaException => Failure(ke)

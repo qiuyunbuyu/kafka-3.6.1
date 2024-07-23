@@ -498,6 +498,12 @@ public final class ProducerBatch {
         return recordsBuilder.isFull();
     }
 
+    /**
+     * add some info for  ProducerBatch
+     * @param producerIdAndEpoch
+     * @param baseSequence
+     * @param isTransactional
+     */
     public void setProducerState(ProducerIdAndEpoch producerIdAndEpoch, int baseSequence, boolean isTransactional) {
         recordsBuilder.setProducerState(producerIdAndEpoch.producerId, producerIdAndEpoch.epoch, baseSequence, isTransactional);
     }

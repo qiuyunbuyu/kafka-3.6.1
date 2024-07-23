@@ -299,6 +299,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.UNREGISTER_BROKER => forwardToControllerOrFail(request)
         case ApiKeys.DESCRIBE_TRANSACTIONS => handleDescribeTransactionsRequest(request)
         case ApiKeys.LIST_TRANSACTIONS => handleListTransactionsRequest(request)
+        // Controller: prefetch the next block, latest_producer_id_block
         case ApiKeys.ALLOCATE_PRODUCER_IDS => handleAllocateProducerIdsRequest(request)
         case ApiKeys.DESCRIBE_QUORUM => forwardToControllerOrFail(request)
         case ApiKeys.CONSUMER_GROUP_HEARTBEAT => handleConsumerGroupHeartbeat(request).exceptionally(handleError)
@@ -2379,7 +2380,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
     // 5. Call callback according to the construction result
     producerIdAndEpoch match {
-      // right handle: handleInitProducerId
+      // **** right handle: handleInitProducerId [txnCoordinator]
       case Right(producerIdAndEpoch) => txnCoordinator.handleInitProducerId(transactionalId, initProducerIdRequest.data.transactionTimeoutMs,
         producerIdAndEpoch, sendResponseCallback, requestLocal)
       // left handle
