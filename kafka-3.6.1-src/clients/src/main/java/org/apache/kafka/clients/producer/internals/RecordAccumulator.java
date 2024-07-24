@@ -947,6 +947,7 @@ public class RecordAccumulator {
                     // the transaction manager track the batch so as to ensure that sequence ordering is maintained
                     // even if we receive out of order responses.
                     batch.setProducerState(producerIdAndEpoch, transactionManager.sequenceNumber(batch.topicPartition), isTransactional);
+                    // update the next sequence number bound for the partition
                     transactionManager.incrementSequenceNumber(batch.topicPartition, batch.recordCount);
                     log.debug("Assigned producerId {} and producerEpoch {} to batch with base sequence " +
                             "{} being sent to partition {}", producerIdAndEpoch.producerId,

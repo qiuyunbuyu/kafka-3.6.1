@@ -105,6 +105,7 @@ public class ProducerStateEntry {
     }
 
     private void addBatchMetadata(BatchMetadata batch) {
+        // only save 5 batch
         if (batchMetadata.size() == ProducerStateEntry.NUM_BATCHES_TO_RETAIN) batchMetadata.removeFirst();
         batchMetadata.add(batch);
     }
@@ -132,12 +133,15 @@ public class ProducerStateEntry {
     }
 
     public Optional<BatchMetadata> findDuplicateBatch(RecordBatch batch) {
+        // new producer epoch, no duplicate
         if (batch.producerEpoch() != producerEpoch) return Optional.empty();
+        // Compare this new batch with the 5 batches in batchmetadata
         else return batchWithSequenceRange(batch.baseSequence(), batch.lastSequence());
     }
 
     // Return the batch metadata of the cached batch having the exact sequence range, if any.
     Optional<BatchMetadata> batchWithSequenceRange(int firstSeq, int lastSeq) {
+        // use firstSeq & lastSeq to find duplicate batch
         Stream<BatchMetadata> duplicate = batchMetadata.stream().filter(metadata -> firstSeq == metadata.firstSeq() && lastSeq == metadata.lastSeq);
         return duplicate.findFirst();
     }
