@@ -506,7 +506,7 @@ public class ProducerConfig extends AbstractConfig {
         }
         configs.put(CLIENT_ID_CONFIG, refinedClientId);
     }
-
+    // will check and validate idempotence Configs
     private void postProcessAndValidateIdempotenceConfigs(final Map<String, Object> configs) {
         final Map<String, Object> originalConfigs = this.originals();
         final String acksStr = parseAcks(this.getString(ACKS_CONFIG));

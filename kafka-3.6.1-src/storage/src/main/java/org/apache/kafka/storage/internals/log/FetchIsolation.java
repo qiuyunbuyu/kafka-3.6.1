@@ -18,7 +18,7 @@ package org.apache.kafka.storage.internals.log;
 
 import org.apache.kafka.common.IsolationLevel;
 import org.apache.kafka.common.requests.FetchRequest;
-
+// * mark "where the log can be read"
 public enum FetchIsolation {
     LOG_END,
     HIGH_WATERMARK,

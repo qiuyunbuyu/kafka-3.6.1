@@ -239,6 +239,7 @@ class LogSegment private[log] (val log: FileRecords,
   def updateTxnIndex(completedTxn: CompletedTxn, lastStableOffset: Long): Unit = {
     if (completedTxn.isAborted) {
       trace(s"Writing aborted transaction $completedTxn to transaction index, last stable offset is $lastStableOffset")
+      // "xxxx.txnindex" can help consumers filter "abort Txn messages"
       txnIndex.append(new AbortedTxn(completedTxn, lastStableOffset))
     }
   }
@@ -251,6 +252,7 @@ class LogSegment private[log] (val log: FileRecords,
       producerStateManager.update(appendInfo)
       maybeCompletedTxn.ifPresent(completedTxn => {
         val lastStableOffset = producerStateManager.lastStableOffset(completedTxn)
+        // may write "Txn attach data" to "xxxx.txnindex"
         updateTxnIndex(completedTxn, lastStableOffset)
         producerStateManager.completeTxn(completedTxn)
       })

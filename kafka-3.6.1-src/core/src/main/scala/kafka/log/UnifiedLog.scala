@@ -396,7 +396,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
 
     // cache the current high watermark to avoid a concurrent update invalidating the range check
     val highWatermarkMetadata = fetchHighWatermarkMetadata
-
+    // can Contact "def lastStableOffset: Long" to understand
     firstUnstableOffsetMetadata match {
       case Some(offsetMetadata) if offsetMetadata.messageOffset < highWatermarkMetadata.messageOffset =>
         if (offsetMetadata.messageOffsetOnly) {

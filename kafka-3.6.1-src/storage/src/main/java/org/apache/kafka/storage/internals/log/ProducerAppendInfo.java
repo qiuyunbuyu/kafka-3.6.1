@@ -107,7 +107,7 @@ public class ProducerAppendInfo {
             }
         }
     }
-
+    // To check order of messages
     private void checkSequence(short producerEpoch, int appendFirstSeq, long offset) {
         if (verificationStateEntry != null && appendFirstSeq > verificationStateEntry.lowestSequence()) {
             throw new OutOfOrderSequenceException("Out of order sequence number for producer " + producerId + " at " +

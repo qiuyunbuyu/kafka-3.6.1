@@ -1127,6 +1127,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     serializedValue, headers, appendCallbacks, remainingWaitMs, false, nowMs, cluster);
             }
 
+            // a. we get a record
+            // b. we count the partition of this "record"
+            // c. if we use transaction, we should send "ADD_PARTITIONS_TO_TXN Request" to mark
             // Add the partition to the transaction (if in progress) after it has been successfully
             // appended to the accumulator. We cannot do it before because the partition may be
             // unknown or the initially selected partition may be changed when the batch is closed

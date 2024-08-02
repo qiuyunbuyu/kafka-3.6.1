@@ -131,7 +131,10 @@ public class ProducerStateEntry {
     public void setCurrentTxnFirstOffset(long firstOffset) {
         this.currentTxnFirstOffset = OptionalLong.of(firstOffset);
     }
-    // ! Only guarantee no duplication
+    // findDuplicateBatch(RecordBatch batch): Only check no duplication
+    // kafka.log.ProducerAppendInfo#checkSequence(): will check Sequence
+
+    // The order of messages is also related to the order of network requests
     // Guaranteeing order requires additional processing
     // kafka 0.11 - 2.0: use "max.in.flight.requests.per.connection = 1" to Guaranteed order
     // kafka > 2.0 can set "max.in.flight.requests.per.connection <= 5" to Guaranteed order
