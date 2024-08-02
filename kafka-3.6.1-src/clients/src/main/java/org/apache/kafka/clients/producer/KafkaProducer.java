@@ -613,11 +613,17 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private TransactionManager configureTransactionState(ProducerConfig config,
                                                          LogContext logContext) {
         TransactionManager transactionManager = null;
-
+        // judge enable.idempotence -> default true
         if (config.getBoolean(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG)) {
+            // 1. get config
+            // try to get "transactional.id", default is null
             final String transactionalId = config.getString(ProducerConfig.TRANSACTIONAL_ID_CONFIG);
+            // try to get "transaction.timeout.ms", default is 60000
             final int transactionTimeoutMs = config.getInt(ProducerConfig.TRANSACTION_TIMEOUT_CONFIG);
+            // try to get "retry.backoff.ms", default is 100L
             final long retryBackoffMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG);
+
+            // 2. init transactionManager
             transactionManager = new TransactionManager(
                 logContext,
                 transactionalId,
@@ -626,6 +632,8 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 apiVersions
             );
 
+            // 3. judge is a transactional producer?
+            // [transactionalId != null]
             if (transactionManager.isTransactional())
                 log.info("Instantiated a transactional producer.");
             else
@@ -664,11 +672,15 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      * @throws InterruptException if the thread is interrupted while blocked
      */
     public void initTransactions() {
+        // check TransactionManager exist ?
         throwIfNoTransactionManager();
+        // Verify that this producer instance has not been closed ?
         throwIfProducerClosed();
         long now = time.nanoseconds();
+        // initialize Transactions [InitProducerIdRequest]
         TransactionalRequestResult result = transactionManager.initializeTransactions();
         sender.wakeup();
+        // wait initialize result
         result.await(maxBlockTimeMs, TimeUnit.MILLISECONDS);
         producerMetrics.recordInit(time.nanoseconds() - now);
     }
@@ -834,8 +846,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         throwIfNoTransactionManager();
         throwIfProducerClosed();
         long commitStart = time.nanoseconds();
+        // will send EndTxnRequest
         TransactionalRequestResult result = transactionManager.beginCommit();
+        // Interrupt the nioSelector if it is blocked waiting to do I/O.
         sender.wakeup();
+        // will block producer to wait EndTxnResponse
         result.await(maxBlockTimeMs, TimeUnit.MILLISECONDS);
         producerMetrics.recordCommitTxn(time.nanoseconds() - commitStart);
     }

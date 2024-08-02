@@ -26,6 +26,9 @@ import org.apache.kafka.common.requests.ProduceResponse;
 import org.apache.kafka.common.utils.PrimitiveRef;
 import org.apache.kafka.common.utils.ProducerIdAndEpoch;
 
+/**
+ * help for save & update TopicPartition Txn info
+ */
 class TxnPartitionMap {
 
     final Map<TopicPartition, TxnPartitionEntry> topicPartitions = new HashMap<>();
@@ -68,7 +71,7 @@ class TxnPartitionMap {
             return OptionalInt.empty();
         }
     }
-
+    // Reset to initial: producerIdAndEpoch + nextSequence + lastAckedSequence
     void startSequencesAtBeginning(TopicPartition topicPartition, ProducerIdAndEpoch newProducerIdAndEpoch) {
         final PrimitiveRef.IntRef sequence = PrimitiveRef.ofInt(0);
         TxnPartitionEntry topicPartitionEntry = get(topicPartition);

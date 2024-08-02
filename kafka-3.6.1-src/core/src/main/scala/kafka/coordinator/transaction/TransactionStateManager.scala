@@ -371,18 +371,23 @@ class TransactionStateManager(brokerId: Int,
   private def getAndMaybeAddTransactionState(transactionalId: String,
                                              createdTxnMetadataOpt: Option[TransactionMetadata]): Either[Errors, Option[CoordinatorEpochAndTxnMetadata]] = {
     inReadLock(stateLock) {
+      // get __transaction_state partition Id by transactionalId
       val partitionId = partitionFor(transactionalId)
+      // if Partition is loading now...., throw Errors
       if (loadingPartitions.exists(_.txnPartitionId == partitionId))
         Left(Errors.COORDINATOR_LOAD_IN_PROGRESS)
       else {
         transactionMetadataCache.get(partitionId) match {
           case Some(cacheEntry) =>
+            // try to get "transactionalId" TransactionMetadata from cache
             val txnMetadata = Option(cacheEntry.metadataPerTransactionalId.get(transactionalId)).orElse {
+              // if cache not exist, will create
               createdTxnMetadataOpt.map { createdTxnMetadata =>
                 Option(cacheEntry.metadataPerTransactionalId.putIfNotExists(transactionalId, createdTxnMetadata))
                   .getOrElse(createdTxnMetadata)
               }
             }
+            // finally return
             Right(txnMetadata.map(CoordinatorEpochAndTxnMetadata(cacheEntry.coordinatorEpoch, _)))
 
           case None =>
@@ -616,7 +621,7 @@ class TransactionStateManager(brokerId: Int,
 
   def appendTransactionToLog(transactionalId: String,
                              coordinatorEpoch: Int,
-                             newMetadata: TxnTransitMetadata,
+                             newMetadata: TxnTransitMetadata, // new TxnTransitMetadata
                              responseCallback: Errors => Unit,
                              retryOnError: Errors => Boolean = _ => false,
                              requestLocal: RequestLocal): Unit = {

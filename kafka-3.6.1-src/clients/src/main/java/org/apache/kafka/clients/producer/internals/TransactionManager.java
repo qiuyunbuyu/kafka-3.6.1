@@ -118,6 +118,8 @@ public class TransactionManager {
     // partitions will have the sequences of their in-flight batches rewritten
     private final Set<TopicPartition> partitionsToRewriteSequences;
 
+    // use to save the "TxnRequest need to be handled" "pending Requests"
+    // when and how send "pending Requests" => Sender.maybeSendAndPollTransactionalRequest()
     private final PriorityQueue<TxnRequestHandler> pendingRequests;
     private final Set<TopicPartition> newPartitionsInTransaction;
     private final Set<TopicPartition> pendingPartitionsInTransaction;
@@ -186,6 +188,7 @@ public class TransactionManager {
     private static final long ADD_PARTITIONS_RETRY_BACKOFF_MS = 20L;
 
     private int inFlightRequestCorrelationId = NO_INFLIGHT_REQUEST_CORRELATION_ID;
+    // * Coordinator in TransactionManager
     private Node transactionCoordinator;
     private Node consumerGroupCoordinator;
     private boolean coordinatorSupportsBumpingEpoch;
@@ -280,33 +283,38 @@ public class TransactionManager {
     }
 
     public synchronized TransactionalRequestResult initializeTransactions() {
+        // ProducerIdAndEpoch.NONE means ProducerIdAndEpoch(-1, -1)
         return initializeTransactions(ProducerIdAndEpoch.NONE);
     }
 
     synchronized TransactionalRequestResult initializeTransactions(ProducerIdAndEpoch producerIdAndEpoch) {
         maybeFailWithError();
-
+        // is Epoch Bump?
         boolean isEpochBump = producerIdAndEpoch != ProducerIdAndEpoch.NONE;
         return handleCachedTransactionRequestResult(() -> {
-            // If this is an epoch bump, we will transition the state as part of handling the EndTxnRequest
+            // a. If this is an epoch bump, we will transition the state as part of handling the EndTxnRequest
             if (!isEpochBump) {
                 transitionTo(State.INITIALIZING);
                 log.info("Invoking InitProducerId for the first time in order to acquire a producer ID");
             } else {
                 log.info("Invoking InitProducerId with current producer ID and epoch {} in order to bump the epoch", producerIdAndEpoch);
             }
+            // b. construct InitProducerIdRequest
             InitProducerIdRequestData requestData = new InitProducerIdRequestData()
                     .setTransactionalId(transactionalId)
                     .setTransactionTimeoutMs(transactionTimeoutMs)
                     .setProducerId(producerIdAndEpoch.producerId)
                     .setProducerEpoch(producerIdAndEpoch.epoch);
+            // c. construct InitProducerIdHandler
             InitProducerIdHandler handler = new InitProducerIdHandler(new InitProducerIdRequest.Builder(requestData),
                     isEpochBump);
+            // d. InitProducerIdHandler will be added to PriorityQueue<TxnRequestHandler> to wait for sending
             enqueueRequest(handler);
             return handler.result;
         }, State.INITIALIZING, "initTransactions");
     }
 
+    // only update the TransitionState
     public synchronized void beginTransaction() {
         ensureTransactional();
         throwIfPendingState("beginTransaction");
@@ -350,6 +358,7 @@ public class TransactionManager {
                             .setCommitted(transactionResult.id));
 
             EndTxnHandler handler = new EndTxnHandler(builder);
+            // add EndTxnRequest to PriorityQueue<TxnRequestHandler>
             enqueueRequest(handler);
             if (!epochBumpRequired) {
                 return handler.result;
@@ -399,7 +408,9 @@ public class TransactionManager {
                 return;
             } else {
                 log.debug("Begin adding new partition {} to transaction", topicPartition);
+                // TxnPartitionMap
                 txnPartitionMap.getOrCreate(topicPartition);
+                // Set<TopicPartition>
                 newPartitionsInTransaction.add(topicPartition);
             }
         }
@@ -584,9 +595,11 @@ public class TransactionManager {
     }
 
     synchronized void incrementSequenceNumber(TopicPartition topicPartition, int increment) {
+        // get currentSequence
         Integer currentSequence = sequenceNumber(topicPartition);
-
+        // add currentSequence
         currentSequence = DefaultRecordBatch.incrementSequence(currentSequence, increment);
+        // set currentSequence
         txnPartitionMap.get(topicPartition).nextSequence = currentSequence;
     }
 
@@ -840,26 +853,38 @@ public class TransactionManager {
                 sequence == this.partitionsWithUnresolvedSequences.get(topicPartition);
     }
 
+    // get next TxnRequest
     synchronized TxnRequestHandler nextRequest(boolean hasIncompleteBatches) {
+        // 1. newPartitionsInTransaction not empty
+        // 1.1 Convert "newPartitionsInTransaction" to "pendingPartitionsInTransaction"
+        // 1.2 use "pendingPartitionsInTransaction" to construct "AddPartitionsToTxnRequest"
+        // 1.3 add "AddPartitionsToTxnRequest" to [PriorityQueue<TxnRequestHandler> pendingRequests]
         if (!newPartitionsInTransaction.isEmpty())
             enqueueRequest(addPartitionsToTransactionHandler());
 
+        // 2. get next "TxnRequest" to judge
         TxnRequestHandler nextRequestHandler = pendingRequests.peek();
         if (nextRequestHandler == null)
             return null;
 
-        // Do not send the EndTxn until all batches have been flushed
+        // 3. Do not send the EndTxn until all batches have been flushed
         if (nextRequestHandler.isEndTxn() && hasIncompleteBatches)
             return null;
 
+        // 4. remove TxnRequestHandler from PriorityQueue
         pendingRequests.poll();
+
+        // 5. maybe terminate Request with Error
         if (maybeTerminateRequestWithError(nextRequestHandler)) {
             log.trace("Not sending transactional request {} because we are in an error state",
                     nextRequestHandler.requestBuilder());
             return null;
         }
 
+        // 6. special handle "EndTxnHandler"
+        // if this TxnRequest is EndTxnRequest and transaction is not start
         if (nextRequestHandler.isEndTxn() && !transactionStarted) {
+            // handle "EndTxnRequest" done
             nextRequestHandler.result.done();
             if (currentState != State.FATAL_ERROR) {
                 log.debug("Not sending EndTxn for completed transaction since no partitions " +
@@ -1143,13 +1168,16 @@ public class TransactionManager {
     }
 
     private TxnRequestHandler addPartitionsToTransactionHandler() {
+        // 1. newPartitionsInTransaction -> pendingPartitionsInTransaction
         pendingPartitionsInTransaction.addAll(newPartitionsInTransaction);
         newPartitionsInTransaction.clear();
+        // 2. use pendingPartitionsInTransaction to construct "AddPartitionsToTxnRequest"
         AddPartitionsToTxnRequest.Builder builder =
             AddPartitionsToTxnRequest.Builder.forClient(transactionalId,
                 producerIdAndEpoch.producerId,
                 producerIdAndEpoch.epoch,
                 new ArrayList<>(pendingPartitionsInTransaction));
+        // 3. return
         return new AddPartitionsToTxnHandler(builder);
     }
 
@@ -1372,9 +1400,12 @@ public class TransactionManager {
             Errors error = initProducerIdResponse.error();
 
             if (error == Errors.NONE) {
+                // get producerIdAndEpoch from success response
                 ProducerIdAndEpoch producerIdAndEpoch = new ProducerIdAndEpoch(initProducerIdResponse.data().producerId(),
                         initProducerIdResponse.data().producerEpoch());
+                // update TransactionManager producerIdAndEpoch
                 setProducerIdAndEpoch(producerIdAndEpoch);
+                // update TransactionManager state
                 transitionTo(State.READY);
                 lastError = null;
                 if (this.isEpochBump) {
@@ -1660,7 +1691,7 @@ public class TransactionManager {
 
             if (error == Errors.NONE) {
                 log.debug("Successfully added partition for consumer group {} to transaction", builder.data.groupId());
-
+                // when handle "AddOffsetsToTxnResponse", will send TxnOffsetCommit Request
                 // note the result is not completed until the TxnOffsetCommit returns
                 pendingRequests.add(txnOffsetCommitHandler(result, offsets, groupMetadata));
 

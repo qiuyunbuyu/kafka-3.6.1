@@ -475,15 +475,23 @@ public class Sender implements Runnable {
     }
 
     /**
-     * Returns true if a transactional request is sent or polled, or if a FindCoordinator request is enqueued
+     * help for "send" or "poll" TransactionalRequest
+     * case1: Returns true if a "transactional request" is sent or polled
+     * or
+     * case2: if a "FindCoordinator request" is enqueued
+     *
      */
     private boolean maybeSendAndPollTransactionalRequest() {
+        // case1: Priority handle InFlight TxnRequest
+        // 1. transactionManager have: InFlight TxnRequest -> wait for return
         if (transactionManager.hasInFlightRequest()) {
             // as long as there are outstanding transactional requests, we simply wait for them to return
             client.poll(retryBackoffMs, time.milliseconds());
             return true;
         }
 
+        // case2: "Abort" handling
+        // 2. transactionManager have: "Abortable" or "Aborting" -> accumulator abort batches
         if (transactionManager.hasAbortableError() || transactionManager.isAborting()) {
             if (accumulator.hasIncomplete()) {
                 // Attempt to get the last error that caused this abort.
@@ -497,6 +505,8 @@ public class Sender implements Runnable {
             }
         }
 
+        // case3: new TxnRequest handle
+        // 3. get TxnRequestHandler from PriorityQueue<TxnRequestHandler>
         TransactionManager.TxnRequestHandler nextRequestHandler = transactionManager.nextRequest(accumulator.hasIncomplete());
         if (nextRequestHandler == null)
             return false;
@@ -504,10 +514,19 @@ public class Sender implements Runnable {
         AbstractRequest.Builder<?> requestBuilder = nextRequestHandler.requestBuilder();
         Node targetNode = null;
         try {
+            // construct and send transactional request....
+            // a. decide TxnRequest coordinatorType
             FindCoordinatorRequest.CoordinatorType coordinatorType = nextRequestHandler.coordinatorType();
+
+            // b. decide targetNode accord coordinatorType
+                // case1: Node transactionCoordinator
+                // case2: Node consumerGroupCoordinator
+                // case3: Node leastLoadedNode
             targetNode = coordinatorType != null ?
                     transactionManager.coordinator(coordinatorType) :
                     client.leastLoadedNode(time.milliseconds());
+
+            // c. ensure targetNode is ready
             if (targetNode != null) {
                 if (!awaitNodeReady(targetNode, coordinatorType)) {
                     log.trace("Target node {} not ready within request timeout, will retry when node is ready.", targetNode);
@@ -529,6 +548,7 @@ public class Sender implements Runnable {
                 time.sleep(nextRequestHandler.retryBackoffMs());
 
             long currentTimeMs = time.milliseconds();
+            // d. transactional request can be sended now
             ClientRequest clientRequest = client.newClientRequest(targetNode.idString(), requestBuilder, currentTimeMs,
                 true, requestTimeoutMs, nextRequestHandler);
             log.debug("Sending transactional request {} to node {} with correlation ID {}", requestBuilder, targetNode, clientRequest.correlationId());
@@ -546,6 +566,7 @@ public class Sender implements Runnable {
     }
 
     private void maybeFindCoordinatorAndRetry(TransactionManager.TxnRequestHandler nextRequestHandler) {
+        // if nextRequest need Coordinator help, should find Coordinator first
         if (nextRequestHandler.needsCoordinator()) {
             transactionManager.lookupCoordinator(nextRequestHandler);
         } else {
@@ -553,7 +574,7 @@ public class Sender implements Runnable {
             time.sleep(retryBackoffMs);
             metadata.requestUpdate();
         }
-
+        // will call "pendingRequests.add(requestHandler)"
         transactionManager.retry(nextRequestHandler);
     }
 
@@ -697,7 +718,9 @@ public class Sender implements Runnable {
                     this.retries - batch.attempts() - 1,
                     formatErrMsg(response));
                 reenqueueBatch(batch, now);
-            } else if (error == Errors.DUPLICATE_SEQUENCE_NUMBER) {
+            }
+            // Errors.DUPLICATE_SEQUENCE_NUMBER -> return success directly
+            else if (error == Errors.DUPLICATE_SEQUENCE_NUMBER) {
                 // If we have received a duplicate sequence error, it means that the sequence number has advanced beyond
                 // the sequence of the current batch, and we haven't retained batch metadata on the broker to return
                 // the correct offset and timestamp.

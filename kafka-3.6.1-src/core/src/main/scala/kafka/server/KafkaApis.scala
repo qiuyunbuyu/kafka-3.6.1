@@ -234,15 +234,15 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.INIT_PRODUCER_ID => handleInitProducerIdRequest(request, requestLocal)
         // Get the specified partition and the offset of the specified replica
         case ApiKeys.OFFSET_FOR_LEADER_EPOCH => handleOffsetForLeaderEpochRequest(request)
-        // Add the specified partition to the transaction
+        // Producer: Add the specified partition to the transaction
         case ApiKeys.ADD_PARTITIONS_TO_TXN => handleAddPartitionsToTxnRequest(request, requestLocal)
-        // add consumer offset to the transaction
+        // Consumer: add consumer offset to the transaction
         case ApiKeys.ADD_OFFSETS_TO_TXN => handleAddOffsetsToTxnRequest(request, requestLocal)
-        // Mark the end of the transaction
+        // Producer: Mark the end of the transaction
         case ApiKeys.END_TXN => handleEndTxnRequest(request, requestLocal)
         //
         case ApiKeys.WRITE_TXN_MARKERS => handleWriteTxnMarkersRequest(request, requestLocal)
-        // Submit transaction id and offset at the same time
+        // Consumer: Submit transaction id and offset at the same time
         case ApiKeys.TXN_OFFSET_COMMIT => handleTxnOffsetCommitRequest(request, requestLocal).exceptionally(handleError)
         // Get acl list
         case ApiKeys.DESCRIBE_ACLS => handleDescribeAcls(request)
@@ -1614,6 +1614,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     authHelper.partitionSeqByAuthorized(context, DESCRIBE, TOPIC, seq)(_.topic)
 
   def handleFindCoordinatorRequest(request: RequestChannel.Request): Unit = {
+    // Determine the version
     val version = request.header.apiVersion
     if (version < 4) {
       handleFindCoordinatorRequestLessThanV4(request)
@@ -1679,20 +1680,20 @@ class KafkaApis(val requestChannel: RequestChannel,
         !authHelper.authorize(request.context, DESCRIBE, TRANSACTIONAL_ID, key))
       (Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED, Node.noNode)
     else {
-      // distinguish CoordinatorType
+      // distinguish CoordinatorType to get [topic-name(__consumer_offsets | __transaction_state) <-> partitionNum ]
       val (partition, internalTopicName) = CoordinatorType.forId(keyType) match {
         case CoordinatorType.GROUP =>
-          (groupCoordinator.partitionFor(key), GROUP_METADATA_TOPIC_NAME)
+          (groupCoordinator.partitionFor(key), GROUP_METADATA_TOPIC_NAME) // __consumer_offsets
 
         case CoordinatorType.TRANSACTION =>
-          (txnCoordinator.partitionFor(key), TRANSACTION_STATE_TOPIC_NAME)
+          (txnCoordinator.partitionFor(key), TRANSACTION_STATE_TOPIC_NAME) // __transaction_state
       }
       // get internalTopicName Metadata
       val topicMetadata = metadataCache.getTopicMetadata(Set(internalTopicName), request.context.listenerName)
 
       if (topicMetadata.headOption.isEmpty) {
         val controllerMutationQuota = quotas.controllerMutation.newPermissiveQuotaFor(request)
-        // try to create internalTopic
+        // auto try to create internalTopic if not exist
         autoTopicCreationManager.createTopics(Seq(internalTopicName).toSet, controllerMutationQuota, None)
         (Errors.COORDINATOR_NOT_AVAILABLE, Node.noNode)
       } else {
@@ -2392,8 +2393,9 @@ class KafkaApis(val requestChannel: RequestChannel,
     ensureInterBrokerVersion(IBP_0_11_0_IV0)
     val endTxnRequest = request.body[EndTxnRequest]
     val transactionalId = endTxnRequest.data.transactionalId
-
+    // Auth
     if (authHelper.authorize(request.context, WRITE, TRANSACTIONAL_ID, transactionalId)) {
+      // define response need
       def sendResponseCallback(error: Errors): Unit = {
         def createResponse(requestThrottleMs: Int): AbstractResponse = {
           val finalError =
@@ -2414,19 +2416,21 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
         requestHelper.sendResponseMaybeThrottle(request, createResponse)
       }
-
+      // handle
       txnCoordinator.handleEndTransaction(endTxnRequest.data.transactionalId,
         endTxnRequest.data.producerId,
         endTxnRequest.data.producerEpoch,
         endTxnRequest.result(),
         sendResponseCallback,
         requestLocal)
-    } else
+    } else {
+      // 1. Transactional Id authorization failed.
       requestHelper.sendResponseMaybeThrottle(request, requestThrottleMs =>
         new EndTxnResponse(new EndTxnResponseData()
             .setErrorCode(Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED.code)
             .setThrottleTimeMs(requestThrottleMs))
       )
+    }
   }
 
   def handleWriteTxnMarkersRequest(request: RequestChannel.Request, requestLocal: RequestLocal): Unit = {
@@ -2541,14 +2545,20 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
   def handleAddPartitionsToTxnRequest(request: RequestChannel.Request, requestLocal: RequestLocal): Unit = {
     ensureInterBrokerVersion(IBP_0_11_0_IV0)
+    // resolve request
     val addPartitionsToTxnRequest =
       if (request.context.apiVersion() < 4) 
         request.body[AddPartitionsToTxnRequest].normalizeRequest() 
       else 
         request.body[AddPartitionsToTxnRequest]
+
+    // get version
     val version = addPartitionsToTxnRequest.version
-    val responses = new AddPartitionsToTxnResultCollection()
+    // get Map<transaction.transactionalId(), List<TopicPartition>>
     val partitionsByTransaction = addPartitionsToTxnRequest.partitionsByTransaction()
+
+    // prepare responses
+    val responses = new AddPartitionsToTxnResultCollection()
     
     // Newer versions of the request should only come from other brokers.
     if (version >= 4) authHelper.authorizeClusterOperation(request, CLUSTER_ACTION)
@@ -2569,6 +2579,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
     }
 
+    // get "AddPartitionsToTxnTransactionCollection" from request
     val txns = addPartitionsToTxnRequest.data.transactions
     def addResultAndMaybeSendResponse(result: AddPartitionsToTxnResult): Unit = {
       val canSend = responses.synchronized {
@@ -2580,14 +2591,18 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
     }
 
-    txns.forEach { transaction => 
+    // txns.forEach
+    txns.forEach { transaction =>
+      // 1. get transactionalId
       val transactionalId = transaction.transactionalId
 
       if (transactionalId == null)
         throw new InvalidRequestException("Transactional ID can not be null in request.")
 
+      // 2. get "partitionsToAdd" by transactionalId
       val partitionsToAdd = partitionsByTransaction.get(transactionalId).asScala
 
+      // 3. auth & return
       // Versions < 4 come from clients and must be authorized to write for the given transaction and for the given topics.
       if (version < 4 && !authHelper.authorize(request.context, WRITE, TRANSACTIONAL_ID, transactionalId)) {
         addResultAndMaybeSendResponse(addPartitionsToTxnRequest.errorResponseForTransaction(transactionalId, Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED))
@@ -2602,7 +2617,10 @@ class KafkaApis(val requestChannel: RequestChannel,
             authHelper.filterByAuthorized(request.context, WRITE, TOPIC, partitionsToAdd.filterNot(tp => Topic.isInternal(tp.topic)))(_.topic) 
           else 
             partitionsToAdd.map(_.topic).toSet
+
+        // for each topicPartition
         for (topicPartition <- partitionsToAdd) {
+          // distinguish: [unauthorizedTopicErrors | nonExistingTopicErrors | authorizedPartitions]
           if (!authorizedTopics.contains(topicPartition.topic))
             unauthorizedTopicErrors += topicPartition -> Errors.TOPIC_AUTHORIZATION_FAILED
           else if (!metadataCache.contains(topicPartition))
@@ -2611,6 +2629,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             authorizedPartitions.add(topicPartition)
         }
 
+        // exist [unauthorizedTopicErrors | nonExistingTopicErrors] -> return Errors.response
         if (unauthorizedTopicErrors.nonEmpty || nonExistingTopicErrors.nonEmpty) {
           // Any failed partition check causes the entire transaction to fail. We send the appropriate error codes for the
           // partitions which failed, and an 'OPERATION_NOT_ATTEMPTED' error code for the partitions which succeeded
@@ -2619,6 +2638,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             authorizedPartitions.map(_ -> Errors.OPERATION_NOT_ATTEMPTED)
           addResultAndMaybeSendResponse(AddPartitionsToTxnResponse.resultForTransaction(transactionalId, partitionErrors.asJava))
         } else {
+          // Response define
           def sendResponseCallback(error: Errors): Unit = {
             val finalError = {
               if (version < 2 && error == Errors.PRODUCER_FENCED) {
@@ -2632,6 +2652,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             addResultAndMaybeSendResponse(addPartitionsToTxnRequest.errorResponseForTransaction(transactionalId, finalError))
           }
 
+          // handleAddPartitionsToTransaction will call "sendResponseCallback"
           if (!transaction.verifyOnly) {
             txnCoordinator.handleAddPartitionsToTransaction(transactionalId,
               transaction.producerId,
@@ -2640,6 +2661,7 @@ class KafkaApis(val requestChannel: RequestChannel,
               sendResponseCallback,
               requestLocal)
           } else {
+          // maybe only verify
             txnCoordinator.handleVerifyPartitionsInTransaction(transactionalId,
               transaction.producerId,
               transaction.producerEpoch,

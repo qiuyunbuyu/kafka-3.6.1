@@ -106,11 +106,15 @@ public class ProducerStateManager {
 
     private final Logger log;
 
-    private final TopicPartition topicPartition;
+
     private final int maxTransactionTimeoutMs;
     private final ProducerStateManagerConfig producerStateManagerConfig;
     private final Time time;
 
+    // Idempotence Base: [ TopicPartition + Map<Long, ProducerStateEntry>]
+    // * TopicPartition of ProducerStateManager
+    private final TopicPartition topicPartition;
+    // Long is "Producer PID" | ProducerStateEntry is "the state of a specific producer-id."
     private final Map<Long, ProducerStateEntry> producers = new HashMap<>();
 
     private final Map<Long, VerificationStateEntry> verificationStates = new HashMap<>();

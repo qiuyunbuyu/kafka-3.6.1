@@ -135,7 +135,7 @@ class TxnMarkerQueue(@volatile var destination: Node) {
   // visible for testing
   def totalNumMarkers(txnTopicPartition: Int): Int = markersPerTxnTopicPartition.get(txnTopicPartition).fold(0)(_.size)
 }
-
+// Responsible for sending "WriteTxnMarkers Request" requests to other broker nodes
 class TransactionMarkerChannelManager(
   config: KafkaConfig,
   metadataCache: MetadataCache,
@@ -150,7 +150,7 @@ class TransactionMarkerChannelManager(
   this.logIdent = "[Transaction Marker Channel Manager " + config.brokerId + "]: "
 
   private val interBrokerListenerName: ListenerName = config.interBrokerListenerName
-
+  // save <broker Id, WriteTxnMarkers Request send to corresponding broker Id>
   private val markersQueuePerBroker: concurrent.Map[Int, TxnMarkerQueue] = new ConcurrentHashMap[Int, TxnMarkerQueue]().asScala
 
   private val markersQueueForUnknownBroker = new TxnMarkerQueue(Node.noNode)
@@ -360,11 +360,13 @@ class TransactionMarkerChannelManager(
                                  result: TransactionResult,
                                  coordinatorEpoch: Int,
                                  topicPartitions: immutable.Set[TopicPartition]): Unit = {
+    // 1. get partition ID
     val txnTopicPartition = txnStateManager.partitionFor(transactionalId)
     val partitionsByDestination: immutable.Map[Option[Node], immutable.Set[TopicPartition]] = topicPartitions.groupBy { topicPartition: TopicPartition =>
+      // 2. get Partition Leader Replica broker ID
       metadataCache.getPartitionLeaderEndpoint(topicPartition.topic, topicPartition.partition, interBrokerListenerName)
     }
-
+    // 3. foreach broker group
     for ((broker: Option[Node], topicPartitions: immutable.Set[TopicPartition]) <- partitionsByDestination) {
       broker match {
         case Some(brokerNode) =>

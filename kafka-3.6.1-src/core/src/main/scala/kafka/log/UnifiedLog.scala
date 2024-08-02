@@ -885,12 +885,13 @@ class UnifiedLog(@volatile var logStartOffset: Long,
             segment.baseOffset,
             segment.size)
 
-          // now that we have valid records, offsets assigned, and timestamps updated, we need to
-          // validate the idempotent/transactional state of the producers and collect some metadata
+          // now that we have valid records, offsets assigned, and timestamps updated,
+          // * we need to validate the idempotent/transactional state of the producers and collect some metadata *
           val (updatedProducers, completedTxns, maybeDuplicate) = analyzeAndValidateProducerState(
             logOffsetMetadata, validRecords, origin, verificationGuard)
 
           maybeDuplicate match {
+            // if duplicate, just ignore
             case Some(duplicate) =>
               appendInfo.setFirstOffset(Optional.of(new LogOffsetMetadata(duplicate.firstOffset)))
               appendInfo.setLastOffset(duplicate.lastOffset)
@@ -1036,14 +1037,15 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     val updatedProducers = mutable.Map.empty[Long, ProducerAppendInfo]
     val completedTxns = ListBuffer.empty[CompletedTxn]
     var relativePositionInSegment = appendOffsetMetadata.relativePositionInSegment
-
+    // ForEach batches
     records.batches.forEach { batch =>
+      // use ProducerId to judge is "Idempotence"? Going one step further is transactional?
       if (batch.hasProducerId) {
         // if this is a client produce request, there will be up to 5 batches which could have been duplicated.
         // If we find a duplicate, we return the metadata of the appended batch to the client.
         if (origin == AppendOrigin.CLIENT) {
           val maybeLastEntry = producerStateManager.lastEntry(batch.producerId)
-
+          // 1. find duplicateBatch
           val duplicateBatch = maybeLastEntry.flatMap(_.findDuplicateBatch(batch))
           if (duplicateBatch.isPresent) {
             return (updatedProducers, completedTxns.toList, Some(duplicateBatch.get()))
@@ -1075,8 +1077,9 @@ class UnifiedLog(@volatile var logStartOffset: Long,
           Some(new LogOffsetMetadata(batch.baseOffset, appendOffsetMetadata.segmentBaseOffset, relativePositionInSegment))
         else
           None
-
+        // 2.
         val maybeCompletedTxn = updateProducers(producerStateManager, batch, updatedProducers, firstOffsetMetadata, origin)
+        // 3.
         maybeCompletedTxn.foreach(completedTxns += _)
       }
 

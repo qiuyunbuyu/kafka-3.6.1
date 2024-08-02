@@ -927,17 +927,19 @@ public class RecordAccumulator {
                 }
 
                 batch = deque.pollFirst();
-
+                // only if "transactionalId != null" means Txn batch
                 boolean isTransactional = transactionManager != null && transactionManager.isTransactional();
                 ProducerIdAndEpoch producerIdAndEpoch =
                     transactionManager != null ? transactionManager.producerIdAndEpoch() : null;
                 if (producerIdAndEpoch != null && !batch.hasSequence()) {
+                    // 1.
                     // If the producer id/epoch of the partition do not match the latest one
                     // of the producer, we update it and reset the sequence. This should be
                     // only done when all its in-flight batches have completed. This is guarantee
                     // in `shouldStopDrainBatchesForPartition`.
                     transactionManager.maybeUpdateProducerIdAndEpoch(batch.topicPartition);
 
+                    // 2. “transactionManager.sequenceNumber(batch.topicPartition)” will get nextSequence
                     // If the batch already has an assigned sequence, then we should not change the producer id and
                     // sequence number, since this may introduce duplicates. In particular, the previous attempt
                     // may actually have been accepted, and if we change the producer id and sequence here, this
@@ -947,12 +949,16 @@ public class RecordAccumulator {
                     // the transaction manager track the batch so as to ensure that sequence ordering is maintained
                     // even if we receive out of order responses.
                     batch.setProducerState(producerIdAndEpoch, transactionManager.sequenceNumber(batch.topicPartition), isTransactional);
+
+                    // 3.
                     // update the next sequence number bound for the partition
+                    // new Sequence = currentSequence + increment(batch.recordCount)
                     transactionManager.incrementSequenceNumber(batch.topicPartition, batch.recordCount);
                     log.debug("Assigned producerId {} and producerEpoch {} to batch with base sequence " +
                             "{} being sent to partition {}", producerIdAndEpoch.producerId,
                         producerIdAndEpoch.epoch, batch.baseSequence(), tp);
 
+                    // 4.
                     transactionManager.addInFlightBatch(batch);
                 }
             }

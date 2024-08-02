@@ -131,11 +131,15 @@ public class ProducerStateEntry {
     public void setCurrentTxnFirstOffset(long firstOffset) {
         this.currentTxnFirstOffset = OptionalLong.of(firstOffset);
     }
-
+    // ! Only guarantee no duplication
+    // Guaranteeing order requires additional processing
+    // kafka 0.11 - 2.0: use "max.in.flight.requests.per.connection = 1" to Guaranteed order
+    // kafka > 2.0 can set "max.in.flight.requests.per.connection <= 5" to Guaranteed order
+    // For details, please refer to "RecordAccumulator.insertInSequenceOrder(...)"
     public Optional<BatchMetadata> findDuplicateBatch(RecordBatch batch) {
         // new producer epoch, no duplicate
         if (batch.producerEpoch() != producerEpoch) return Optional.empty();
-        // Compare this new batch with the 5 batches in batchmetadata
+        // Compare this new batch[batch.baseSequence, batch.lastSequence] with the 5 batches in batchmetadata
         else return batchWithSequenceRange(batch.baseSequence(), batch.lastSequence());
     }
 

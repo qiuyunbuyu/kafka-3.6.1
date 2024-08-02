@@ -330,7 +330,7 @@ private[transaction] class TransactionMetadata(val transactionalId: String,
       case Empty | CompleteAbort | CompleteCommit => updateTimestamp
       case _ => txnStartTimestamp
     }
-
+    // TransitionTo
     prepareTransitionTo(Ongoing, producerId, producerEpoch, lastProducerEpoch, txnTimeoutMs,
       (topicPartitions ++ addedTopicPartitions).toSet, newTxnStartTimestamp, updateTimestamp)
   }

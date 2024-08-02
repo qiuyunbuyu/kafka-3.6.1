@@ -20,10 +20,12 @@ import org.apache.kafka.common.record.DefaultRecordBatch;
 
 public class BatchMetadata {
 
-    public final int lastSeq;
-    public final long lastOffset;
+    public final int lastSeq; // last message sequence in ProducerBatch
+    public final long lastOffset; // last message offset in ProducerBatch
+    // lastSeq - offsetDelta = firstSeq in ProducerBatch
+    // lastOffset - offsetDelta = firstOffset in ProducerBatch
     public final int offsetDelta;
-    public final long timestamp;
+    public final long timestamp; // last message added timestamp in ProducerBatch
 
     public BatchMetadata(
             int lastSeq,
