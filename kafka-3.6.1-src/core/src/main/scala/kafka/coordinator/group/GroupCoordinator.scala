@@ -1103,8 +1103,11 @@ private[group] class GroupCoordinator(
       // if states is empty, return all groups
       val groups = if (states.isEmpty)
         groupManager.currentGroups
-      else
+      else {
+        // try to get from groupMetadataCache[new Pool[String, GroupMetadata]]
         groupManager.currentGroups.filter(g => states.contains(g.summary.state))
+      }
+      // return
       (errorCode, groups.map(_.overview).toList)
     }
   }

@@ -3211,17 +3211,19 @@ public class KafkaAdminClient extends AdminClient {
 
     @Override
     public ListConsumerGroupsResult listConsumerGroups(ListConsumerGroupsOptions options) {
+        // * KafkaFutureImpl to save
         final KafkaFutureImpl<Collection<Object>> all = new KafkaFutureImpl<>();
         final long nowMetadata = time.milliseconds();
         final long deadline = calcDeadlineMs(nowMetadata, options.timeoutMs());
         runnable.call(new Call("findAllBrokers", deadline, new LeastLoadedNodeProvider()) {
+            // 1. construct MetadataRequest
             @Override
             MetadataRequest.Builder createRequest(int timeoutMs) {
                 return new MetadataRequest.Builder(new MetadataRequestData()
                     .setTopics(Collections.emptyList())
                     .setAllowAutoTopicCreation(true));
             }
-
+            // 2. handle MetadataRequest
             @Override
             void handleResponse(AbstractResponse abstractResponse) {
                 MetadataResponse metadataResponse = (MetadataResponse) abstractResponse;
@@ -3231,9 +3233,10 @@ public class KafkaAdminClient extends AdminClient {
 
                 HashSet<Node> allNodes = new HashSet<>(nodes);
                 final ListConsumerGroupsResults results = new ListConsumerGroupsResults(allNodes, all);
-
+                // 2.1 get all Nodes
                 for (final Node node : allNodes) {
                     final long nowList = time.milliseconds();
+                    // 2.2 construct ListGroupsRequest
                     runnable.call(new Call("listConsumerGroups", deadline, new ConstantNodeIdProvider(node.id())) {
                         @Override
                         ListGroupsRequest.Builder createRequest(int timeoutMs) {
@@ -3255,7 +3258,7 @@ public class KafkaAdminClient extends AdminClient {
                                 results.addListing(groupListing);
                             }
                         }
-
+                        // 2.3 handle ListGroupsResponse
                         @Override
                         void handleResponse(AbstractResponse abstractResponse) {
                             final ListGroupsResponse response = (ListGroupsResponse) abstractResponse;
@@ -3266,6 +3269,7 @@ public class KafkaAdminClient extends AdminClient {
                                 } else if (error != Errors.NONE) {
                                     results.addError(error.exception(), node);
                                 } else {
+                                    // 2.4 Normal response to call maybeAddConsumerGroup to add
                                     for (ListGroupsResponseData.ListedGroup group : response.data().groups()) {
                                         maybeAddConsumerGroup(group);
                                     }
