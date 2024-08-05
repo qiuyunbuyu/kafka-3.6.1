@@ -18,7 +18,10 @@ package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.protocol.ApiKeys;
 
-// Abstract class for all control requests including UpdateMetadataRequest, LeaderAndIsrRequest and StopReplicaRequest
+// Abstract class for all control requests including:
+// * UpdateMetadataRequest
+// * LeaderAndIsrRequest
+// * StopReplicaRequest
 public abstract class AbstractControlRequest extends AbstractRequest {
 
     /**

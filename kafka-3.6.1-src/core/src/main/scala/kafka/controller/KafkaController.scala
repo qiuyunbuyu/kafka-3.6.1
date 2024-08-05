@@ -1503,6 +1503,10 @@ class KafkaController(val config: KafkaConfig,
     val (partitionsLedByBroker, partitionsFollowedByBroker) = partitionsToActOn.partition { partition =>
       controllerContext.partitionLeadershipInfo(partition).get.leaderAndIsr.leader == id
     }
+    // handle State Changes and select Leader according to the specified strategy
+    // sendLeaderAndIsrRequest(controllerEpoch, stateChangeLog)
+    // sendUpdateMetadataRequests(controllerEpoch, stateChangeLog)
+    // sendStopReplicaRequests(controllerEpoch, stateChangeLog)
     partitionStateMachine.handleStateChanges(partitionsLedByBroker.toSeq, OnlinePartition, Some(ControlledShutdownPartitionLeaderElectionStrategy))
     try {
       brokerRequestBatch.newBatch()
