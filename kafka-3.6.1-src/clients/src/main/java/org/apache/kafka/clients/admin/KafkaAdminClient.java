@@ -3149,6 +3149,7 @@ public class KafkaAdminClient extends AdminClient {
         SimpleAdminApiFuture<CoordinatorKey, ConsumerGroupDescription> future =
                 DescribeConsumerGroupsHandler.newFuture(groupIds);
         DescribeConsumerGroupsHandler handler = new DescribeConsumerGroupsHandler(options.includeAuthorizedOperations(), logContext);
+        // send DescribeGroupsRequest
         invokeDriver(handler, future, options.timeoutMs);
         return new DescribeConsumerGroupsResult(future.all().entrySet().stream()
                 .collect(Collectors.toMap(entry -> entry.getKey().idValue, Map.Entry::getValue)));
@@ -3306,6 +3307,7 @@ public class KafkaAdminClient extends AdminClient {
                 ListConsumerGroupOffsetsHandler.newFuture(groupSpecs.keySet());
         ListConsumerGroupOffsetsHandler handler =
             new ListConsumerGroupOffsetsHandler(groupSpecs, options.requireStable(), logContext);
+        // try to send OffsetFetchRequest
         invokeDriver(handler, future, options.timeoutMs);
         return new ListConsumerGroupOffsetsResult(future.all());
     }
@@ -3314,6 +3316,7 @@ public class KafkaAdminClient extends AdminClient {
     public DeleteConsumerGroupsResult deleteConsumerGroups(Collection<String> groupIds, DeleteConsumerGroupsOptions options) {
         SimpleAdminApiFuture<CoordinatorKey, Void> future =
                 DeleteConsumerGroupsHandler.newFuture(groupIds);
+        // try send DeleteGroupsRequest
         DeleteConsumerGroupsHandler handler = new DeleteConsumerGroupsHandler(logContext);
         invokeDriver(handler, future, options.timeoutMs);
         return new DeleteConsumerGroupsResult(future.all().entrySet().stream()
@@ -3327,6 +3330,7 @@ public class KafkaAdminClient extends AdminClient {
             DeleteConsumerGroupOffsetsOptions options) {
         SimpleAdminApiFuture<CoordinatorKey, Map<TopicPartition, Errors>> future =
                 DeleteConsumerGroupOffsetsHandler.newFuture(groupId);
+        // send OffsetDeleteRequest
         DeleteConsumerGroupOffsetsHandler handler = new DeleteConsumerGroupOffsetsHandler(groupId, partitions, logContext);
         invokeDriver(handler, future, options.timeoutMs);
         return new DeleteConsumerGroupOffsetsResult(future.get(CoordinatorKey.byGroupId(groupId)), partitions);
@@ -3683,6 +3687,7 @@ public class KafkaAdminClient extends AdminClient {
     ) {
         SimpleAdminApiFuture<CoordinatorKey, Map<TopicPartition, Errors>> future =
                 AlterConsumerGroupOffsetsHandler.newFuture(groupId);
+        // send OffsetCommitRequest
         AlterConsumerGroupOffsetsHandler handler = new AlterConsumerGroupOffsetsHandler(groupId, offsets, logContext);
         invokeDriver(handler, future, options.timeoutMs);
         return new AlterConsumerGroupOffsetsResult(future.get(CoordinatorKey.byGroupId(groupId)));
@@ -3695,6 +3700,7 @@ public class KafkaAdminClient extends AdminClient {
             ListOffsetsHandler.newFuture(topicPartitionOffsets.keySet());
         Map<TopicPartition, Long> offsetQueriesByPartition = topicPartitionOffsets.entrySet().stream()
             .collect(Collectors.toMap(Map.Entry::getKey, e -> getOffsetFromSpec(e.getValue())));
+        // send ListOffsetsRequest
         ListOffsetsHandler handler = new ListOffsetsHandler(offsetQueriesByPartition, options, logContext);
         invokeDriver(handler, future, options.timeoutMs);
         return new ListOffsetsResult(future.all());

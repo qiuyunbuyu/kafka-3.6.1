@@ -62,18 +62,24 @@ object ConsumerGroupCommand extends Logging {
         CommandLineUtils.printUsageAndExit(opts.parser, e.getMessage)
     }
   }
-
+  // the entry of "kafka-consumer-groups.sh"
   def run(opts: ConsumerGroupCommandOptions): Unit = {
     val consumerGroupService = new ConsumerGroupService(opts)
     try {
-      if (opts.options.has(opts.listOpt))
+      if (opts.options.has(opts.listOpt)) {
+        // --list
         consumerGroupService.listGroups()
-      else if (opts.options.has(opts.describeOpt))
+      } else if (opts.options.has(opts.describeOpt)) {
+        // --describe
+        // the entry of "describeGroups"
         consumerGroupService.describeGroups()
-      else if (opts.options.has(opts.deleteOpt))
+      } else if (opts.options.has(opts.deleteOpt)) {
+        // --delete
         consumerGroupService.deleteGroups()
-      else if (opts.options.has(opts.resetOffsetsOpt)) {
+      } else if (opts.options.has(opts.resetOffsetsOpt)) {
+        // --reset-offsets
         val offsetsToReset = consumerGroupService.resetOffsets()
+        // Export operation execution to a CSV file. Supported operations: reset-offsets.
         if (opts.options.has(opts.exportOpt)) {
           val exported = consumerGroupService.exportOffsetsToCsv(offsetsToReset)
           println(exported)
@@ -81,6 +87,7 @@ object ConsumerGroupCommand extends Logging {
           printOffsetsToReset(offsetsToReset)
       }
       else if (opts.options.has(opts.deleteOffsetsOpt)) {
+        // delete-offsets
         consumerGroupService.deleteOffsets()
       }
     } catch {
@@ -353,13 +360,24 @@ object ConsumerGroupCommand extends Logging {
         }
       }
     }
-
+    /* three/four requests to collect
+    * (--all-groups). ListGroupsRequest
+    * a. DescribeGroups Request
+    * b. OffsetFetch Request
+    * c. ListOffsets Request
+    */
     def describeGroups(): Unit = {
+      // 1. get params
       val groupIds =
+        // all-groups : send ListGroupsRequest to get "groupIds" first
         if (opts.options.has(opts.allGroupsOpt)) listConsumerGroups()
+        // --group group1
         else opts.options.valuesOf(opts.groupOpt).asScala
+      // --members
       val membersOptPresent = opts.options.has(opts.membersOpt)
+      // --state
       val stateOptPresent = opts.options.has(opts.stateOpt)
+      // --offsets
       val offsetsOptPresent = opts.options.has(opts.offsetsOpt)
       val subActions = Seq(membersOptPresent, offsetsOptPresent, stateOptPresent).count(_ == true)
 
@@ -403,11 +421,12 @@ object ConsumerGroupCommand extends Logging {
                                    clientIdOpt: Option[String]): Array[PartitionAssignmentState] = {
 
       def getDescribePartitionResult(topicPartition: TopicPartition, logEndOffsetOpt: Option[Long]): PartitionAssignmentState = {
+        // use commited Offset and LEO to calculate Lag
         val offset = getPartitionOffset(topicPartition)
         PartitionAssignmentState(group, coordinator, Option(topicPartition.topic), Option(topicPartition.partition), offset,
           getLag(offset, logEndOffsetOpt), consumerIdOpt, hostOpt, clientIdOpt, logEndOffsetOpt)
       }
-
+      // try get LEO
       getLogEndOffsets(group, topicPartitions).map {
         logEndOffsetResult =>
           logEndOffsetResult._2 match {
@@ -419,10 +438,11 @@ object ConsumerGroupCommand extends Logging {
     }
 
     def resetOffsets(): Map[String, Map[TopicPartition, OffsetAndMetadata]] = {
+      // ListConsumerRequest: get all groupIds or specify
       val groupIds =
         if (opts.options.has(opts.allGroupsOpt)) listConsumerGroups()
         else opts.options.valuesOf(opts.groupOpt).asScala
-
+      // DescribeGroupsRequest
       val consumerGroups = adminClient.describeConsumerGroups(
         groupIds.asJava,
         withTimeoutMs(new DescribeConsumerGroupsOptions)
@@ -439,6 +459,7 @@ object ConsumerGroupCommand extends Logging {
                 // Dry-run is the default behavior if --execute is not specified
                 val dryRun = opts.options.has(opts.dryRunOpt) || !opts.options.has(opts.executeOpt)
                 if (!dryRun) {
+                  // call adminClient to send "OffsetCommitRequest"
                   adminClient.alterConsumerGroupOffsets(
                     groupId,
                     preparedOffsets.asJava,
@@ -461,6 +482,7 @@ object ConsumerGroupCommand extends Logging {
       val knownPartitions = topicWithPartitions.flatMap(parseTopicsWithPartitions)
 
       // Get the partitions of topics that the user did not explicitly specify the partitions
+      // call MetaDataRequest
       val describeTopicsResult = adminClient.describeTopics(
         topicWithoutPartitions.asJava,
         withTimeoutMs(new DescribeTopicsOptions))
@@ -477,7 +499,7 @@ object ConsumerGroupCommand extends Logging {
       }
 
       val partitions = knownPartitions ++ unknownPartitions
-
+      // call OffsetDeleteRequest
       val deleteResult = adminClient.deleteConsumerGroupOffsets(
         groupId,
         partitions.toSet.asJava,
@@ -553,25 +575,36 @@ object ConsumerGroupCommand extends Logging {
 
     /**
       * Returns states of the specified consumer groups and partition assignment states
+      * three requests to collect
+      * 1. DescribeGroups Request
+      * 2. OffsetFetch Request
+      * 3. ListOffsets Request
       */
     def collectGroupsOffsets(groupIds: Seq[String]): TreeMap[String, (Option[String], Option[Seq[PartitionAssignmentState]])] = {
+      // DescribeGroupsRequest | get [String, ConsumerGroupDescription]
       val consumerGroups = describeConsumerGroups(groupIds)
 
       val groupOffsets = TreeMap[String, (Option[String], Option[Seq[PartitionAssignmentState]])]() ++ (for ((groupId, consumerGroup) <- consumerGroups) yield {
         val state = consumerGroup.state
+        // OffsetFetch Request | try get committedOffsets
         val committedOffsets = getCommittedOffsets(groupId)
         // The admin client returns `null` as a value to indicate that there is not committed offset for a partition.
         def getPartitionOffset(tp: TopicPartition): Option[Long] = committedOffsets.get(tp).filter(_ != null).map(_.offset)
         var assignedTopicPartitions = ListBuffer[TopicPartition]()
+
+        // get rowsWithConsumer
         val rowsWithConsumer = consumerGroup.members.asScala.filterNot(_.assignment.topicPartitions.isEmpty).toSeq
           .sortBy(_.assignment.topicPartitions.size)(Ordering[Int].reverse).flatMap { consumerSummary =>
           val topicPartitions = consumerSummary.assignment.topicPartitions.asScala
           assignedTopicPartitions = assignedTopicPartitions ++ topicPartitions
+          // ListOffsetsRequest | get LEO and calculate lag
           collectConsumerAssignment(groupId, Option(consumerGroup.coordinator), topicPartitions.toList,
             getPartitionOffset, Some(s"${consumerSummary.consumerId}"), Some(s"${consumerSummary.host}"),
             Some(s"${consumerSummary.clientId}"))
         }
         val unassignedPartitions = committedOffsets.filterNot { case (tp, _) => assignedTopicPartitions.contains(tp) }
+
+        // rowsWithoutConsumer
         val rowsWithoutConsumer = if (unassignedPartitions.nonEmpty) {
           collectConsumerAssignment(
             groupId,
@@ -633,6 +666,7 @@ object ConsumerGroupCommand extends Logging {
       val endOffsets = topicPartitions.map { topicPartition =>
         topicPartition -> OffsetSpec.latest
       }.toMap
+      // get Leo by ListOffsetsRequest
       val offsets = adminClient.listOffsets(
         endOffsets.asJava,
         withTimeoutMs(new ListOffsetsOptions)
@@ -924,10 +958,11 @@ object ConsumerGroupCommand extends Logging {
     }
 
     def deleteGroups(): Map[String, Throwable] = {
+      // all or specify
       val groupIds =
         if (opts.options.has(opts.allGroupsOpt)) listConsumerGroups()
         else opts.options.valuesOf(opts.groupOpt).asScala
-
+      // call AdminClient to send "DeleteGroupsRequest"
       val groupsToDelete = adminClient.deleteConsumerGroups(
         groupIds.asJava,
         withTimeoutMs(new DeleteConsumerGroupsOptions)
