@@ -1605,7 +1605,7 @@ public class KafkaAdminClient extends AdminClient {
             final long now = time.milliseconds();
             // 3.3.2 get deadline time
             final long deadline = calcDeadlineMs(now, options.timeoutMs());
-            // 3.3.3 construct Call object
+            // 3.3.3 construct Call object: will build CreateTopicsRequest
             final Call call = getCreateTopicsCall(options, topicFutures, topics,
                 Collections.emptyMap(), now, deadline);
             // 3.3.4 * Queue a call for sending.

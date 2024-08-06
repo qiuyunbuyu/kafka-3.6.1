@@ -279,12 +279,15 @@ object TopicCommand extends Logging {
 
     def alterTopic(opts: TopicCommandOptions): Unit = {
       val topic = new CommandTopicPartition(opts)
+      // list topics : MetadataRequest
       val topics = getTopics(opts.topic, opts.excludeInternalTopics)
       ensureTopicExists(topics, opts.topic, !opts.ifExists)
 
       if (topics.nonEmpty) {
+        // describe : MetadataRequest
         val topicsInfo = adminClient.describeTopics(topics.asJavaCollection).topicNameValues()
         val newPartitions = topics.map { topicName =>
+          // replica-assignment
           if (topic.hasReplicaAssignment) {
             val startPartitionId = topicsInfo.get(topicName).get().partitions().size()
             val newAssignment = {
@@ -320,6 +323,7 @@ object TopicCommand extends Logging {
       val inputTopicId = opts.topicId.map(Uuid.fromString).filter(uuid => uuid != Uuid.ZERO_UUID)
       val useTopicId = inputTopicId.nonEmpty
 
+      // MetadataRequest
       val (topicIds, topics) = if (useTopicId)
         (getTopicIds(inputTopicId, opts.excludeInternalTopics), Seq())
       else
@@ -340,7 +344,9 @@ object TopicCommand extends Logging {
       }
 
       val topicNames = topicDescriptions.map(_.name())
+      // DescribeConfigsRequest
       val allConfigs = adminClient.describeConfigs(topicNames.map(new ConfigResource(Type.TOPIC, _)).asJavaCollection).values()
+      // MetadataRequest
       val liveBrokers = adminClient.describeCluster().nodes().get().asScala.map(_.id())
       val describeOptions = new DescribeOptions(opts, liveBrokers.toSet)
       val topicPartitions = topicDescriptions
