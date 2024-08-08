@@ -325,8 +325,10 @@ object ConfigCommand extends Logging {
 
     try {
       if (opts.options.has(opts.alterOpt))
+      // --alter
         alterConfig(adminClient, opts)
       else if (opts.options.has(opts.describeOpt))
+      // --describe
         describeConfig(adminClient, opts)
     } finally {
       adminClient.close()
@@ -358,6 +360,7 @@ object ConfigCommand extends Logging {
         val alterEntries = (configsToBeAdded.values.map(new AlterConfigOp(_, AlterConfigOp.OpType.SET))
           ++ configsToBeDeleted.map { k => new AlterConfigOp(new ConfigEntry(k, ""), AlterConfigOp.OpType.DELETE) }
         ).asJavaCollection
+        // will send IncrementalAlterConfigsRequest
         adminClient.incrementalAlterConfigs(Map(configResource -> alterEntries).asJava, alterOptions).all().get(60, TimeUnit.SECONDS)
 
       case ConfigType.Broker =>
@@ -377,6 +380,7 @@ object ConfigCommand extends Logging {
 
         val configResource = new ConfigResource(ConfigResource.Type.BROKER, entityNameHead)
         val alterOptions = new AlterConfigsOptions().timeoutMs(30000).validateOnly(false)
+        // will send AlterConfigsRequest
         adminClient.alterConfigs(Map(configResource -> newConfig).asJava, alterOptions).all().get(60, TimeUnit.SECONDS)
 
       case BrokerLoggerConfigType =>
@@ -391,6 +395,7 @@ object ConfigCommand extends Logging {
         val alterLogLevelEntries = (configsToBeAdded.values.map(new AlterConfigOp(_, AlterConfigOp.OpType.SET))
           ++ configsToBeDeleted.map { k => new AlterConfigOp(new ConfigEntry(k, ""), AlterConfigOp.OpType.DELETE) }
         ).asJavaCollection
+        // will send IncrementalAlterConfigsRequest
         adminClient.incrementalAlterConfigs(Map(configResource -> alterLogLevelEntries).asJava, alterOptions).all().get(60, TimeUnit.SECONDS)
 
       case ConfigType.User | ConfigType.Client =>
@@ -420,18 +425,21 @@ object ConfigCommand extends Logging {
         }
 
         if (hasQuotaConfigsToAdd || hasQuotaConfigsToDelete) {
+          // will send DescribeClientQuotasRequest + AlterClientQuotasRequest
           alterQuotaConfigs(adminClient, entityTypes, entityNames, configsToBeAddedMap, configsToBeDeleted)
         } else {
           // handle altering user SCRAM credential configs
           if (entityNames.size != 1)
             // should never happen, if we get here then it is a bug
             throw new IllegalStateException(s"Altering user SCRAM credentials should never occur for more zero or multiple users: $entityNames")
+          // will send AlterUserScramCredentialsRequest
           alterUserScramCredentialConfigs(adminClient, entityNames.head, scramConfigsToAddMap, scramConfigsToDelete)
         }
       case ConfigType.Ip =>
         val unknownConfigs = (configsToBeAdded.keys ++ configsToBeDeleted).filterNot(key => DynamicConfig.Ip.names.contains(key))
         if (unknownConfigs.nonEmpty)
           throw new IllegalArgumentException(s"Only connection quota configs can be added for '${ConfigType.Ip}' using --bootstrap-server. Unexpected config names: ${unknownConfigs.mkString(",")}")
+        // will send DescribeClientQuotasRequest + AlterClientQuotasRequest
         alterQuotaConfigs(adminClient, entityTypes, entityNames, configsToBeAddedMap, configsToBeDeleted)
       case _ => throw new IllegalArgumentException(s"Unsupported entity type: $entityTypeHead")
     }
@@ -468,6 +476,7 @@ object ConfigCommand extends Logging {
 
   private def alterQuotaConfigs(adminClient: Admin, entityTypes: List[String], entityNames: List[String], configsToBeAddedMap: Map[String, String], configsToBeDeleted: Seq[String]) = {
     // handle altering client/user quota configs
+    // DescribeClientQuotas
     val oldConfig = getClientQuotasConfig(adminClient, entityTypes, entityNames)
 
     val invalidConfigs = configsToBeDeleted.filterNot(oldConfig.contains)
@@ -495,7 +504,7 @@ object ConfigCommand extends Logging {
       }
       new ClientQuotaAlteration.Op(key, doubleValue)
     } ++ configsToBeDeleted.map(key => new ClientQuotaAlteration.Op(key, null))).asJavaCollection
-
+    // AlterClientQuotas
     adminClient.alterClientQuotas(Collections.singleton(new ClientQuotaAlteration(entity, alterOps)), alterOptions)
       .all().get(60, TimeUnit.SECONDS)
   }
@@ -509,8 +518,10 @@ object ConfigCommand extends Logging {
       case ConfigType.Topic | ConfigType.Broker | BrokerLoggerConfigType =>
         describeResourceConfig(adminClient, entityTypes.head, entityNames.headOption, describeAll)
       case ConfigType.User | ConfigType.Client =>
+        // DescribeUserScramCredentials
         describeClientQuotaAndUserScramCredentialConfigs(adminClient, entityTypes, entityNames)
       case ConfigType.Ip =>
+        //  DescribeClientQuotas
         describeQuotaConfigs(adminClient, entityTypes, entityNames)
       case entityType => throw new IllegalArgumentException(s"Invalid entity type: $entityType")
     }
@@ -521,8 +532,10 @@ object ConfigCommand extends Logging {
       .map(name => List(name))
       .getOrElse(entityType match {
         case ConfigType.Topic =>
+          // MetadataRequest
           adminClient.listTopics(new ListTopicsOptions().listInternal(true)).names().get().asScala.toSeq
         case ConfigType.Broker | BrokerLoggerConfigType =>
+          // DescribeClusterRequest
           adminClient.describeCluster(new DescribeClusterOptions()).nodes().get().asScala.map(_.idString).toSeq :+ BrokerDefaultEntityName
         case entityType => throw new IllegalArgumentException(s"Invalid entity type: $entityType")
       })

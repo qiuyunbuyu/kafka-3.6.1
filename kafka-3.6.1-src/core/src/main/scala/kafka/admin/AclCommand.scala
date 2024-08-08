@@ -69,12 +69,16 @@ object AclCommand extends Logging {
     }
 
     try {
-      if (opts.options.has(opts.addOpt))
+      if (opts.options.has(opts.addOpt)) {
+        // --add -> CreateAclsRequest
         aclCommandService.addAcls()
-      else if (opts.options.has(opts.removeOpt))
+      } else if (opts.options.has(opts.removeOpt)) {
+        // --remove -> DeleteAclsRequest
         aclCommandService.removeAcls()
-      else if (opts.options.has(opts.listOpt))
+      } else if (opts.options.has(opts.listOpt)) {
+        // --list -> DescribeAclsRequest
         aclCommandService.listAcls()
+      }
     } catch {
       case e: Throwable =>
         println(s"Error while executing ACL command: ${e.getMessage}")
