@@ -99,13 +99,26 @@ public class DeleteRecordsCommand {
     }
 
     public static void execute(String[] args, PrintStream out) throws IOException {
+        // 1. need bootstrapServer, offsetJsonFile
         DeleteRecordsCommandOptions opts = new DeleteRecordsCommandOptions(args);
-
+        // 2. create AdminClient
         try (Admin adminClient = createAdminClient(opts)) {
+            // 3. execute
             execute(adminClient, Utils.readFileAsString(opts.options.valueOf(opts.offsetJsonFileOpt)), out);
         }
     }
 
+// offsetJsonString like
+//    {
+//        "partitions": [
+//        {
+//            "topic": "foo",
+//                "partition": 1,
+//                "offset": 1
+//        }
+//    ],
+//        "version": 1
+//    }
     static void execute(Admin adminClient, String offsetJsonString, PrintStream out) throws JsonProcessingException {
         Map<TopicPartition, List<Long>> offsetSeq = parseOffsetJsonStringWithoutDedup(offsetJsonString);
 
@@ -128,6 +141,7 @@ public class DeleteRecordsCommand {
             recordsToDelete.put(e.getKey(), RecordsToDelete.beforeOffset(e.getValue().get(0)));
 
         out.println("Executing records delete operation");
+        // send DeleteRecordsRequest
         DeleteRecordsResult deleteRecordsResult = adminClient.deleteRecords(recordsToDelete);
         out.println("Records delete operation completed:");
 
