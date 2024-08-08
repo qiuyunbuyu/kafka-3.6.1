@@ -193,6 +193,7 @@ public abstract class TransactionsCommand {
             AbortTransactionSpec abortSpec
         ) throws Exception {
             try {
+                // will send WriteTxnMarkersRequest
                 admin.abortTransaction(abortSpec).all().get();
             } catch (ExecutionException e) {
                 TransactionsCommand.printErrorAndExit("Failed to abort transaction " + abortSpec, e.getCause());
@@ -307,6 +308,7 @@ public abstract class TransactionsCommand {
             final DescribeProducersResult.PartitionProducerState result;
 
             try {
+                // will send DescribeProducersRequest
                 result = admin.describeProducers(singleton(topicPartition), options)
                     .partitionResult(topicPartition)
                     .get();
@@ -380,6 +382,7 @@ public abstract class TransactionsCommand {
 
             final TransactionDescription result;
             try {
+                // will send DescribeTransactionsRequest
                 result = admin.describeTransactions(singleton(transactionalId))
                     .description(transactionalId)
                     .get();
@@ -445,6 +448,7 @@ public abstract class TransactionsCommand {
             final Map<Integer, Collection<TransactionListing>> result;
 
             try {
+                // will send ListTransactionsRequest
                 result = admin.listTransactions(new ListTransactionsOptions())
                     .allByBrokerId()
                     .get();
@@ -564,17 +568,17 @@ public abstract class TransactionsCommand {
                 printHangingTransactions(Collections.emptyList(), out);
             } else {
                 Map<Long, List<OpenTransaction>> openTransactionsByProducerId = groupByProducerId(candidates);
-
+                // 1. lookup Transactional Ids: send ListTransactionsRequest
                 Map<Long, String> transactionalIds = lookupTransactionalIds(
                     admin,
                     openTransactionsByProducerId.keySet()
                 );
-
+                // 2. describe Transactions: send DescribeTransactionsRequest
                 Map<String, TransactionDescription> descriptions = describeTransactions(
                     admin,
                     transactionalIds.values()
                 );
-
+                // 3.
                 List<OpenTransaction> hangingTransactions = filterHangingTransactions(
                     openTransactionsByProducerId,
                     transactionalIds,
@@ -973,6 +977,7 @@ public abstract class TransactionsCommand {
         PrintStream out,
         Time time
     ) throws Exception {
+        // Provides 5 commands
         List<TransactionsCommand> commands = asList(
             new ListTransactionsCommand(time),
             new DescribeTransactionsCommand(time),
@@ -1000,7 +1005,7 @@ public abstract class TransactionsCommand {
 
         Admin admin = adminSupplier.apply(ns);
         String commandName = ns.getString("command");
-
+        // get command
         Optional<TransactionsCommand> commandOpt = commands.stream()
             .filter(cmd -> cmd.name().equals(commandName))
             .findFirst();
