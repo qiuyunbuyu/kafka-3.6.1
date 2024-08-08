@@ -79,8 +79,10 @@ public class DelegationTokenCommand {
 
         try (Admin adminClient = createAdminClient(opts)) {
             if (opts.hasCreateOpt()) {
+                // create
                 createToken(adminClient, opts);
             } else if (opts.hasRenewOpt()) {
+                // renew
                 renewToken(adminClient, opts);
             } else if (opts.hasExpireOpt()) {
                 expireToken(adminClient, opts);
@@ -101,7 +103,7 @@ public class DelegationTokenCommand {
         if (!ownerPrincipals.isEmpty()) {
             createDelegationTokenOptions.owner(ownerPrincipals.get(0));
         }
-
+        // call AdminClient to send "CreateDelegationTokenRequest"
         CreateDelegationTokenResult createResult = adminClient.createDelegationToken(createDelegationTokenOptions);
         DelegationToken token = createResult.delegationToken().get();
         System.out.println("Created delegation token with tokenId : " + token.tokenInfo().tokenId());
@@ -143,6 +145,7 @@ public class DelegationTokenCommand {
         Long renewTimePeriodMs = opts.renewTimePeriod();
 
         System.out.println("Calling renew token operation with hmac :" + hmac + " , renew-time-period :" + renewTimePeriodMs);
+        // call AdminClient to send "RenewDelegationTokenRequest"
         RenewDelegationTokenResult renewResult = adminClient.renewDelegationToken(Base64.getDecoder().decode(hmac), new RenewDelegationTokenOptions().renewTimePeriodMs(renewTimePeriodMs));
         Long expiryTimeStamp = renewResult.expiryTimestamp().get();
         SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm");
@@ -155,6 +158,7 @@ public class DelegationTokenCommand {
         Long expiryTimePeriodMs = opts.expiryTimePeriod();
 
         System.out.println("Calling expire token operation with hmac :" + hmac + " , expire-time-period :" + expiryTimePeriodMs);
+        // call AdminClient to send "ExpireDelegationTokenRequest"
         ExpireDelegationTokenResult renewResult = adminClient.expireDelegationToken(Base64.getDecoder().decode(hmac), new ExpireDelegationTokenOptions().expiryTimePeriodMs(expiryTimePeriodMs));
         Long expiryTimeStamp = renewResult.expiryTimestamp().get();
         SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm");
@@ -169,7 +173,7 @@ public class DelegationTokenCommand {
         } else {
             System.out.printf("Calling describe token operation for owners: %s%n", ownerPrincipals);
         }
-
+        // call AdminClient to send "DescribeDelegationTokenRequest"
         DescribeDelegationTokenResult describeResult = adminClient.describeDelegationToken(new DescribeDelegationTokenOptions().owners(ownerPrincipals));
         List<DelegationToken> tokens = describeResult.delegationTokens().get();
         System.out.printf("Total number of tokens : %d", tokens.size());
