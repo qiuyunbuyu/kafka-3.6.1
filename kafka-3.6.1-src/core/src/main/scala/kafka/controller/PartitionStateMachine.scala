@@ -165,13 +165,18 @@ class ZkPartitionStateMachine(config: KafkaConfig,
       try {
         // 1. clear up controller Broker RequestBatch
         controllerBrokerRequestBatch.newBatch()
+
         // 2. ***exercises the partition's state machine
         val result = doHandleStateChanges(
           partitions,
           targetState,
           partitionLeaderElectionStrategyOpt
         )
+
         // 3. controller need send Request to corresponding broker
+        // LeaderAndIsrRequest
+        // UpdateMetadataRequest
+        // StopReplicaRequest
         controllerBrokerRequestBatch.sendRequestsToBrokers(controllerContext.epoch)
         // 4. return result
         result
@@ -239,7 +244,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         validPartitions.foreach { partition =>
           stateChangeLog.info(s"Changed partition $partition state from ${partitionState(partition)} to $targetState with " +
             s"assigned replicas ${controllerContext.partitionReplicaAssignment(partition).mkString(",")}")
-          // set Partition State to NewPartition
+          // set Partition State to NewPartition, only change "state"
           controllerContext.putPartitionState(partition, NewPartition)
         }
         Map.empty

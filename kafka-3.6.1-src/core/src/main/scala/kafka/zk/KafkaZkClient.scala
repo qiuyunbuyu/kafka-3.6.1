@@ -482,9 +482,11 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
         case _: NodeExistsException => set(configData).maybeThrow()
       }
     }
+    // /config/topics/{TopicName}: Write or overwrite directly
 
+    // 1. encode config data | if not set config, encoded data will like {"version":1,"config":{}}
     val configData = ConfigEntityZNode.encode(config)
-
+    // 2. try to write
     val setDataResponse = set(configData)
     setDataResponse.resultCode match {
       case Code.NONODE => createOrSet(configData)
@@ -658,6 +660,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * @throws KeeperException if there is an error while creating assignment
    */
   def createTopicAssignment(topic: String, topicId: Option[Uuid], assignment: Map[TopicPartition, Seq[Int]]): Unit = {
+    // /brokers/topics/{TopicName}
     val persistedAssignments = assignment.map { case (k, v) => k -> ReplicaAssignment(v) }
     createRecursive(TopicZNode.path(topic), TopicZNode.encode(topicId, persistedAssignments))
   }

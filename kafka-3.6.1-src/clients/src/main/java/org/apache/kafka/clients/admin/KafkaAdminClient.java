@@ -1596,6 +1596,7 @@ public class KafkaAdminClient extends AdminClient {
             // 3.2 if topicFutures not contain the "newTopic", then create blank KafkaFutureImpl
             } else if (!topicFutures.containsKey(newTopic.name())) {
                 topicFutures.put(newTopic.name(), new KafkaFutureImpl<>());
+                //  traverse to CreatableTopicRequest
                 topics.add(newTopic.convertToCreatableTopic());
             }
         }

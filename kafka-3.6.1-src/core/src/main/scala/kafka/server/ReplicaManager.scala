@@ -2034,6 +2034,7 @@ class ReplicaManager(val config: KafkaConfig,
           val leader = BrokerEndPoint(config.brokerId, "localhost", -1)
 
           // Add future replica log to partition's map
+          // Create a topic and finally come here to interact with the file system
           partition.createLogIfNotExists(
             isNew = false,
             isFutureReplica = true,

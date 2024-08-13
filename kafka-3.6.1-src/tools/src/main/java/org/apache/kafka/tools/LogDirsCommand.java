@@ -72,6 +72,7 @@ public class LogDirsCommand {
 
     static void execute(LogDirsCommandOptions options, Admin adminClient) throws Exception {
         Set<String> topics = options.topics();
+        // DescribeClusterRequest to get nodes
         Set<Integer> clusterBrokers = adminClient.describeCluster().nodes().get().stream().map(Node::id).collect(Collectors.toSet());
         Set<Integer> inputBrokers = options.brokers();
         Set<Integer> existingBrokers = inputBrokers.isEmpty() ? new HashSet<>(clusterBrokers) : new HashSet<>(inputBrokers);
@@ -87,6 +88,7 @@ public class LogDirsCommand {
                             commaDelimitedStringFromIntegerSet(clusterBrokers)));
         } else {
             System.out.println("Querying brokers for log directories information");
+            // DescribeLogDirsRequest
             DescribeLogDirsResult describeLogDirsResult = adminClient.describeLogDirs(existingBrokers);
             Map<Integer, Map<String, LogDirDescription>> logDirInfosByBroker = describeLogDirsResult.allDescriptions().get();
 

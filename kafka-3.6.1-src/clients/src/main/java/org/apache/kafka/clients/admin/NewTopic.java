@@ -120,12 +120,13 @@ public class NewTopic {
     public Map<String, String> configs() {
         return configs;
     }
-
+    // traverse to CreatableTopicRequest
     CreatableTopic convertToCreatableTopic() {
         CreatableTopic creatableTopic = new CreatableTopic().
-            setName(name).
-            setNumPartitions(numPartitions.orElse(CreateTopicsRequest.NO_NUM_PARTITIONS)).
-            setReplicationFactor(replicationFactor.orElse(CreateTopicsRequest.NO_REPLICATION_FACTOR));
+            setName(name). // name
+            setNumPartitions(numPartitions.orElse(CreateTopicsRequest.NO_NUM_PARTITIONS)). // Partitions
+            setReplicationFactor(replicationFactor.orElse(CreateTopicsRequest.NO_REPLICATION_FACTOR)); // replica
+        // replicasAssignments
         if (replicasAssignments != null) {
             for (Entry<Integer, List<Integer>> entry : replicasAssignments.entrySet()) {
                 creatableTopic.assignments().add(
@@ -134,6 +135,7 @@ public class NewTopic {
                         setBrokerIds(entry.getValue()));
             }
         }
+        // config
         if (configs != null) {
             for (Entry<String, String> entry : configs.entrySet()) {
                 creatableTopic.configs().add(

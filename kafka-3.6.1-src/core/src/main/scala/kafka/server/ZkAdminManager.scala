@@ -171,22 +171,29 @@ class ZkAdminManager(val config: KafkaConfig,
         val nullConfigs = topic.configs.asScala.filter(_.value == null).map(_.name)
         if (nullConfigs.nonEmpty)
           throw new InvalidConfigurationException(s"Null value not supported for topic configs: ${nullConfigs.mkString(",")}")
-
+        // can not both set "partition + replica" and "assignments"
         if ((topic.numPartitions != NO_NUM_PARTITIONS || topic.replicationFactor != NO_REPLICATION_FACTOR)
             && !topic.assignments().isEmpty) {
           throw new InvalidRequestException("Both numPartitions or replicationFactor and replicasAssignments were set. " +
             "Both cannot be used at the same time.")
         }
-
+        // if NumPartitions & ReplicationFactor set -1, will use default defaul
+        // but some Some lower versions are inconsistent
         val resolvedNumPartitions = if (topic.numPartitions == NO_NUM_PARTITIONS)
           defaultNumPartitions else topic.numPartitions
         val resolvedReplicationFactor = if (topic.replicationFactor == NO_REPLICATION_FACTOR)
           defaultReplicationFactor else topic.replicationFactor
 
+        // handle "Replica Assignments", Choose one
         val assignments = if (topic.assignments.isEmpty) {
+          // case1
+          // if not set "Replica Assignments", will calculate....
+          // after calculate, will get [ Map<Integer, List<Integer>> ] | "a Map from partition id to replica ids"
           CoreUtils.replicaToBrokerAssignmentAsScala(AdminUtils.assignReplicasToBrokers(
             brokers.asJavaCollection, resolvedNumPartitions, resolvedReplicationFactor))
         } else {
+          // case2
+          // user set "Replica Assignments"
           val assignments = new mutable.HashMap[Int, Seq[Int]]
           // Note: we don't check that replicaAssignment contains unknown brokers - unlike in add-partitions case,
           // this follows the existing logic in TopicCommand
@@ -197,8 +204,12 @@ class ZkAdminManager(val config: KafkaConfig,
         }
         trace(s"Assignments for topic $topic are $assignments ")
 
+        // add configs
         val configs = new Properties()
         topic.configs.forEach(entry => configs.setProperty(entry.name, entry.value))
+
+        // validate:
+        // What does a topic need? -> [assignments + configs]
         adminZkClient.validateTopicCreate(topic.name, assignments, configs)
         validateTopicCreatePolicy(topic, resolvedNumPartitions, resolvedReplicationFactor, assignments)
 
@@ -211,6 +222,7 @@ class ZkAdminManager(val config: KafkaConfig,
           CreatePartitionsMetadata(topic.name, assignments.keySet)
         } else {
           controllerMutationQuota.record(assignments.size)
+          // *** write topic attach data to zk
           adminZkClient.createTopicWithAssignment(topic.name, configs, assignments, validate = false, config.usesTopicId)
           populateIds(includeConfigsAndMetadata, topic.name)
           CreatePartitionsMetadata(topic.name, assignments.keySet)

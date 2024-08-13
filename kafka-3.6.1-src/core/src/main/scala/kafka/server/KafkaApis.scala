@@ -224,7 +224,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.SASL_HANDSHAKE => handleSaslHandshakeRequest(request)
         // broker: Get API version information
         case ApiKeys.API_VERSIONS => handleApiVersionsRequest(request)
-        // broker: create new topic
+        // broker: create new topic | The final processing function is "handleCreateTopicsRequest"
         case ApiKeys.CREATE_TOPICS => maybeForwardToController(request, handleCreateTopicsRequest)
         // broker: delete topic
         case ApiKeys.DELETE_TOPICS => maybeForwardToController(request, handleDeleteTopicsRequest)

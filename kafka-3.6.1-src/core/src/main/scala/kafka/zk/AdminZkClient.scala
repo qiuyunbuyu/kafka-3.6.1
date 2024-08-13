@@ -110,9 +110,11 @@ class AdminZkClient(zkClient: KafkaZkClient,
       s"assignment $partitionReplicaAssignment")
 
     // write out the config if there is any, this isn't transactional with the partition assignments
+    // "config information" | /config/topics/{TopicName}
     zkClient.setOrCreateEntityConfigs(ConfigType.Topic, topic, config)
 
-    // create the partition assignment
+    // create the partition assignment: /brokers/topics/{TopicName}
+    // "partition information"
     writeTopicPartitionAssignment(topic, partitionReplicaAssignment.map { case (k, v) => k -> ReplicaAssignment(v) },
       isUpdate = false, usesTopicId)
   }
@@ -167,14 +169,17 @@ class AdminZkClient(zkClient: KafkaZkClient,
 
   private def writeTopicPartitionAssignment(topic: String, replicaAssignment: Map[Int, ReplicaAssignment],
                                             isUpdate: Boolean, usesTopicId: Boolean = false): Unit = {
+    // /brokers/topics/{TopicName}
     try {
       val assignment = replicaAssignment.map { case (partitionId, replicas) => (new TopicPartition(topic,partitionId), replicas) }.toMap
 
       if (!isUpdate) {
+        // not update, should generate topicId first
         val topicIdOpt = if (usesTopicId) Some(Uuid.randomUuid()) else None
-        // **
+        // create(if not exist) and write
         zkClient.createTopicAssignment(topic, topicIdOpt, assignment.map { case (k, v) => k -> v.replicas })
       } else {
+        // write directly
         val topicIds = zkClient.getTopicIdsForTopics(Set(topic))
         zkClient.setTopicAssignment(topic, topicIds.get(topic), assignment)
       }

@@ -807,13 +807,23 @@ class KafkaController(val config: KafkaConfig,
    */
   private def onNewPartitionCreation(newPartitions: Set[TopicPartition]): Unit = {
     info(s"New partition creation callback for ${newPartitions.mkString(",")}")
+    // a. partitionState -> NewPartition
     partitionStateMachine.handleStateChanges(newPartitions.toSeq, NewPartition)
+
+    // b. replicaStateState -> NewReplica
     replicaStateMachine.handleStateChanges(controllerContext.replicasForPartition(newPartitions).toSeq, NewReplica)
+
+    // c. partitionState [ NewPartition -> OnlinePartition ]
+    // 1. write zk data
+    // 2. send LeaderAndIsrRequest to Brokers(the replica of TopicPartition)
+    // 3. send UpdateMetadataRequest to all brokers
     partitionStateMachine.handleStateChanges(
       newPartitions.toSeq,
       OnlinePartition,
       Some(OfflinePartitionLeaderElectionStrategy(false))
     )
+
+    // d. replicaStateState -> [ NewReplica -> OnlineReplica ]
     replicaStateMachine.handleStateChanges(controllerContext.replicasForPartition(newPartitions).toSeq, OnlineReplica)
   }
 
@@ -1858,7 +1868,7 @@ class KafkaController(val config: KafkaConfig,
 
   private def processTopicChange(): Unit = {
     if (!isActive) return
-    // 1. get from zk: /brokers//topics
+    // 1. get from zk: /brokers/topics
     val topics = zkClient.getAllTopicsInCluster(true)
     // 2. find new topics
     val newTopics = topics -- controllerContext.allTopics
@@ -1870,8 +1880,10 @@ class KafkaController(val config: KafkaConfig,
 
     // 5. register Partition attach hook
     registerPartitionModificationsHandlers(newTopics.toSeq)
-    // 6. get "newTopics" Partition Replica
+
+    // 6. get "newTopics" Partition Replica from zk "/brokers/topics/{newTopicName}"
     val addedPartitionReplicaAssignment = zkClient.getReplicaAssignmentAndTopicIdForTopics(newTopics)
+
     // 7. remove deleted Topics
     deletedTopics.foreach(controllerContext.removeTopic)
 
@@ -1892,6 +1904,7 @@ class KafkaController(val config: KafkaConfig,
       val partitionAssignments = addedPartitionReplicaAssignment
         .map { case TopicIdReplicaAssignment(_, _, partitionsReplicas) => partitionsReplicas.keySet }
         .reduce((s1, s2) => s1.union(s2))
+      // the entry of "Partition status flow"
       onNewPartitionCreation(partitionAssignments)
     }
   }
