@@ -554,7 +554,7 @@ class ReplicaManager(val config: KafkaConfig,
               responseMap.put(topicPartition, Errors.NONE)
           }
         }
-        // Processing of offline partitions
+        // * Processing of offline partitions
         stopPartitions(stoppedPartitions.toSet).foreach { case (topicPartition, e) =>
           if (e.isInstanceOf[KafkaStorageException]) {
               stateChangeLogger.error(s"Ignoring StopReplica request (delete=true) from " +
@@ -630,7 +630,7 @@ class ReplicaManager(val config: KafkaConfig,
     // Third delete the logs and checkpoint.
     val errorMap = new mutable.HashMap[TopicPartition, Throwable]()
     if (partitionsToDelete.nonEmpty) {
-      // * Delete the logs and checkpoint.
+      // * Delete Topic -> Delete the logs and checkpoint.
       logManager.asyncDelete(partitionsToDelete, isStray = false, (tp, e) => errorMap.put(tp, e))
     }
     remoteLogManager.foreach { rlm =>

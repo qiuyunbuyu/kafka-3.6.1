@@ -339,8 +339,11 @@ class TopicDeletionManager(config: KafkaConfig,
 
     // 4. send stop replica to all followers that are not in the OfflineReplica state so they stop sending fetch requests to the leader
     // state changes: xxx -> OfflineReplica -> ReplicaDeletionStarted
+    // StopReplicaRequest | deletePartition = false: "stop fetch from leader"
     replicaStateMachine.handleStateChanges(allReplicasForDeletionRetry, OfflineReplica)
+
     // ** will send "StopReplicaRequest" to brokers
+    // StopReplicaRequest | deletePartition = true: "del from disk"
     replicaStateMachine.handleStateChanges(allReplicasForDeletionRetry, ReplicaDeletionStarted)
 
     // 5. have "Not suitable for deletion" topics, Explain why deletion is inappropriate

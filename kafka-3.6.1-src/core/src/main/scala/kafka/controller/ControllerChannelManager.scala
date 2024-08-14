@@ -424,8 +424,10 @@ class ControllerBrokerRequestBatch(
 
   override def handleStopReplicaResponse(stopReplicaResponse: StopReplicaResponse, brokerId: Int,
                                          partitionErrorsForDeletingTopics: Map[TopicPartition, Errors]): Unit = {
-    if (partitionErrorsForDeletingTopics.nonEmpty)
+    if (partitionErrorsForDeletingTopics.nonEmpty) {
+      // StopReplica Response callback : put event to controllerEventManager
       sendEvent(TopicDeletionStopReplicaResponseReceived(brokerId, stopReplicaResponse.error, partitionErrorsForDeletingTopics))
+    }
   }
 }
 

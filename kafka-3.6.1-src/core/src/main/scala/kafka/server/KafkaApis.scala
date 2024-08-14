@@ -226,7 +226,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.API_VERSIONS => handleApiVersionsRequest(request)
         // broker: create new topic | The final processing function is "handleCreateTopicsRequest"
         case ApiKeys.CREATE_TOPICS => maybeForwardToController(request, handleCreateTopicsRequest)
-        // broker: delete topic
+        // broker: delete topic | The final processing function is "handleDeleteTopicsRequest"
         case ApiKeys.DELETE_TOPICS => maybeForwardToController(request, handleDeleteTopicsRequest)
         // broker: delete data from one or more partitions
         case ApiKeys.DELETE_RECORDS => handleDeleteRecordsRequest(request)

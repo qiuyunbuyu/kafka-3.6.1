@@ -268,6 +268,7 @@ class LogManager(logDirs: Seq[File],
   }
 
   private def addLogToBeDeleted(log: UnifiedLog): Unit = {
+    // thread | kafka-delete-logs
     this.logsToBeDeleted.add((log, time.milliseconds()))
   }
 
@@ -1064,6 +1065,7 @@ class LogManager(logDirs: Seq[File],
   }
 
   /**
+   *  thread kafka-delete-logs take from "logsToBeDeleted" to delete asynly
    *  Delete logs marked for deletion. Delete all logs for which `currentDefaultConfig.fileDeleteDelayMs`
    *  has elapsed after the delete was scheduled. Logs for which this interval has not yet elapsed will be
    *  considered for deletion in the next iteration of `deleteLogs`. The next iteration will be executed
@@ -1168,6 +1170,7 @@ class LogManager(logDirs: Seq[File],
   }
 
   /**
+    * "delete-topic" request will call the "underlying storage layer" API
     * Rename the directory of the given topic-partition "logdir" as "logdir.uuid.delete" and
     * add it in the queue for deletion.
     *

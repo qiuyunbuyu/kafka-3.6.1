@@ -1597,6 +1597,7 @@ class KafkaController(val config: KafkaConfig,
     // 3. Get replicas with errors of above corresponding partition
     val replicasInError = partitionsInError.map(PartitionAndReplica(_, replicaId))
 
+    // step 4 & 5 will do "resumeDeletions() | restarting the topic deletion action"
     // 4. Replicas deletion failure handling
     // move all the failed replicas to ReplicaDeletionIneligible
     topicDeletionManager.failReplicaDeletion(replicasInError)
@@ -1989,7 +1990,7 @@ class KafkaController(val config: KafkaConfig,
   private def processTopicDeletion(): Unit = {
     // 1. if not Controller, return directly
     if (!isActive) return
-    // 2. get topics to delete
+    // 2. get topics to delete | ${AdminZNode.path}/delete_topics
     var topicsToBeDeleted = zkClient.getTopicDeletions.toSet
     debug(s"Delete topics listener fired for topics ${topicsToBeDeleted.mkString(",")} to be deleted")
     // 3. Compare the list of topics to be deleted in zk and controllerContext, and determine topicsToBeDeleted
@@ -2005,6 +2006,7 @@ class KafkaController(val config: KafkaConfig,
         // important log
         info(s"Starting topic deletion for topics ${topicsToBeDeleted.mkString(",")}")
         // 4.1 mark topic ineligible for deletion if other state changes are in progress
+        // if "topic reassignment in progress", can not delete immediatily
         topicsToBeDeleted.foreach { topic =>
           val partitionReassignmentInProgress =
             controllerContext.partitionsBeingReassigned.map(_.topic).contains(topic)
