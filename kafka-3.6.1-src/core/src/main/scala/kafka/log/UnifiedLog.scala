@@ -768,6 +768,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     // This will ensure that any log data can be recovered with the correct topic ID in the case of failure.
     maybeFlushMetadataFile()
 
+    // analyze and get LogAppendInfo
     val appendInfo = analyzeAndValidateRecords(records, origin, ignoreRecordSize, leaderEpoch)
 
     // return if we have no valid messages or if this is a duplicate of the last appended entry
@@ -777,15 +778,17 @@ class UnifiedLog(@volatile var logStartOffset: Long,
       // trim any invalid bytes or partial messages before appending it to the on-disk log
       var validRecords = trimInvalidBytes(records, appendInfo)
 
-      // they are valid, insert them in the log
+      // they are valid, insert them in the log, should lock to avoid
       lock synchronized {
         maybeHandleIOException(s"Error while appending records to $topicPartition in dir ${dir.getParent}") {
           localLog.checkIfMemoryMappedBufferClosed()
           if (validateAndAssignOffsets) {
-            // assign offsets to the message set
+            // assign offsets to the message set: get LEO
             val offset = PrimitiveRef.ofLong(localLog.logEndOffset)
             appendInfo.setFirstOffset(Optional.of(new LogOffsetMetadata(offset.value)))
+            // use LogValidator to validate
             val validateAndOffsetAssignResult = try {
+              // get LogValidator
               val validator = new LogValidator(validRecords,
                 topicPartition,
                 time,
@@ -800,6 +803,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
                 origin,
                 interBrokerProtocolVersion
               )
+              // LogValidator to validate
               validator.validateMessagesAndAssignOffsets(offset,
                 validatorMetricsRecorder,
                 requestLocal.getOrElse(throw new IllegalArgumentException(
@@ -822,6 +826,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
             // re-validate message sizes if there's a possibility that they have changed (due to re-compression or message
             // format conversion)
             if (!ignoreRecordSize && validateAndOffsetAssignResult.messageSizeMaybeChanged) {
+              // get batch from MemoryRecords to judge size
               validRecords.batches.forEach { batch =>
                 if (batch.sizeInBytes > config.maxMessageSize) {
                   // we record the original message set size instead of the trimmed size
@@ -857,6 +862,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
           }
 
           // update the epoch cache with the epoch stamped onto the message by the leader
+          // leader-epoch-checkpoint
           validRecords.batches.forEach { batch =>
             if (batch.magic >= RecordBatch.MAGIC_VALUE_V2) {
               maybeAssignEpochStartOffset(batch.partitionLeaderEpoch, batch.baseOffset)
@@ -864,6 +870,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
               // In partial upgrade scenarios, we may get a temporary regression to the message format. In
               // order to ensure the safety of leader election, we clear the epoch cache so that we revert
               // to truncation by high watermark after the next leader election.
+              // make sure leader epoch not change.....
               leaderEpochCache.filter(_.nonEmpty).foreach { cache =>
                 warn(s"Clearing leader epoch cache after unexpected append with message format v${batch.magic}")
                 cache.clearAndFlush()
@@ -880,6 +887,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
           // maybe roll the log if this segment is full
           val segment = maybeRoll(validRecords.sizeInBytes, appendInfo)
 
+          // construct log metadata
           val logOffsetMetadata = new LogOffsetMetadata(
             appendInfo.firstOrLastOffsetOfFirstBatch,
             segment.baseOffset,
@@ -890,6 +898,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
           val (updatedProducers, completedTxns, maybeDuplicate) = analyzeAndValidateProducerState(
             logOffsetMetadata, validRecords, origin, verificationGuard)
 
+          // Duplicate check
           maybeDuplicate match {
             // if duplicate, just ignore
             case Some(duplicate) =>
@@ -903,6 +912,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
                 new LogOffsetMetadata(offsetMetadata.messageOffset, segment.baseOffset, segment.size)
               })
 
+              // call LogSegment to append.....
               // Append the records, and increment the local log end offset immediately after the append because a
               // write to the transaction index below may fail and we want to ensure that the offsets
               // of future appends still grow monotonically. The resulting transaction index inconsistency
@@ -910,6 +920,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
               // ProducerStateManager will not be updated and the last stable offset will not advance
               // if the append to the transaction index fails.
               localLog.append(appendInfo.lastOffset, appendInfo.maxTimestamp, appendInfo.offsetOfMaxTimestamp, validRecords)
+
               updateHighWatermarkWithLogEndOffset()
 
               // update the producer state
@@ -927,7 +938,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
               // even if there isn't any idempotent data being written
               producerStateManager.updateMapEndOffset(appendInfo.lastOffset + 1)
 
-              // update the first unstable offset (which is used to compute LSO)
+              // update the first unstable offset (which is used to compute "LSO")
               maybeIncrementFirstUnstableOffset()
 
               trace(s"Appended message set with last offset: ${appendInfo.lastOffset}, " +

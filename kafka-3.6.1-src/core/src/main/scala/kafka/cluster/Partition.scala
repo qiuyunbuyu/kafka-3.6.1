@@ -1298,22 +1298,24 @@ class Partition(val topicPartition: TopicPartition,
 
   def appendRecordsToLeader(records: MemoryRecords, origin: AppendOrigin, requiredAcks: Int,
                             requestLocal: RequestLocal, verificationGuard: Object = null): LogAppendInfo = {
+    // ReadLock
     val (info, leaderHWIncremented) = inReadLock(leaderIsrUpdateLock) {
       leaderLogIfLocal match {
+        // only leader replica can write
         case Some(leaderLog) =>
+          // *1 check ISR Size
           val minIsr = leaderLog.config.minInSyncReplicas
           val inSyncSize = partitionState.isr.size
-
           // Avoid writing to leader if there are not enough insync replicas to make it safe
           if (inSyncSize < minIsr && requiredAcks == -1) {
             throw new NotEnoughReplicasException(s"The size of the current ISR ${partitionState.isr} " +
               s"is insufficient to satisfy the min.isr requirement of $minIsr for partition $topicPartition")
           }
-
+          // *2
           val info = leaderLog.appendAsLeader(records, leaderEpoch = this.leaderEpoch, origin,
             interBrokerProtocolVersion, requestLocal, verificationGuard)
 
-          // we may need to increment high watermark since ISR could be down to 1
+          // *3 we may need to "increment high watermark" since ISR could be down to 1
           (info, maybeIncrementLeaderHW(leaderLog))
 
         case None =>

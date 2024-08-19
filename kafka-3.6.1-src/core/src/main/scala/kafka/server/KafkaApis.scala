@@ -627,6 +627,7 @@ class KafkaApis(val requestChannel: RequestChannel,
   def handleProduceRequest(request: RequestChannel.Request, requestLocal: RequestLocal): Unit = {
     // 1. get request body
     val produceRequest = request.body[ProduceRequest]
+
     // 2. transactional judge
     if (RequestUtils.hasTransactionalRecords(produceRequest)) {
       val isAuthorizedTransactional = produceRequest.transactionalId != null &&
@@ -640,10 +641,12 @@ class KafkaApis(val requestChannel: RequestChannel,
     val unauthorizedTopicResponses = mutable.Map[TopicPartition, PartitionResponse]()
     val nonExistingTopicResponses = mutable.Map[TopicPartition, PartitionResponse]()
     val invalidRequestResponses = mutable.Map[TopicPartition, PartitionResponse]()
+    // *** [TopicPartition <-> MemoryRecords]
     val authorizedRequestInfo = mutable.Map[TopicPartition, MemoryRecords]()
     // cache the result to avoid redundant authorization calls
     val authorizedTopics = authHelper.filterByAuthorized(request.context, WRITE, TOPIC,
       produceRequest.data().topicData().asScala)(_.name())
+
     // 3. Traverse each partition record, perform authorization and verification operations on it, and construct corresponding response information
     produceRequest.data.topicData.forEach(topic => topic.partitionData.forEach { partition =>
       val topicPartition = new TopicPartition(topic.name, partition.index)
@@ -660,6 +663,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       else
       // 3.3 case3: Send partition records to the corresponding broker
         try {
+          // * validate Records version, Especially version >= 3
           ProduceRequest.validateRecords(request.header.apiVersion, memoryRecords)
           authorizedRequestInfo += (topicPartition -> memoryRecords)
         } catch {
@@ -759,7 +763,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         entriesPerPartition = authorizedRequestInfo,
         requestLocal = requestLocal,
         responseCallback = sendResponseCallback,
-        recordConversionStatsCallback = processingStatsCallback,
+        recordConversionStatsCallback = processingStatsCallback, // Message format conversion related indicators, quantity, time
         transactionalId = produceRequest.transactionalId(),
         transactionStatePartition = transactionStatePartition)
 
