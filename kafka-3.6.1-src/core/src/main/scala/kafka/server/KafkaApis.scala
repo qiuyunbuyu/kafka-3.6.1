@@ -798,7 +798,12 @@ class KafkaApis(val requestChannel: RequestChannel,
       topicNames)
 
     val erroneous = mutable.ArrayBuffer[(TopicIdPartition, FetchResponseData.PartitionData)]()
+
+    //  "interesting" : construct PartitionData to Fetch
     val interesting = mutable.ArrayBuffer[(TopicIdPartition, FetchRequest.PartitionData)]()
+
+    // Distinguishing between two types of Fetch clients
+    // Follower Replica Client
     if (fetchRequest.isFromFollower) {
       // The follower must have ClusterAction on ClusterResource in order to fetch partition data.
       if (authHelper.authorize(request.context, CLUSTER_ACTION, CLUSTER, CLUSTER_NAME)) {
@@ -816,6 +821,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
       }
     } else {
+    // Regular Kafka consumers client
       // Regular Kafka consumers need READ permission on each partition they are fetching.
       val partitionDatas = new mutable.ArrayBuffer[(TopicIdPartition, FetchRequest.PartitionData)]
       fetchContext.foreachPartition { (topicIdPartition, partitionData) =>
@@ -847,6 +853,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
     }
 
+    // Convert Fetched Data Format
     def maybeConvertFetchedData(tp: TopicIdPartition,
                                 partitionData: FetchResponseData.PartitionData): FetchResponseData.PartitionData = {
       // We will never return a logConfig when the topic is unresolved and the name is null. This is ok since we won't have any records to convert.
@@ -1042,10 +1049,11 @@ class KafkaApis(val requestChannel: RequestChannel,
       // no bytes were recorded in the recent quota window
       // trying to fetch more bytes would result in a guaranteed throttling potentially blocking consumer progress
       val maxQuotaWindowBytes = if (fetchRequest.isFromFollower)
-        Int.MaxValue
+        Int.MaxValue // Replica Follower no need limit
       else
         quotas.fetch.getMaxValueInQuotaWindow(request.session, clientId).toInt
 
+      // determine fetchMaxBytes and fetchMinBytes
       val fetchMaxBytes = Math.min(Math.min(fetchRequest.maxBytes, config.fetchMaxBytes), maxQuotaWindowBytes)
       val fetchMinBytes = Math.min(fetchRequest.minBytes, fetchMaxBytes)
 
@@ -1060,7 +1068,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       } else {
         Optional.empty()
       }
-
+      // construct Fetch Params
       val params = new FetchParams(
         versionId,
         fetchRequest.replicaId,

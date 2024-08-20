@@ -1359,6 +1359,7 @@ class Partition(val topicPartition: TopicPartition,
     minOneMessage: Boolean,
     updateFetchState: Boolean
   ): LogReadInfo = {
+    //
     def readFromLocalLog(log: UnifiedLog): LogReadInfo = {
       readRecords(
         log,
@@ -1370,7 +1371,7 @@ class Partition(val topicPartition: TopicPartition,
         minOneMessage
       )
     }
-
+    // case1
     if (fetchParams.isFromFollower) {
       // Check that the request is from a valid replica before doing the read
       val (replica, logReadInfo) = inReadLock(leaderIsrUpdateLock) {
@@ -1399,6 +1400,7 @@ class Partition(val topicPartition: TopicPartition,
 
       logReadInfo
     } else {
+    // case2
       inReadLock(leaderIsrUpdateLock) {
         val localLog = localLogWithEpochOrThrow(
           fetchPartitionData.currentLeaderEpoch,
@@ -1488,7 +1490,7 @@ class Partition(val topicPartition: TopicPartition,
           initialLastStableOffset)
       }
     }
-
+    // call UnifiedLog to read
     val fetchedData = localLog.read(
       fetchOffset,
       maxBytes,

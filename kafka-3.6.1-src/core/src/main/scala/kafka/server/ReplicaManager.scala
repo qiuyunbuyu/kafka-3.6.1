@@ -1440,6 +1440,7 @@ class ReplicaManager(val config: KafkaConfig,
     //                        4) some error happens while reading data
     //                        5) we found a diverging epoch
     //                        6) has a preferred read replica
+    // case 1: The conditions for immediate return are met
     if (!remoteFetchInfo.isPresent && (params.maxWaitMs <= 0 || fetchInfos.isEmpty || bytesReadable >= params.minBytes || errorReadingData ||
       hasDivergingEpoch || hasPreferredReadReplica)) {
       val fetchPartitionData = logReadResults.map { case (tp, result) =>
@@ -1448,6 +1449,7 @@ class ReplicaManager(val config: KafkaConfig,
       }
       responseCallback(fetchPartitionData)
     } else {
+      // case2: Cannot be completed immediately, delayed processing
       // construct the fetch results from the read results
       val fetchPartitionStatus = new mutable.ArrayBuffer[(TopicIdPartition, FetchPartitionStatus)]
       fetchInfos.foreach { case (topicIdPartition, partitionData) =>
