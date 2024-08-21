@@ -429,6 +429,7 @@ class LogLoader(
       numRemainingSegments.put(threadName, numUnflushed)
 
       while (unflushedIter.hasNext && !truncated) {
+        // only recover logSegments after recoveryPointCheckpoint, not all logSegments
         val segment = unflushedIter.next()
         info(s"Recovering unflushed segment ${segment.baseOffset}. $numFlushed/$numUnflushed recovered for $topicPartition.")
 

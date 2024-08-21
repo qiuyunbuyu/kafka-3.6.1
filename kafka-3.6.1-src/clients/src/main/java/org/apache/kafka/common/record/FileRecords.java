@@ -184,7 +184,8 @@ public class FileRecords extends AbstractRecords implements Closeable {
         if (records.sizeInBytes() > Integer.MAX_VALUE - size.get())
             throw new IllegalArgumentException("Append of size " + records.sizeInBytes() +
                     " bytes is too large for segment with current file position at " + size.get());
-
+        // write to channel
+        // need to call flush() later to actually write to the physical disk
         int written = records.writeFullyTo(channel);
         size.getAndAdd(written);
         return written;
