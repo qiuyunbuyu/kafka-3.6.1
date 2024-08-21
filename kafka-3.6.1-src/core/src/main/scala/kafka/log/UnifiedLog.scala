@@ -1923,19 +1923,24 @@ object UnifiedLog extends Logging {
             numRemainingSegments: ConcurrentMap[String, Int] = new ConcurrentHashMap[String, Int],
             remoteStorageSystemEnable: Boolean = false,
             logOffsetsListener: LogOffsetsListener = LogOffsetsListener.NO_OP_OFFSETS_LISTENER): UnifiedLog = {
-    // create the log directory if it doesn't exist
+    // create the log directory if it doesn't exist, On initial startup
     Files.createDirectories(dir.toPath)
     val topicPartition = UnifiedLog.parseTopicPartitionName(dir)
     val segments = new LogSegments(topicPartition)
+    // LeaderEpoch File
     val leaderEpochCache = UnifiedLog.maybeCreateLeaderEpochCache(
       dir,
       topicPartition,
       logDirFailureChannel,
       config.recordVersion,
       s"[UnifiedLog partition=$topicPartition, dir=${dir.getParent}] ")
+    // Suffix of a producer snapshot file
     val producerStateManager = new ProducerStateManager(topicPartition, dir,
       maxTransactionTimeoutMs, producerStateManagerConfig, time)
+    // remote.storage.enable
     val isRemoteLogEnabled = UnifiedLog.isRemoteLogEnabled(remoteStorageSystemEnable, config, topicPartition.topic)
+
+    // Load the log segments from the log files on disk, and returns the components of the loaded log.
     val offsets = new LogLoader(
       dir,
       topicPartition,

@@ -378,13 +378,16 @@ class LogManager(logDirs: Seq[File],
 
     val uncleanLogDirs = mutable.Buffer.empty[String]
     for (dir <- liveLogDirs) {
+      // get Path
       val logDirAbsolutePath = dir.getAbsolutePath
+      // check Clean Shutdown
       var hadCleanShutdown: Boolean = false
       try {
+        // threadPools
         val pool = Executors.newFixedThreadPool(numRecoveryThreadsPerDataDir,
           new LogRecoveryThreadFactory(logDirAbsolutePath))
         threadPools.append(pool)
-
+        // check .kafka_cleanshutdown
         val cleanShutdownFile = new File(dir, LogLoader.CleanShutdownFile)
         if (cleanShutdownFile.exists) {
           // Cache the clean shutdown status and use that for rest of log loading workflow. Delete the CleanShutdownFile
@@ -394,6 +397,7 @@ class LogManager(logDirs: Seq[File],
         }
         hadCleanShutdownFlags.put(logDirAbsolutePath, hadCleanShutdown)
 
+        // recovery-point-offset-checkpoint
         var recoveryPoints = Map[TopicPartition, Long]()
         try {
           recoveryPoints = this.recoveryPointCheckpoints(dir).read()
@@ -403,6 +407,7 @@ class LogManager(logDirs: Seq[File],
               s"$logDirAbsolutePath, resetting the recovery checkpoint to 0", e)
         }
 
+        // log-start-offset-checkpoint
         var logStartOffsets = Map[TopicPartition, Long]()
         try {
           logStartOffsets = this.logStartOffsetCheckpoints(dir).read()
@@ -412,6 +417,7 @@ class LogManager(logDirs: Seq[File],
               s"$logDirAbsolutePath, resetting to the base offset of the first segment", e)
         }
 
+        // get num of  logs to Load and record it
         val logsToLoad = Option(dir.listFiles).getOrElse(Array.empty).filter(logDir =>
           logDir.isDirectory &&
             // Ignore remote-log-index-cache directory as that is index cache maintained by tiered storage subsystem
@@ -434,11 +440,13 @@ class LogManager(logDirs: Seq[File],
         }
 
         val jobsForDir = logsToLoad.map { logDir =>
+          // define runnable
           val runnable: Runnable = () => {
             debug(s"Loading log $logDir")
             var log = None: Option[UnifiedLog]
             val logLoadStartMs = time.hiResClockMs()
             try {
+              // loadLog
               log = Some(loadLog(logDir, hadCleanShutdown, recoveryPoints, logStartOffsets,
                 defaultConfig, topicConfigOverrides, numRemainingSegments))
             } catch {
@@ -466,7 +474,7 @@ class LogManager(logDirs: Seq[File],
           }
           runnable
         }
-
+        // submit job
         jobs += jobsForDir.map(pool.submit)
       } catch {
         case e: IOException =>
@@ -567,7 +575,9 @@ class LogManager(logDirs: Seq[File],
 
   // visible for testing
   private[log] def startupWithConfigOverrides(defaultConfig: LogConfig, topicConfigOverrides: Map[String, LogConfig]): Unit = {
-    loadLogs(defaultConfig, topicConfigOverrides) // this could take a while if shutdown was not clean
+    // load Logs when broker starting ...
+    // *this could take a while if shutdown was not clean
+    loadLogs(defaultConfig, topicConfigOverrides)
 
     /* Schedule the cleanup task to delete old logs */
     if (scheduler != null) {

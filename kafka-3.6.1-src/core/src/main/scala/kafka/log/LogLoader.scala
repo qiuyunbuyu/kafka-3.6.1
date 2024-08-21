@@ -97,7 +97,7 @@ class LogLoader(
    *                                           overflow index offset
    */
   def load(): LoadedLogOffsets = {
-    // First pass: through the files in the log directory and remove any temporary files
+    // [ First pass ]: through the files in the log directory and remove any temporary files
     // and find any interrupted swap operations
     val swapFiles = removeTempFilesAndCollectSwapFiles()
 
@@ -120,7 +120,7 @@ class LogLoader(
       maxSwapFileOffset = Math.max(segment.readNextOffset, maxSwapFileOffset)
     }
 
-    // Second pass: delete segments that are between minSwapFileOffset and maxSwapFileOffset. As
+    // [ Second pass ]: delete segments that are between minSwapFileOffset and maxSwapFileOffset. As
     // discussed above, these segments were compacted or split but haven't been renamed to .delete
     // before shutting down the broker.
     for (file <- dir.listFiles if file.isFile) {
@@ -139,7 +139,7 @@ class LogLoader(
       }
     }
 
-    // Third pass: rename all swap files.
+    // [ Third pass ]: rename all swap files.
     for (file <- dir.listFiles if file.isFile) {
       if (file.getName.endsWith(SwapFileSuffix)) {
         info(s"Recovering file ${file.getName} by renaming from ${UnifiedLog.SwapFileSuffix} files.")
@@ -147,7 +147,7 @@ class LogLoader(
       }
     }
 
-    // Fourth pass: load all the log and index files.
+    // [ Fourth pass ]: load all the log and index files.
     // We might encounter legacy log segments with offset overflow (KAFKA-6264). We need to split such segments. When
     // this happens, restart loading segment files from scratch.
     retryOnOffsetOverflow(() => {
@@ -156,18 +156,24 @@ class LogLoader(
       // call to loadSegmentFiles().
       segments.close()
       segments.clear()
+      // * Loads segments from disk into the provided params.segments.
       loadSegmentFiles()
     })
 
     val (newRecoveryPoint: Long, nextOffset: Long) = {
+      // case1: a directory that is scheduled to be deleted, skip it
+      // case2: a normal directory that should check "Need to check whether recovery is needed"
       if (!dir.getAbsolutePath.endsWith(UnifiedLog.DeleteDirSuffix)) {
+        // "Recover the log segments (if there was an unclean shutdown)"
         val (newRecoveryPoint, nextOffset) = retryOnOffsetOverflow(recoverLog)
 
         // reset the index size of the currently active log segment to allow more entries
         segments.lastSegment.get.resizeIndexes(config.maxIndexSize)
         (newRecoveryPoint, nextOffset)
       } else {
+      // case3: If no segment exists, create the first segment
         if (segments.isEmpty) {
+          // will add First LogSegment to "LogSegments"
           segments.add(
             LogSegment.open(
               dir = dir,
@@ -372,6 +378,7 @@ class LogLoader(
       time,
       reloadFromCleanShutdown = false,
       logIdent)
+    // Run recovery on the given segment
     val bytesTruncated = segment.recover(producerStateManager, leaderEpochCache)
     // once we have recovered the segment's data, take a snapshot to ensure that we won't
     // need to reload the same segment again while recovering another segment.

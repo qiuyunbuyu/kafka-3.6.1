@@ -317,6 +317,7 @@ class KafkaServer(
         logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
 
         /* 2.9.2 initialize LogManager, and start log manager */
+        /* the entry of LogManager */
         _logManager = LogManager(
           config,
           initialOfflineDirs,
