@@ -134,7 +134,9 @@ class UnifiedLog(@volatile var logStartOffset: Long,
    */
   @volatile private var firstUnstableOffsetMetadata: Option[LogOffsetMetadata] = None
 
-  /* Keep track of the current high watermark in order to ensure that segments containing offsets at or above it are
+  /*
+   * each Log will "Maintain a variable called highWatermarkMetadata"
+   * Keep track of the current high watermark in order to ensure that segments containing offsets at or above it are
    * not eligible for deletion. This means that the active segment is only eligible for deletion if the high watermark
    * equals the log end offset (which may never happen for a partition under consistent load). This is needed to
    * prevent the log start offset (which is exposed in fetch responses) from getting ahead of the high watermark.
@@ -162,13 +164,17 @@ class UnifiedLog(@volatile var logStartOffset: Long,
         localLog.updateRecoveryPoint(offset)
       }
     }
-
+    // UnifiedLog initialization related operations
+    // partition.metadata
     initializePartitionMetadata()
+    // logStartOffset
     updateLogStartOffset(logStartOffset)
     updateLocalLogStartOffset(math.max(logStartOffset, localLog.segments.firstSegmentBaseOffset.getOrElse(0L)))
     if (!remoteLogEnabled())
       logStartOffset = localLogStartOffset()
+    // UnstableOffset
     maybeIncrementFirstUnstableOffset()
+    // TopicId may in partition.metadata
     initializeTopicId()
 
     logOffsetsListener.onHighWatermarkUpdated(highWatermarkMetadata.messageOffset)
@@ -1453,9 +1459,10 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     }
     lock synchronized {
       val deletable = localLog.deletableSegments(shouldDelete)
-      if (deletable.nonEmpty)
+      if (deletable.nonEmpty) {
+        // do delete LogSegments
         deleteSegments(deletable, reason)
-      else
+      } else
         0
     }
   }
@@ -1489,14 +1496,14 @@ class UnifiedLog(@volatile var logStartOffset: Long,
   }
 
   /**
-   * If topic deletion is enabled, delete any local log segments that have either expired due to time based retention
-   * or because the log size is > retentionSize.
+   * If topic deletion is enabled, delete any local log segments that have either expired due to [1. time based retention]
+   * or because the [2. log size is > retentionSize].
    *
-   * Whether or not deletion is enabled, delete any local log segments that are before the log start offset
+   * Whether or not deletion is enabled, delete any local log segments that are [3. before the log start offset]
    */
   def deleteOldSegments(): Int = {
     if (config.delete) {
-      deleteLogStartOffsetBreachedSegments() +
+        deleteLogStartOffsetBreachedSegments() +
         deleteRetentionSizeBreachedSegments() +
         deleteRetentionMsBreachedSegments()
     } else {
@@ -1925,16 +1932,18 @@ object UnifiedLog extends Logging {
             logOffsetsListener: LogOffsetsListener = LogOffsetsListener.NO_OP_OFFSETS_LISTENER): UnifiedLog = {
     // create the log directory if it doesn't exist, On initial startup
     Files.createDirectories(dir.toPath)
+    // check dirname
     val topicPartition = UnifiedLog.parseTopicPartitionName(dir)
+    // construct LogSegments to help a "Log" to manage all LogSegments
     val segments = new LogSegments(topicPartition)
-    // LeaderEpoch File
+    // LeaderEpoch File: leader-epoch-checkpoint init
     val leaderEpochCache = UnifiedLog.maybeCreateLeaderEpochCache(
       dir,
       topicPartition,
       logDirFailureChannel,
       config.recordVersion,
       s"[UnifiedLog partition=$topicPartition, dir=${dir.getParent}] ")
-    // Suffix of a producer snapshot file
+    // Suffix of a producer snapshot file: xxxxxxx.snapshot
     val producerStateManager = new ProducerStateManager(topicPartition, dir,
       maxTransactionTimeoutMs, producerStateManagerConfig, time)
     // remote.storage.enable
@@ -1957,8 +1966,10 @@ object UnifiedLog extends Logging {
       numRemainingSegments,
       isRemoteLogEnabled,
     ).load()
+    //
     val localLog = new LocalLog(dir, config, segments, offsets.recoveryPoint,
       offsets.nextOffsetMetadata, scheduler, time, topicPartition, logDirFailureChannel)
+    //
     new UnifiedLog(offsets.logStartOffset,
       localLog,
       brokerTopicStats,

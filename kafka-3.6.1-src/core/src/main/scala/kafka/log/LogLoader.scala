@@ -99,6 +99,7 @@ class LogLoader(
   def load(): LoadedLogOffsets = {
     // [ First pass ]: through the files in the log directory and remove any temporary files
     // and find any interrupted swap operations
+    // Clean up files with .clean and .delete suffixes, and keep files with valid .swap suffixes
     val swapFiles = removeTempFilesAndCollectSwapFiles()
 
     // The remaining valid swap files must come from compaction or segment split operation. We can
@@ -229,7 +230,7 @@ class LogLoader(
    * @return Set of .swap files that are valid to be swapped in as segment files and index files
    */
   private def removeTempFilesAndCollectSwapFiles(): Set[File] = {
-
+    // Set to store swapFiles & cleanedFiles
     val swapFiles = mutable.Set[File]()
     val cleanedFiles = mutable.Set[File]()
     var minCleanedFileOffset = Long.MaxValue
@@ -242,12 +243,15 @@ class LogLoader(
       // Delete stray files marked for deletion, but skip KRaft snapshots.
       // These are handled in the recovery logic in `KafkaMetadataLog`.
       if (filename.endsWith(LogFileUtils.DELETED_FILE_SUFFIX) && !filename.endsWith(Snapshots.DELETE_SUFFIX)) {
+        // case1: Delete all files ending with .delete except .checkpoint.delete
         debug(s"Deleting stray temporary file ${file.getAbsolutePath}")
         Files.deleteIfExists(file.toPath)
       } else if (filename.endsWith(CleanedFileSuffix)) {
+        // case2: store cleanedFiles[.cleaned] and update minCleanedFileOffset
         minCleanedFileOffset = Math.min(offsetFromFile(file), minCleanedFileOffset)
         cleanedFiles += file
       } else if (filename.endsWith(SwapFileSuffix)) {
+        // case3:  store swapFiles[.swap]
         swapFiles += file
       }
     }
@@ -256,17 +260,19 @@ class LogLoader(
     // files could be part of an incomplete split operation that could not complete. See Log#splitOverflowedSegment
     // for more details about the split operation.
     val (invalidSwapFiles, validSwapFiles) = swapFiles.partition(file => offsetFromFile(file) >= minCleanedFileOffset)
+    // delete invalidSwapFiles
     invalidSwapFiles.foreach { file =>
       debug(s"Deleting invalid swap file ${file.getAbsoluteFile} minCleanedFileOffset: $minCleanedFileOffset")
       Files.deleteIfExists(file.toPath)
     }
 
+    // delete cleanedFiles
     // Now that we have deleted all .swap files that constitute an incomplete split operation, let's delete all .clean files
     cleanedFiles.foreach { file =>
       debug(s"Deleting stray .clean file ${file.getAbsolutePath}")
       Files.deleteIfExists(file.toPath)
     }
-
+    // return validSwapFiles
     validSwapFiles
   }
 
@@ -429,12 +435,13 @@ class LogLoader(
       numRemainingSegments.put(threadName, numUnflushed)
 
       while (unflushedIter.hasNext && !truncated) {
-        // only recover logSegments after recoveryPointCheckpoint, not all logSegments
+        // ** only recover logSegments after recoveryPointCheckpoint, not all logSegments **
         val segment = unflushedIter.next()
         info(s"Recovering unflushed segment ${segment.baseOffset}. $numFlushed/$numUnflushed recovered for $topicPartition.")
 
         val truncatedBytes =
           try {
+            // do recover
             recoverSegment(segment)
           } catch {
             case _: InvalidOffsetException =>
