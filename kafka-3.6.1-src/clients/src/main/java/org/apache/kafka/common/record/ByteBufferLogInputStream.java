@@ -42,6 +42,10 @@ class ByteBufferLogInputStream implements LogInputStream<MutableRecordBatch> {
         int remaining = buffer.remaining();
 
         Integer batchSize = nextBatchSize();
+        /**
+         * RecordBatch is the smallest "transmission processing unit".
+         * If an incomplete RecordBatch is received, it needs to be discarded.
+         */
         if (batchSize == null || remaining < batchSize)
             return null;
 

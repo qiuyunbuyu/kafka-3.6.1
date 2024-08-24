@@ -585,20 +585,20 @@ class LogManager(logDirs: Seq[File],
       scheduler.schedule("kafka-log-retention",
                          () => cleanupLogs(),
                          InitialTaskDelayMs,
-                         retentionCheckMs)
+                         retentionCheckMs) // 5min
       info("Starting log flusher with a default period of %d ms.".format(flushCheckMs))
       scheduler.schedule("kafka-log-flusher",
                          () => flushDirtyLogs(),
                          InitialTaskDelayMs,
-                         flushCheckMs)
+                         flushCheckMs) // Long.MaxValue
       scheduler.schedule("kafka-recovery-point-checkpoint",
                          () => checkpointLogRecoveryOffsets(),
                          InitialTaskDelayMs,
-                         flushRecoveryOffsetCheckpointMs)
+                         flushRecoveryOffsetCheckpointMs) // 1min
       scheduler.schedule("kafka-log-start-offset-checkpoint",
                          () => checkpointLogStartOffsets(),
                          InitialTaskDelayMs,
-                         flushStartOffsetCheckpointMs)
+                         flushStartOffsetCheckpointMs) // 1min
       scheduler.scheduleOnce("kafka-delete-logs", // will be rescheduled after each delete logs with a dynamic period
                          () => deleteLogs(),
                          InitialTaskDelayMs)

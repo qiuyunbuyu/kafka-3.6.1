@@ -24,10 +24,10 @@ import java.util.Iterator;
 import java.util.OptionalLong;
 
 /**
- * A record batch is a container for records. In old versions of the record format (versions 0 and 1),
- * a batch consisted always of a single record if no compression was enabled, but could contain
- * many records otherwise. Newer versions (magic versions 2 and above) will generally contain many records
- * regardless of compression.
+ * A record batch is a container for records.
+ * [In old versions] of the record format (versions 0 and 1), a batch consisted always of a single record if no compression was enabled, but could contain
+ * many records otherwise.
+ * [Newer versions] (magic versions 2 and above) will generally contain many records regardless of compression.
  */
 public interface RecordBatch extends Iterable<Record> {
 

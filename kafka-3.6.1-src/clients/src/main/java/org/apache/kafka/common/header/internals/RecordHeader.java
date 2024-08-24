@@ -16,7 +16,9 @@
  */
 package org.apache.kafka.common.header.internals;
 
+import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -78,6 +80,14 @@ public class RecordHeader implements Header {
     @Override
     public String toString() {
         return "RecordHeader(key = " + key() + ", value = " + Arrays.toString(value()) + ")";
+    }
+
+    public static void main(String[] args){
+        String sKey = "ckey";
+        String sValue = "a";
+        byte[] bytes = sValue.getBytes(StandardCharsets.UTF_8);
+        System.out.println(Arrays.toString(bytes));
+        System.out.println(new RecordHeader(sKey, bytes).toString());
     }
 
 }

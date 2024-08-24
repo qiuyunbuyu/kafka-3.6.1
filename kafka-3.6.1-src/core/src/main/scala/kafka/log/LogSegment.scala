@@ -287,7 +287,9 @@ class LogSegment private[log] (val log: FileRecords,
    */
   @threadsafe
   private[log] def translateOffset(offset: Long, startingFilePosition: Int = 0): LogOffsetPosition = {
+    // first search: search from index
     val mapping = offsetIndex.lookup(offset)
+    // second search
     log.searchForOffsetWithSize(offset, max(mapping.position, startingFilePosition))
   }
 
