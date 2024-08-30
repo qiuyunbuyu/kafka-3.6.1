@@ -207,6 +207,14 @@ public class SendBuilder implements Writable {
         );
     }
 
+    /**
+     * Messages are compiled into byte network code
+     * @param header
+     * @param headerVersion
+     * @param apiMessage
+     * @param apiVersion
+     * @return
+     */
     private static Send buildSend(
         Message header,
         short headerVersion,

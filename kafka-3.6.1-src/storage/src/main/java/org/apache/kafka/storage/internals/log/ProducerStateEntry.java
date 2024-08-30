@@ -131,7 +131,9 @@ public class ProducerStateEntry {
     public void setCurrentTxnFirstOffset(long firstOffset) {
         this.currentTxnFirstOffset = OptionalLong.of(firstOffset);
     }
+    // 1. "Data Duplicate check"
     // findDuplicateBatch(RecordBatch batch): Only check no duplication
+    // 2. "Data Sequential verify"
     // kafka.log.ProducerAppendInfo#checkSequence(): will check Sequence
 
     // The order of messages is also related to the order of network requests
