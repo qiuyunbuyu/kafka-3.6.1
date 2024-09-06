@@ -380,6 +380,13 @@ public class AbstractConfig {
         }
     }
 
+    /**
+     *
+     * @param klass: Class<?> get from ProducerConfig.key
+     * @param t: The interface the class should implement
+     * @param configPairs: user set and client.id(user set or add by producer)
+     * @return
+     */
     private <T> T getConfiguredInstance(Object klass, Class<T> t, Map<String, Object> configPairs) {
         if (klass == null)
             return null;
@@ -429,6 +436,8 @@ public class AbstractConfig {
      * @return A configured instance of the class
      */
     public <T> T getConfiguredInstance(String key, Class<T> t, Map<String, Object> configOverrides) {
+        /* the parsed values: Map<String, Object> values; */
+        /* object -> Class<?> */
         Class<?> c = getClass(key);
 
         return getConfiguredInstance(c, t, originals(configOverrides));
