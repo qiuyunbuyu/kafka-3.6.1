@@ -8,7 +8,7 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import java.util.Properties;
 import java.util.concurrent.ExecutionException;
 
-public class ProducerSendTest {
+public class TxnProducerSendTest {
 	public static final String brokerList = "localhost:9092";
 	public static final String topic = "studytopic";
 
@@ -19,8 +19,12 @@ public class ProducerSendTest {
 		properties.put("value.serializer",
 				"org.apache.kafka.common.serialization.StringSerializer");
 		properties.put("bootstrap.servers", brokerList);
+		properties.put("transactional.id", "fishyu");
 
 		KafkaProducer<Integer, String> producer = new KafkaProducer<>(properties);
+
+		producer.initTransactions();
+		producer.beginTransaction();
 
 		ProducerRecord<Integer, String> r1 = new ProducerRecord<>(topic, 1,"hello, producer1");
 		ProducerRecord<Integer, String> r2 = new ProducerRecord<>(topic, 2,"hello, producer2");
@@ -44,6 +48,8 @@ public class ProducerSendTest {
 			ProducerRecord<Integer, String> rx = new ProducerRecord<>(topic, i,"hello, producer1");
 			producer.send(rx);
 		}
+
+		producer.commitTransaction();
 		producer.close();
 	}
 }
