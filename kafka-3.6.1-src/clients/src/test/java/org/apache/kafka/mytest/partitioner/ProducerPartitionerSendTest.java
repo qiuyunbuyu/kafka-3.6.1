@@ -19,7 +19,7 @@ public class ProducerPartitionerSendTest {
 		properties.put("value.serializer",
 				"org.apache.kafka.common.serialization.StringSerializer");
 		properties.put("bootstrap.servers", brokerList);
-		properties.put("partitioner.class","org.apache.kafka.mytest.partitioner.MyPartitioner");
+//		properties.put("partitioner.class","org.apache.kafka.mytest.partitioner.MyPartitioner");
 
 		KafkaProducer<Integer, String> producer = new KafkaProducer<>(properties);
 
