@@ -1011,6 +1011,7 @@ class LogManager(logDirs: Seq[File],
           .get // If Failure, will throw
 
         val config = fetchLogConfig(topicPartition.topic)
+        // will call [UnifiedLog] -> object.apply(..)
         val log = UnifiedLog(
           dir = logDir,
           config = config,

@@ -286,18 +286,28 @@ class ReplicaManager(val config: KafkaConfig,
       purgatoryName = "RemoteFetch", brokerId = config.brokerId))
 
   // epoch of the controller that last changed the leader, Used to isolate requests from expired controllers
+  // If the "controllerEpoch" in the "received request" is smaller than the one maintained by itself, the request will be rejected directly
+  // May be updated while processing the following requests:
+  // - LeaderAndIsrRequest -> becomeLeaderOrFollower(...)
+  // - StopReplicaRequest -> stopReplicas(....)
+  // - UpdateMetadataRequest -> maybeUpdateMetadataCache(...)
+  // - ...
   @volatile private[server] var controllerEpoch: Int = KafkaController.InitialControllerEpoch
 
   // local BrokerId
   protected val localBrokerId = config.brokerId
 
-  // <TopicPartition, HostedPartition>
+  // <TopicPartition, HostedPartition[None, Online, Offline]>
+  // HostedPartition: represent the state of hosted partitions
   protected val allPartitions = new Pool[TopicPartition, HostedPartition](
     valueFactory = Some(tp => HostedPartition.Online(Partition(tp, time, this)))
   )
   protected val replicaStateChangeLock = new Object
-  // *single thread to help Follower Replica to fetch data from Leader Replica
+
+  // num.replica.fetchers
+  // * thread to help Follower Replica to fetch data from Leader Replica
   val replicaFetcherManager = createReplicaFetcherManager(metrics, time, threadNamePrefix, quotaManagers.follower)
+
   private[server] val replicaAlterLogDirsManager = createReplicaAlterLogDirsManager(quotaManagers.alterLogDirs, brokerTopicStats)
   private val highWatermarkCheckPointThreadStarted = new AtomicBoolean(false)
   @volatile private[server] var highWatermarkCheckpoints: Map[String, OffsetCheckpointFile] = logManager.liveLogDirs.map(dir =>
@@ -1804,7 +1814,10 @@ class ReplicaManager(val config: KafkaConfig,
             s"Latest known controller epoch is $controllerEpoch")
           leaderAndIsrRequest.getErrorResponse(0, Errors.STALE_CONTROLLER_EPOCH.exception)
         } else {
+
+          // Request processing entry
           val responseMap = new mutable.HashMap[TopicPartition, Errors]
+
           // update controllerEpoch
           controllerEpoch = leaderAndIsrRequest.controllerEpoch
 
@@ -1819,7 +1832,7 @@ class ReplicaManager(val config: KafkaConfig,
           requestPartitionStates.foreach { partitionState =>
             val topicPartition = new TopicPartition(partitionState.topicName, partitionState.partitionIndex)
             allTopicPartitionsInRequest += topicPartition
-            // get Partition
+            // get Partition state: if not found will set "none"
             val partitionOpt = getPartition(topicPartition) match {
               // case1: Offline state
               case HostedPartition.Offline =>
@@ -1842,10 +1855,16 @@ class ReplicaManager(val config: KafkaConfig,
 
             // Next check the topic ID and the partition's leader epoch
             partitionOpt.foreach { partition =>
+              // LeaderEpoch from self maintained
               val currentLeaderEpoch = partition.getLeaderEpoch
+              // LeaderEpoch from LeaderAndIsrRequest
               val requestLeaderEpoch = partitionState.leaderEpoch
+
+              // TopicId from LeaderAndIsrRequest
               val requestTopicId = topicIdFromRequest(topicPartition.topic)
+              // TopicId from local memory
               val logTopicId = partition.topicId
+
               // Checks if the topic ID provided in the request is consistent with the topic ID in the log
               if (!hasConsistentTopicId(requestTopicId, logTopicId)) {
                 stateChangeLogger.error(s"Topic ID in memory: ${logTopicId.get} does not" +
@@ -2101,6 +2120,7 @@ class ReplicaManager(val config: KafkaConfig,
 
     try {
       // First stop fetchers for all the partitions
+      // i am leader now, so i no need to fetch others
       replicaFetcherManager.removeFetcherForPartitions(partitionStates.keySet.map(_.topicPartition))
       stateChangeLogger.info(s"Stopped fetchers as part of LeaderAndIsr request correlationId $correlationId from " +
         s"controller $controllerId epoch $controllerEpoch as part of the become-leader transition for " +
@@ -2153,7 +2173,7 @@ class ReplicaManager(val config: KafkaConfig,
    * 1. Remove these partitions from the leader partitions set.
    * 2. Mark the replicas as followers so that no more data can be added from the producer clients.
    * 3. Stop fetchers for these partitions so that no more data can be added by the replica fetcher threads.
-   * 4. Truncate the log and checkpoint offsets for these partitions.
+   * 4. Truncate the log and checkpoint offsets for these partitions. [attach leader epoch checkpoint ? ]
    * 5. Clear the produce and fetch requests in the purgatory
    * 6. If the broker is not shutting down, add the fetcher to the new leaders.
    *
@@ -2218,12 +2238,14 @@ class ReplicaManager(val config: KafkaConfig,
         }
       }
 
+      // [ Stop fetchers Temporary, Eventually it will start]
       // Stopping the fetchers must be done first in order to initialize the fetch
       // position correctly.
       replicaFetcherManager.removeFetcherForPartitions(partitionsToMakeFollower.map(_.topicPartition))
       stateChangeLogger.info(s"Stopped fetchers as part of become-follower request from controller $controllerId " +
         s"epoch $controllerEpoch with correlation id $correlationId for ${partitionsToMakeFollower.size} partitions")
 
+      // [Clear the produce and fetch requests in the purgatory ]
       partitionsToMakeFollower.foreach { partition =>
         completeDelayedFetchOrProduceRequests(partition.topicPartition)
       }
@@ -2240,14 +2262,20 @@ class ReplicaManager(val config: KafkaConfig,
       } else {
         // we do not need to check if the leader exists again since this has been done at the beginning of this process
         val partitionsToMakeFollowerWithLeaderAndOffset = partitionsToMakeFollower.map { partition =>
+          // get leader node
           val leaderNode = partition.leaderReplicaIdOpt.flatMap(leaderId => metadataCache.
             getAliveBrokerNode(leaderId, config.interBrokerListenerName)).getOrElse(Node.noNode())
           val leader = new BrokerEndPoint(leaderNode.id(), leaderNode.host(), leaderNode.port())
+          // get local log UnifiedLog
           val log = partition.localLogOrException
+          // set fetchOffset
           val fetchOffset = initialFetchOffset(log)
+          // Initial Fetch State
           partition.topicPartition -> InitialFetchState(topicIds(partition.topic), leader, partition.getLeaderEpoch, fetchOffset)
         }.toMap
 
+        // "i am follower, so i need to fetch..."
+        // keep calling FetcherThread.doWork(): maybeTruncate() + maybeFetch()
         replicaFetcherManager.addFetcherForPartitions(partitionsToMakeFollowerWithLeaderAndOffset)
       }
     } catch {
@@ -2468,14 +2496,17 @@ class ReplicaManager(val config: KafkaConfig,
     requestedEpochInfo.map { offsetForLeaderTopic =>
       val partitions = offsetForLeaderTopic.partitions.asScala.map { offsetForLeaderPartition =>
         val tp = new TopicPartition(offsetForLeaderTopic.topic, offsetForLeaderPartition.partition)
+        // get specify Partition
         getPartition(tp) match {
           case HostedPartition.Online(partition) =>
+
             val currentLeaderEpochOpt =
               if (offsetForLeaderPartition.currentLeaderEpoch == RecordBatch.NO_PARTITION_LEADER_EPOCH)
                 Optional.empty[Integer]
               else
                 Optional.of[Integer](offsetForLeaderPartition.currentLeaderEpoch)
 
+            // ** Find the (exclusive) last offset of the largest epoch less than or equal to the requested epoch.
             partition.lastOffsetForLeaderEpoch(
               currentLeaderEpochOpt,
               offsetForLeaderPartition.leaderEpoch,

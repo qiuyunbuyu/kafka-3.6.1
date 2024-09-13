@@ -261,20 +261,26 @@ public class LeaderEpochFileCache {
                 // a follower is on the older message format where leader epochs are not recorded
                 epochAndOffset = new AbstractMap.SimpleImmutableEntry<>(UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET);
             } else if (latestEpoch().isPresent() && latestEpoch().getAsInt() == requestedEpoch) {
+                // case1: if the leader's current epoch is equal to the one requested. => "the Log End Offset"
+
                 // For the leader, the latest epoch is always the current leader epoch that is still being written to.
                 // Followers should not have any reason to query for the end offset of the current epoch, but a consumer
                 // might if it is verifying its committed offset following a group rebalance. In this case, we return
                 // the current log end offset which makes the truncation check work as expected.
                 epochAndOffset = new AbstractMap.SimpleImmutableEntry<>(requestedEpoch, logEndOffset);
             } else {
+                // case2:  if the leader's current epoch is not equal to the one requested.
+                // LastOffset will be the start offset of the first Leader Epoch larger than the Leader Epoch passed in the request
                 Map.Entry<Integer, EpochEntry> higherEntry = epochs.higherEntry(requestedEpoch);
                 if (higherEntry == null) {
+                    // case 2.1
                     // The requested epoch is larger than any known epoch. This case should never be hit because
                     // the latest cached epoch is always the largest.
                     epochAndOffset = new AbstractMap.SimpleImmutableEntry<>(UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET);
                 } else {
                     Map.Entry<Integer, EpochEntry> floorEntry = epochs.floorEntry(requestedEpoch);
                     if (floorEntry == null) {
+                        // case 2.2
                         // The requested epoch is smaller than any known epoch, so we return the start offset of the first
                         // known epoch which is larger than it. This may be inaccurate as there could have been
                         // epochs in between, but the point is that the data has already been removed from the log
@@ -282,6 +288,7 @@ public class LeaderEpochFileCache {
                         // start offset.
                         epochAndOffset = new AbstractMap.SimpleImmutableEntry<>(requestedEpoch, higherEntry.getValue().startOffset);
                     } else {
+                        // case 2.3
                         // We have at least one previous epoch and one subsequent epoch. The result is the first
                         // prior epoch and the starting offset of the first subsequent epoch.
                         epochAndOffset = new AbstractMap.SimpleImmutableEntry<>(floorEntry.getValue().epoch, higherEntry.getValue().startOffset);

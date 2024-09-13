@@ -37,6 +37,12 @@ import java.util.regex.Pattern;
  * 0  1     <- the format is: leader_epoch(int32) start_offset(int64)
  * 1  2
  * -----checkpoint file end----------
+ *
+ *  life cycle
+ *  NEW: [UnifiedLog] -> object.apply -> UnifiedLog.maybeCreateLeaderEpochCache
+ *  UPDATE: [Partition] -> Partition.makeLeader
+ *  USE:
+ *  DELETE: When segments are deleted, or compacted the appropriate entries are removed from the cache & file.
  */
 public class LeaderEpochCheckpointFile implements LeaderEpochCheckpoint {
 

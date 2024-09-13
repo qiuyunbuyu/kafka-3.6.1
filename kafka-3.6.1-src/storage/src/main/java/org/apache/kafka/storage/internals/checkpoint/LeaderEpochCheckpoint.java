@@ -21,6 +21,11 @@ import org.apache.kafka.storage.internals.log.EpochEntry;
 import java.util.Collection;
 import java.util.List;
 
+/**
+ * There are 2 implementation classes:
+ * 1. InMemoryLeaderEpochCheckpoint: help for remote log
+ * 2. LeaderEpochCheckpointFile: help for local log
+ */
 public interface LeaderEpochCheckpoint {
 
     void write(Collection<EpochEntry> epochs);

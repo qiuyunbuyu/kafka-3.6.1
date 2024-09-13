@@ -176,6 +176,7 @@ class ReplicaFetcherThread(name: String,
     val partition = replicaMgr.getPartitionOrException(tp)
     val log = partition.localLogOrException
 
+    // call partition to do "actual truncate"
     partition.truncateTo(offsetTruncationState.offset, isFuture = false)
 
     if (offsetTruncationState.offset < log.highWatermark)

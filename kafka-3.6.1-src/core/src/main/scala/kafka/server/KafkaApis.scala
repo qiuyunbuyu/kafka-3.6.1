@@ -2863,14 +2863,15 @@ class KafkaApis(val requestChannel: RequestChannel,
         (topics, Seq.empty[OffsetForLeaderTopic])
       else authHelper.partitionSeqByAuthorized(request.context, DESCRIBE, TOPIC, topics)(_.topic)
 
+    // use replicaManager to get OffsetForLeaderTopic
     val endOffsetsForAuthorizedPartitions = replicaManager.lastOffsetForLeaderEpoch(authorizedTopics)
+
     val endOffsetsForUnauthorizedPartitions = unauthorizedTopics.map { offsetForLeaderTopic =>
       val partitions = offsetForLeaderTopic.partitions.asScala.map { offsetForLeaderPartition =>
         new EpochEndOffset()
           .setPartition(offsetForLeaderPartition.partition)
           .setErrorCode(Errors.TOPIC_AUTHORIZATION_FAILED.code)
       }
-
       new OffsetForLeaderTopicResult()
         .setTopic(offsetForLeaderTopic.topic)
         .setPartitions(partitions.toList.asJava)
