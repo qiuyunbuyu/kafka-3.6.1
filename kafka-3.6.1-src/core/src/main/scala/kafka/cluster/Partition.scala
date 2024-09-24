@@ -882,6 +882,8 @@ class Partition(val topicPartition: TopicPartition,
     // No need to calculate low watermark if there is no delayed DeleteRecordsRequest
     val oldLeaderLW = if (delayedOperations.numDelayedDelete > 0) lowWatermarkIfLeader else -1L
     val prevFollowerEndOffset = replica.stateSnapshot.logEndOffset
+
+    // update state
     replica.updateFetchState(
       followerFetchOffsetMetadata,
       followerStartOffset,
@@ -895,6 +897,7 @@ class Partition(val topicPartition: TopicPartition,
     // since the replica's logStartOffset may have incremented
     val leaderLWIncremented = newLeaderLW > oldLeaderLW
 
+    // isr manage: Check and maybe expand the ISR of the partition.
     // Check if this in-sync replica needs to be added to the ISR.
     maybeExpandIsr(replica)
 
@@ -966,6 +969,7 @@ class Partition(val topicPartition: TopicPartition,
   }
 
   /**
+   * ISR: [ Follower Replica LEO >= current Leader HW ]
    * Check and maybe expand the ISR of the partition.
    * A replica will be added to ISR if its LEO >= current hw of the partition and it is caught up to
    * an offset within the current leader epoch. A replica must be caught up to the current leader
@@ -980,9 +984,11 @@ class Partition(val topicPartition: TopicPartition,
    * This function can be triggered when a replica's LEO has incremented.
    */
   private def maybeExpandIsr(followerReplica: Replica): Unit = {
+    // 1. check if need add this followerReplica to ISR
     val needsIsrUpdate = !partitionState.isInflight && canAddReplicaToIsr(followerReplica.brokerId) && inReadLock(leaderIsrUpdateLock) {
       needsExpandIsr(followerReplica)
     }
+    // 2. need update Isr, do some preparation
     if (needsIsrUpdate) {
       val alterIsrUpdateOpt = inWriteLock(leaderIsrUpdateLock) {
         // check if this replica needs to be added to the ISR
@@ -993,6 +999,7 @@ class Partition(val topicPartition: TopicPartition,
             None
         }
       }
+      // 3.
       // Send the AlterPartition request outside of the LeaderAndIsr lock since the completion logic
       // may increment the high watermark (and consequently complete delayed operations).
       alterIsrUpdateOpt.foreach(submitAlterPartition)
@@ -1013,6 +1020,7 @@ class Partition(val topicPartition: TopicPartition,
   private def isFollowerInSync(followerReplica: Replica): Boolean = {
     leaderLogIfLocal.exists { leaderLog =>
       val followerEndOffset = followerReplica.stateSnapshot.logEndOffset
+      // Follower Replica LEO >= current Leader HW
       followerEndOffset >= leaderLog.highWatermark && leaderEpochStartOffsetOpt.exists(followerEndOffset >= _)
     }
   }
@@ -1199,15 +1207,17 @@ class Partition(val topicPartition: TopicPartition,
   private def tryCompleteDelayedRequests(): Unit = delayedOperations.checkAndCompleteAll()
 
   def maybeShrinkIsr(): Unit = {
+    // 1. check if need shrink some replica
     def needsIsrUpdate: Boolean = {
       !partitionState.isInflight && inReadLock(leaderIsrUpdateLock) {
         needsShrinkIsr()
       }
     }
-
+    // 2. some follower replica will be removed from ISR
     if (needsIsrUpdate) {
       val alterIsrUpdateOpt = inWriteLock(leaderIsrUpdateLock) {
         leaderLogIfLocal.flatMap { leaderLog =>
+          // get out sync Replica
           val outOfSyncReplicaIds = getOutOfSyncReplicas(replicaLagTimeMaxMs)
           partitionState match {
             case currentState: CommittedPartitionState if outOfSyncReplicaIds.nonEmpty =>
@@ -1221,6 +1231,7 @@ class Partition(val topicPartition: TopicPartition,
                   .getOrElse("unknown")
                 s"(brokerId: $replicaId, endOffset: $logEndOffsetMessage, lastCaughtUpTimeMs: $lastCaughtUpTimeMessage)"
               }.mkString(" ")
+              // count newISR after "shrinked"
               val newIsrLog = (partitionState.isr -- outOfSyncReplicaIds).mkString(",")
               info(s"Shrinking ISR from ${partitionState.isr.mkString(",")} to $newIsrLog. " +
                 s"Leader: (highWatermark: ${leaderLog.highWatermark}, " +
@@ -1232,6 +1243,7 @@ class Partition(val topicPartition: TopicPartition,
           }
         }
       }
+      // call submitAlterPartition method to complete ISR change
       // Send the AlterPartition request outside of the LeaderAndIsr lock since the completion logic
       // may increment the high watermark (and consequently complete delayed operations).
       alterIsrUpdateOpt.foreach(submitAlterPartition)
@@ -1403,6 +1415,7 @@ class Partition(val topicPartition: TopicPartition,
           fetchPartitionData.currentLeaderEpoch,
           fetchParams.fetchOnlyLeader
         )
+        // get follower Replica from "remoteReplicasMap"
         val replica = followerReplicaOrThrow(
           fetchParams.replicaId,
           fetchPartitionData
@@ -1410,8 +1423,9 @@ class Partition(val topicPartition: TopicPartition,
         val logReadInfo = readFromLocalLog(localLog)
         (replica, logReadInfo)
       }
-
+      // only leader can manage ISR
       if (updateFetchState && !logReadInfo.divergingEpoch.isPresent) {
+        // Update the follower's state in the leader based on the last fetch request
         updateFollowerFetchState(
           replica,
           followerFetchOffsetMetadata = logReadInfo.fetchedData.fetchOffsetMetadata,
@@ -1806,13 +1820,20 @@ class Partition(val topicPartition: TopicPartition,
     }
   }
 
+  /**
+   * send "AlterPartition request" to controller to complete ISR change
+   * @param proposedIsrState
+   * @return
+   */
   private def submitAlterPartition(proposedIsrState: PendingPartitionChange): CompletableFuture[LeaderAndIsr] = {
     debug(s"Submitting ISR state change $proposedIsrState")
+    // use CompletableFuture to build and send "AlterPartition request" to controller
     val future = alterIsrManager.submit(
       new TopicIdPartition(topicId.getOrElse(Uuid.ZERO_UUID), topicPartition),
       proposedIsrState.sentLeaderAndIsr,
       controllerEpoch
     )
+    // After the request is completed, the processing after receiving the response
     future.whenComplete { (leaderAndIsr, e) =>
       var hwIncremented = false
       var shouldRetry = false
@@ -1825,6 +1846,7 @@ class Partition(val topicPartition: TopicPartition,
           debug(s"Ignoring failed ISR update to $proposedIsrState since we have already " +
             s"updated state to $partitionState")
         } else if (leaderAndIsr != null) {
+          // Handle a successful `AlterPartition` response.
           hwIncremented = handleAlterPartitionUpdate(proposedIsrState, leaderAndIsr)
         } else {
           shouldRetry = handleAlterPartitionError(proposedIsrState, Errors.forException(e))

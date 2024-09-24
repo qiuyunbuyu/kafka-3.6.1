@@ -387,6 +387,7 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   def startup(): Unit = {
+    // ISR manage attach: scheduler task
     // start ISR expiration thread
     // A follower can lag behind leader for up to config.replicaLagTimeMaxMs x 1.5 before it is removed from ISR
     scheduler.schedule("isr-expiration", () => maybeShrinkIsr(), 0L, config.replicaLagTimeMaxMs / 2)
@@ -1416,6 +1417,7 @@ class ReplicaManager(val config: KafkaConfig,
                     responseCallback: Seq[(TopicIdPartition, FetchPartitionData)] => Unit): Unit = {
 
     // check if this fetch request can be satisfied right away
+    // call readFromLog -> fetchRecords -> Partition.scala.fetchRecords
     val logReadResults = readFromLog(params, fetchInfos, quota, readFromPurgatory = false)
     var bytesReadable: Long = 0
     var errorReadingData = false
@@ -1568,7 +1570,7 @@ class ReplicaManager(val config: KafkaConfig,
             exception = None)
         } else {
           log = partition.localLogWithEpochOrThrow(fetchInfo.currentLeaderEpoch, params.fetchOnlyLeader())
-
+          // call Partition.fetchRecords
           // Try the read first, this tells us whether we need all of adjustedFetchSize for this partition
           val readInfo: LogReadInfo = partition.fetchRecords(
             fetchParams = params,
