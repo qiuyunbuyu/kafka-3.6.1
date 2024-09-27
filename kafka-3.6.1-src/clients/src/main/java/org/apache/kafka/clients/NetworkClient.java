@@ -555,7 +555,7 @@ public class NetworkClient implements KafkaClient {
 
     /**
      * Do actual reads and writes to sockets.
-     *
+     * 理解poll时候的Utils.min(timeout, metadataTimeout, defaultRequestTimeoutMs)
      * @param timeout The maximum amount of time to wait (in ms) for responses if there are none immediately,
      *                must be non-negative. The actual timeout will be the minimum of timeout, request timeout and
      *                metadata timeout
@@ -576,6 +576,7 @@ public class NetworkClient implements KafkaClient {
         }
         // Part 1: metadata handle
         // determine whether meta needs to be updated
+        // 这步会判断是否发MetaDataRequest请求，并返回超时时间，并把超时时间交给下面的selector.poll(...)
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
 
         // Part 2: Do I/O. Reads, writes, connection establishment, etc.
@@ -592,6 +593,8 @@ public class NetworkClient implements KafkaClient {
         // part3: process completed actions
         // Completed Sends: handle [List<NetworkSend> completedSends]
         handleCompletedSends(responses, updatedNow);
+
+        // 处理收到的response，例如此处会处理metadataresponse，并进行一定更新
         // Completed Receives: handle [LinkedHashMap<String, NetworkReceive> completedReceives]
         handleCompletedReceives(responses, updatedNow);
 
@@ -956,7 +959,7 @@ public class NetworkClient implements KafkaClient {
             // If the received response includes a throttle delay, throttle the connection.
             maybeThrottle(response, req.header.apiVersion(), req.destination, now);
             if (req.isInternalRequest && response instanceof MetadataResponse)
-                // handle metadata response
+                // handle metadata response: 最终会调用到ProducerMetaData的update(....)方法
                 metadataUpdater.handleSuccessfulResponse(req.header, now, (MetadataResponse) response);
             else if (req.isInternalRequest && response instanceof ApiVersionsResponse)
                 // handle ApiVersion response
@@ -1123,6 +1126,7 @@ public class NetworkClient implements KafkaClient {
         public long maybeUpdate(long now) {
             // should we update our metadata?
             // The next time to update metadata
+            // timeToNextUpdate(now)能够解释MetaData中各种lastSuccessfulRefreshMs, metadataExpireMs,lastRefreshMs, refreshBackoffMs的作用
             long timeToNextMetadataUpdate = metadata.timeToNextUpdate(now);
             // Check if metadata has been sent. If there are requests that have been sent but still not returned.
             // set waitForMetadataFetch(default 30S)
@@ -1201,11 +1205,15 @@ public class NetworkClient implements KafkaClient {
 
             // When talking to the startup phase of a broker, it is possible to receive an empty metadata set, which
             // we should retry later.
+            // 如果交互的是“正处于启动阶段”的broker，metadata确实可能会是空的
+            // 虽然failedUpdate方法中仅更新了lastRefreshMs，但是不用担心，因为没有update元数据成功，所以needFullUpdate或者needPartialUpdate任然为true
+            // 在refreshBackoffMs后会继续尝试更新metadata
             if (response.brokers().isEmpty()) {
                 // when update metadata fail,update lastRefreshMs to now and retry later.
                 log.trace("Ignoring empty metadata response with correlation id {}.", requestHeader.correlationId());
                 this.metadata.failedUpdate(now);
             } else {
+                // 在接收到MetadataResponse之后，调用metadata.update来更新客户端的元数据，
                 // update response from response
                 this.metadata.update(inProgress.requestVersion, response, inProgress.isPartialUpdate, now);
             }
@@ -1235,13 +1243,16 @@ public class NetworkClient implements KafkaClient {
          */
         private long maybeUpdate(long now, Node node) {
             String nodeConnectionId = node.idString();
-            // Case 1: canSendRequest to nodeConnectionId
+            // Case 1: canSendRequest to nodeConnectionId 发送的前提是连接的建立
             if (canSendRequest(nodeConnectionId, now)) {
                 // build metadata request
                 // before build metadata request, topic need update metadata must save to "Map<String, Long> topics" in ProducerMetadata
+                // 这里点可以发现newMetadataRequestAndVersion，needFullUpdate字段的作用，在构建MetadataRequest会有区别
                 Metadata.MetadataRequestAndVersion requestAndVersion = metadata.newMetadataRequestAndVersion(now);
                 MetadataRequest.Builder metadataRequest = requestAndVersion.requestBuilder;
                 log.info("Sending metadata request {} to node {}", metadataRequest, node);
+
+                // 正式发送了MetadataRequest
                 // send metadata request
                 sendInternalMetadataRequest(metadataRequest, nodeConnectionId, now);
                 inProgress = new InProgressData(requestAndVersion.requestVersion, requestAndVersion.isPartialUpdate);

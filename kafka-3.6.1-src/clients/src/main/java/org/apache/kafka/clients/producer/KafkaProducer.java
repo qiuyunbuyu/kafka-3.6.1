@@ -1199,15 +1199,20 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
         if (cluster.invalidTopics().contains(topic))
             throw new InvalidTopicException(topic);
-
+        // 每次发送都会在此时，调用
+        // 已存在-> 延长过期时间
+        // 不存在-> needPartialUpdate = true触发更新
         metadata.add(topic, nowMs);
 
         Integer partitionsCount = cluster.partitionCountForTopic(topic);
+
+        // 已有该topic元数据场景
         // Return cached metadata if we have it, and if the record's partition is either undefined
         // or within the known partition range
         if (partitionsCount != null && (partition == null || partition < partitionsCount))
             return new ClusterAndWaitTime(cluster, 0);
 
+        // 未有topic场景
         long remainingWaitMs = maxWaitMs;
         long elapsed = 0;
         // Issue metadata requests until we have metadata for the topic and the requested partition,
@@ -1226,7 +1231,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // no block, wake up now
             sender.wakeup();
             try {
-                // block for metadata update success
+                // * block for metadata update success
                 metadata.awaitUpdate(version, remainingWaitMs);
             } catch (TimeoutException ex) {
                 // Rethrow with original maxWaitMs to prevent logging exception with remainingWaitMs
@@ -1234,6 +1239,8 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                         String.format("Topic %s not present in metadata after %d ms.",
                                 topic, maxWaitMs));
             }
+            // main线程可以开始加载metadata，走到这里，证明metadata.awaitUpdate(version, remainingWaitMs);“过了”，
+            // 也就证明sender线程已经通过ProducerMetadata调用了update(..)把metadata准备好了
             cluster = metadata.fetch();
             // Calculate how long it takes for metadata updates to complete
             elapsed = time.milliseconds() - nowMs;
