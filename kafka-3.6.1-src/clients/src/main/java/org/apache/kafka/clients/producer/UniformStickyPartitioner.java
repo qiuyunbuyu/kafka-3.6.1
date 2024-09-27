@@ -23,6 +23,7 @@ import org.apache.kafka.common.Cluster;
 
 
 /**
+ * KIP-794: why add "@Deprecated" annotation ?
  * @deprecated Since 3.3.0, in order to use default partitioning logic
  * remove the {@code partitioner.class} configuration setting and set {@code partitioner.ignore.keys=true}.
  * See <a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-794%3A+Strictly+Uniform+Sticky+Partitioner">KIP-794</a> for more info.

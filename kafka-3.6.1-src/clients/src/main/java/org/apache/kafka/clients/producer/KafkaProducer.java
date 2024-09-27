@@ -1468,9 +1468,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      * partitioning logic).
      */
     private int partition(ProducerRecord<K, V> record, byte[] serializedKey, byte[] serializedValue, Cluster cluster) {
+        // case1: Directly specify the partition when constructing ProducerRecord
         if (record.partition() != null)
             return record.partition();
 
+        // case2: The user specifies the partitioner
         if (partitioner != null) {
             int customPartition = partitioner.partition(
                 record.topic(), record.key(), serializedKey, record.value(), serializedValue, cluster);
@@ -1480,11 +1482,14 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             }
             return customPartition;
         }
+        // case3: The user did not specify a partitioner
 
+        // case3.1: There is a key and it is not ignored
         if (serializedKey != null && !partitionerIgnoreKeys) {
             // hash the keyBytes to choose a partition
             return BuiltInPartitioner.partitionForKey(serializedKey, cluster.partitionsForTopic(record.topic()).size());
         } else {
+        // case3.2: There is no key, "UNKNOWN_PARTITION to indicate any partition can be used"
             return RecordMetadata.UNKNOWN_PARTITION;
         }
     }

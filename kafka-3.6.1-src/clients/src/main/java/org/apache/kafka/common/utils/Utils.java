@@ -394,6 +394,7 @@ public final class Utils {
         if (c == null)
             throw new KafkaException("class cannot be null");
         try {
+            // Instance object from Constructor
             return c.getDeclaredConstructor().newInstance();
         } catch (NoSuchMethodException e) {
             throw new KafkaException("Could not find a public no-argument constructor for " + c.getName(), e);
