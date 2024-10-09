@@ -250,7 +250,7 @@ public class Selector implements Selectable, AutoCloseable {
      * <p>
      * Note that this call only initiates the connection, which will be completed on a future {@link #poll(long)}
      * call. Check {@link #connected()} to see which (if any) connections have completed after a given poll call.
-     * @param id The id for the new connection
+     * @param id The id for the new connection | id = [String nodeConnectionId = node.idString();]
      * @param address The address to connect to
      * @param sendBufferSize The send buffer for the new connection
      * @param receiveBufferSize The receive buffer for the new connection
@@ -520,7 +520,7 @@ public class Selector implements Selectable, AutoCloseable {
 
         /* check ready keys */
         long startSelect = time.nanoseconds();
-        // Get ready event
+        // Get ready event, [timeout == 0 -> no block] | [timeout > 0 -> block "nioSelector.wakeup() can interrupt block"]
         int numReadyKeys = select(timeout);
         long endSelect = time.nanoseconds();
         // record consume time = endSelect - startSelect
@@ -538,11 +538,11 @@ public class Selector implements Selectable, AutoCloseable {
                 pollSelectionKeys(toPoll, false, endSelect);
             }
 
-            // Poll from channels where the underlying socket has more data
+            // * Poll from channels where the underlying socket has more data
             pollSelectionKeys(readyKeys, false, endSelect);
             // Clear all selected keys so that they are excluded from the ready count for the next select
             readyKeys.clear();
-            // handle immediately Connected Keys
+            // * handle immediately Connected Keys
             pollSelectionKeys(immediatelyConnectedKeys, true, endSelect);
             immediatelyConnectedKeys.clear();
         } else {
@@ -586,6 +586,7 @@ public class Selector implements Selectable, AutoCloseable {
                 idleExpiryManager.update(nodeId, currentTimeNanos);
 
             try {
+                // * OP_CONNECT handle
                 /* complete any connections that have finished their handshake (either normally or immediately) */
                 if (isImmediatelyConnected || key.isConnectable()) {
                     // "channel.finishConnect()" will call "transportLayer.finishConnect();" to "~SelectionKey.OP_CONNECT | SelectionKey.OP_READ"
@@ -635,6 +636,7 @@ public class Selector implements Selectable, AutoCloseable {
                     addToCompletedReceives(channel, receive, currentTimeMs);
                 });
 
+                // * OP_READ handle
                 //if channel is ready and has bytes to read from socket or buffer, and has no
                 //previous completed receive then read from it
                 if (channel.ready() && (key.isReadable() || channel.hasBytesBuffered()) && !hasCompletedReceive(channel)
@@ -654,7 +656,7 @@ public class Selector implements Selectable, AutoCloseable {
                 }
 
                 /* if channel is ready write to any sockets that have space in their buffer and for which we have data */
-
+                // * OP_WRITE handle
                 long nowNanos = channelStartTimeNanos != 0 ? channelStartTimeNanos : currentTimeNanos;
                 try {
                     // * attempt handle write
@@ -1127,9 +1129,10 @@ public class Selector implements Selectable, AutoCloseable {
      * adds a receive to completed receives
      */
     private void addToCompletedReceives(KafkaChannel channel, NetworkReceive networkReceive, long currentTimeMs) {
+        // will invoke "clear()" in each "Selector.poll()"
         if (hasCompletedReceive(channel))
             throw new IllegalStateException("Attempting to add second completed receive to channel " + channel.id());
-
+        // Selector do "put" .... NetWorkClient do "handleCompletedReceives"
         this.completedReceives.put(channel.id(), networkReceive);
         sensors.recordCompletedReceive(channel.id(), networkReceive.size(), currentTimeMs);
     }
@@ -1517,6 +1520,7 @@ public class Selector implements Selectable, AutoCloseable {
     // first add: Selector-registerChannel(*...)
     // update: Selector-pollSelectionKeys(*...)
     // close: Selector-close(*...)
+    // https://www.cnblogs.com/huxi2b/p/10112228.html
     private static class IdleExpiryManager {
         // lruConnections organized by LinkedHashMap(LRU)
         private final Map<String, Long> lruConnections;

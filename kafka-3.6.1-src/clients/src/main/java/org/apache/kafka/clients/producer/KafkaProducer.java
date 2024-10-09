@@ -1223,7 +1223,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // update the topic with expiry time
             metadata.add(topic, nowMs + elapsed);
             int version = metadata.requestUpdateForTopic(topic);
-            // no block, wake up now
+            // no block, wake up now,
+            // in class Selector."int numReadyKeys = select(timeout)", if timeout > 0, will block
+            // call wakeup() to "Wakeup this selector if it is blocked on I/O"
             sender.wakeup();
             try {
                 // block for metadata update success
