@@ -963,6 +963,8 @@ public class NetworkClient implements KafkaClient {
                 handleApiVersionsResponse(responses, req, now, (ApiVersionsResponse) response);
             else
                 // handle common response
+                // added to List<ClientResponse> responses = new ArrayList<>(), created in poll()
+                // in poll() last stage: completeResponses(responses);
                 responses.add(req.completed(response, now));
         }
     }
