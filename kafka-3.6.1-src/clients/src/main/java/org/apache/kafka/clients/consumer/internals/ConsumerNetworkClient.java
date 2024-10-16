@@ -52,6 +52,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * are held when they are invoked.
  */
 public class ConsumerNetworkClient implements Closeable {
+    // the default time for "Selector.poll()" max blocked time
     private static final int MAX_POLL_TIMEOUT_MS = 5000;
 
     // the mutable state of this class is protected by the object's monitor (excluding the wakeup
@@ -64,7 +65,9 @@ public class ConsumerNetworkClient implements Closeable {
     private final Metadata metadata;
     private final Time time;
     private final long retryBackoffMs;
+    // the time for "Selector.poll()" max blocked time: Math.min(maxPollTimeoutMs, MAX_POLL_TIMEOUT_MS)
     private final int maxPollTimeoutMs;
+    // the timeout ms of "request" saved in "UnsentRequests" waited to handle
     private final int requestTimeoutMs;
 
     // Whether to disable wakeup() ? sometimes no need to do wakeup Selector.poll()
@@ -715,6 +718,7 @@ public class ConsumerNetworkClient implements Closeable {
                 Iterator<ClientRequest> requestIterator = requests.iterator();
                 while (requestIterator.hasNext()) {
                     ClientRequest request = requestIterator.next();
+                    // Calculate the time this request has existed in unsent
                     long elapsedMs = Math.max(0, now - request.createdTimeMs());
                     if (elapsedMs > request.requestTimeoutMs()) {
                         expiredRequests.add(request);
