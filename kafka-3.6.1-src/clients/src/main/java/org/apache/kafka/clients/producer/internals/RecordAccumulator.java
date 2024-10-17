@@ -1281,6 +1281,7 @@ public class RecordAccumulator {
 
     /**
      * Per topic info.
+     * Important objects: ProducerBatch
      */
     private static class TopicInfo {
         public final ConcurrentMap<Integer /*partition*/, Deque<ProducerBatch>> batches = new CopyOnWriteMap<>();

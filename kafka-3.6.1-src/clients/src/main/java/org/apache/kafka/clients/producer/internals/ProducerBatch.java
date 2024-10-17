@@ -158,7 +158,11 @@ public final class ProducerBatch {
         if (!recordsBuilder.hasRoomFor(timestamp, key, value, headers)) {
             return null;
         } else {
-            // 2. call MemoryRecordsBuilder to append record
+            // 展示一个ProducerBatch的情况:测试record攒batch的情况
+            System.out.println(this+":"+this.createdMs);
+            this.recordsBuilder.showBaseAndOffset();
+
+            // 2. call MemoryRecordsBuilder to append record：
             this.recordsBuilder.append(timestamp, key, value, headers);
             // 3. update the max RecordSizes
             this.maxRecordSize = Math.max(this.maxRecordSize, AbstractRecords.estimateSizeInBytesUpperBound(magic(),
@@ -272,6 +276,9 @@ public final class ProducerBatch {
      * @param topLevelException The exception that occurred (or null if the request was successful)
      * @param recordExceptions Record exception function mapping batchIndex to the respective record exception
      * @return true if the batch was completed successfully and false if the batch was previously aborted
+     *
+     * 这里的baseoffset就已经不是，客户端最初的以0开始的了，而是server端实际的了
+     * 并且这里的baseoffset是一个producerbatch的baseoffset，也可以理解成该producebatch中第一条record的实际offset
      */
     private boolean done(
         long baseOffset,
@@ -282,13 +289,13 @@ public final class ProducerBatch {
         // get FinalState
         final FinalState tryFinalState = (topLevelException == null) ? FinalState.SUCCEEDED : FinalState.FAILED;
         if (tryFinalState == FinalState.SUCCEEDED) {
-            log.trace("Successfully produced messages to {} with base offset {}.", topicPartition, baseOffset);
+            log.debug("Successfully produced messages to {} with base offset {}.", topicPartition, baseOffset);
         } else {
-            log.trace("Failed to produce messages to {} with base offset {}.", topicPartition, baseOffset, topLevelException);
+            log.debug("Failed to produce messages to {} with base offset {}.", topicPartition, baseOffset, topLevelException);
         }
         // use cas to update finalState
         if (this.finalState.compareAndSet(null, tryFinalState)) {
-            // Execute callback
+            // Execute callback：从这里就可以看出用户发送Record时的回调虽然是绑在单条Record上的，但是触发是基于producerbatch这个整体触发的
             completeFutureAndFireCallbacks(baseOffset, logAppendTime, recordExceptions);
             return true;
         }
@@ -315,6 +322,7 @@ public final class ProducerBatch {
         long logAppendTime,
         Function<Integer, RuntimeException> recordExceptions
     ) {
+        // 这里再设置一次baseoffset
         // Set the future before invoking the callbacks as we rely on its state for the `onCompletion` call
         produceFuture.set(baseOffset, logAppendTime, recordExceptions);
 
@@ -326,7 +334,8 @@ public final class ProducerBatch {
                     if (recordExceptions == null) {
                         // get RecordMetadata
                         RecordMetadata metadata = thunk.future.value();
-                        // call callback
+                        // call callback：这里会调用用户发送时定义的回调函数Callback
+                        // send(ProducerRecord<K, V> record, Callback callback)
                         thunk.callback.onCompletion(metadata, null);
                     } else {
                         // call callback when exception occur

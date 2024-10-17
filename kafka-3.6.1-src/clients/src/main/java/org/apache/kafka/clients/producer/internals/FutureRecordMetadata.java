@@ -59,6 +59,7 @@ public final class FutureRecordMetadata implements Future<RecordMetadata> {
 
     @Override
     public RecordMetadata get() throws InterruptedException, ExecutionException {
+        // 用ProduceRequestResult中的CountDownLatch来卡, 直到ProduceRequestResult调用done方法放开
         this.result.await();
         if (nextRecordMetadata != null)
             return nextRecordMetadata.get();
@@ -116,6 +117,7 @@ public final class FutureRecordMetadata implements Future<RecordMetadata> {
     public boolean isDone() {
         if (nextRecordMetadata != null)
             return nextRecordMetadata.isDone();
+        // 用ProduceRequestResult中的CountDownLatch来卡
         return this.result.completed();
     }
 
