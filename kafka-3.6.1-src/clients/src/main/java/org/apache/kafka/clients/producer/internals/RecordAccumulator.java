@@ -1284,6 +1284,8 @@ public class RecordAccumulator {
      * Important objects: ProducerBatch
      */
     private static class TopicInfo {
+        // 读多写少是基于这个Map整体而言的，Deque<ProducerBatch>是频繁读写的
+        // 对于Deque<ProducerBatch>处理是，从batches这个Map取出来之后deque，都加了synchronized (deque)来保证线程安全的
         public final ConcurrentMap<Integer /*partition*/, Deque<ProducerBatch>> batches = new CopyOnWriteMap<>();
         public final BuiltInPartitioner builtInPartitioner;
 

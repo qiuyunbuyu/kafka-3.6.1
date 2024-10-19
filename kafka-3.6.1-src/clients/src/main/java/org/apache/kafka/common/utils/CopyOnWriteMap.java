@@ -53,7 +53,7 @@ public class CopyOnWriteMap<K, V> implements ConcurrentMap<K, V> {
         return map.entrySet();
     }
 
-    // no blocking, just read
+    // no blocking, just read 读操作不加锁
     @Override
     public V get(Object k) {
         return map.get(k);
@@ -84,12 +84,14 @@ public class CopyOnWriteMap<K, V> implements ConcurrentMap<K, V> {
         this.map = Collections.emptyMap();
     }
 
+    // 下面的“写”，”删“，”替换“都是更新操作加了synchronized锁
     // Use synchronized to ensure that only one thread can update at the same time
     @Override
     public synchronized V put(K k, V v) {
         // create new
         Map<K, V> copy = new HashMap<>(this.map);
         // volatile write
+        // return the previous value associated with key, or null if there was no mapping for key.
         V prev = copy.put(k, v);
         // set unmodifiableMap
         this.map = Collections.unmodifiableMap(copy);
