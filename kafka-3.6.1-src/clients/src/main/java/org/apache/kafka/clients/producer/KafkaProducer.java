@@ -1110,6 +1110,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // 9. abortOnNewBatch
             // 10. nowMs
             // 11. cluster
+            // record暂存至Accumulator的入口
             RecordAccumulator.RecordAppendResult result = accumulator.append(record.topic(), partition, timestamp, serializedKey,
                     serializedValue, headers, appendCallbacks, remainingWaitMs, abortOnNewBatch, nowMs, cluster);
 

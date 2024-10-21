@@ -133,6 +133,7 @@ public class RecordAccumulator {
                              ApiVersions apiVersions,
                              TransactionManager transactionManager,
                              BufferPool bufferPool) {
+        // 这些初始化的参数是在Producer构造函数中传入的
         this.logContext = logContext;
         this.log = logContext.logger(RecordAccumulator.class);
         this.closed = false;
@@ -791,6 +792,7 @@ public class RecordAccumulator {
      *     <li>The accumulator has been closed</li>
      * </ul>
      * </ol>
+     * 先知道哪些Node能发送了，
      */
     public ReadyCheckResult ready(Metadata metadata, long nowMs) {
         // readyNodes: Node can be sent data

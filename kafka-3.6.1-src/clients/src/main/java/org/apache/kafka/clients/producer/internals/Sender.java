@@ -313,6 +313,7 @@ public class Sender implements Runnable {
      *
      */
     void runOnce() {
+        // 1. 事务相关处理
         if (transactionManager != null) {
             try {
                 transactionManager.maybeResolveSequences();
@@ -345,10 +346,13 @@ public class Sender implements Runnable {
             }
         }
 
+        // 2. 预发送：
+        // 调用RecordAccumulator的ready(...)和drain(...)方法“整理数据” + 构建ProducerRequest + 把构建ProducerRequest放进channel
         long currentTimeMs = time.milliseconds();
         // * create request ready send to broker : [ RecordAccumulator."data" ->  ProduceRequest ]
         long pollTimeout = sendProducerData(currentTimeMs);
 
+        // 3. 网络发送
         // actual read/write
         // The process of "poll" is as follows：
         // first poll: try to initialize the connection to node
@@ -373,6 +377,7 @@ public class Sender implements Runnable {
 
     private long sendProducerData(long now) {
         // 1. get the list of partitions with data ready to send
+        // ready方法只获取到了哪些Node是可以发的
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(metadata, now);
 
         // 2. if there are any partitions whose leaders are not known yet, force metadata update
@@ -414,6 +419,8 @@ public class Sender implements Runnable {
 
         // 4. create produce requests
         // get ProducerBatch(ready to send) <broker.node, List<ProducerBatch>>
+        // 先利用accumulator.ready(...)，知道了哪些Node是可以发网络请求的
+        // 然后再利用readyNodes作为入参，调用drain(...)来统一组织一把数据
         Map<Integer, List<ProducerBatch>> batches = this.accumulator.drain(metadata, result.readyNodes, this.maxRequestSize, now);
 
         // 5. put to inFlightBatches at same time
@@ -470,6 +477,7 @@ public class Sender implements Runnable {
             pollTimeout = 0;
         }
         // *10 from <broker.node, List<ProducerBatch>> to NetWorkSend
+        // 以调用accumulator.drain(...)获取的batches来构建实际的网络请求
         sendProduceRequests(batches, now);
         return pollTimeout;
     }
@@ -952,6 +960,7 @@ public class Sender implements Runnable {
                         .setTransactionalId(transactionalId)
                         .setTopicData(tpd));
         // create RequestCompletionHandler callback
+        // 定义了网络请求的回调（非用户的回调）
         RequestCompletionHandler callback = response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
 
         // create ClientRequest, ProduceRequest contained in ClientRequest and N batch
