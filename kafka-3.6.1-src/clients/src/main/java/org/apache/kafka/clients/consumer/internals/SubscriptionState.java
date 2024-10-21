@@ -194,7 +194,7 @@ public class SubscriptionState {
         // Determine whether this subscription is consistent with previous subscriptions
         if (subscription.equals(topicsToSubscribe))
             return false;
-
+        // 更新：”the list of topics the user has requested “
         subscription = topicsToSubscribe;
         return true;
     }
@@ -235,17 +235,22 @@ public class SubscriptionState {
         assignmentId++;
 
         // 2. update the subscribed topics
+        // 2个临时对象
         Set<String> manualSubscribedTopics = new HashSet<>();
         Map<TopicPartition, TopicPartitionState> partitionToState = new HashMap<>();
         for (TopicPartition partition : partitions) {
             TopicPartitionState state = assignment.stateValue(partition);
+            // 第一次添加
             if (state == null)
+                // *会设置该TP的FetchState为FetchStates.INITIALIZING
                 state = new TopicPartitionState();
-            partitionToState.put(partition, state);
 
+            // 更新临时对象
+            partitionToState.put(partition, state);
             manualSubscribedTopics.add(partition.topic());
         }
         // 3. PartitionStates save info
+        // 更新了SubscriptionState中2个存储信息的对象
         this.assignment.set(partitionToState);
         return changeSubscription(manualSubscribedTopics);
     }
@@ -780,13 +785,14 @@ public class SubscriptionState {
     }
 
     private static class TopicPartitionState {
-
+        // INITIALIZING - FETCHING - AWAIT_RESET - AWAIT_VALIDATION
         private FetchState fetchState;
+        // 最核心的是fetch的offset
         private FetchPosition position; // last consumed position, [The starting offset for the next pull()]
 
         private Long highWatermark; // the high watermark from last fetch
         private Long logStartOffset; // the log start offset
-        private Long lastStableOffset;
+        private Long lastStableOffset; // 与事务相关的
         private boolean paused;  // whether this partition has been paused by the user
         private boolean pendingRevocation;
         private OffsetResetStrategy resetStrategy;  // the strategy to use if the offset needs resetting [LATEST, EARLIEST, NONE;]

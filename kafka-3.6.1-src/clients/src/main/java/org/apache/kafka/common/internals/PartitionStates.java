@@ -43,7 +43,7 @@ import java.util.function.BiConsumer;
  * partitions currently tracked.
  */
 public class PartitionStates<S> {
-
+    // s -> TopicPartitionState
     private final LinkedHashMap<TopicPartition, S> map = new LinkedHashMap<>();
     private final Set<TopicPartition> partitionSetView = Collections.unmodifiableSet(map.keySet());
 

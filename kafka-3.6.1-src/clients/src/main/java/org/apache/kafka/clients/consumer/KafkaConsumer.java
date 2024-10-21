@@ -736,6 +736,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             this.valueDeserializer = createValueDeserializer(config, valueDeserializer);
 
 			// OffsetResetStrategy
+	        // 初始化SubscriptionState
             this.subscriptions = createSubscriptionState(config, logContext);
 
 			// clusterResourceListeners
@@ -961,6 +962,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 fetcher.clearBufferedDataForUnassignedTopics(topics);
 
                 log.info("Subscribed to topic(s): {}", Utils.join(topics, ", "));
+				// consumer以topic名来subscribe时对SubscriptionState调用，来更新“状态”
 				// Determine whether the subscribed topic needs to be updated
                 if (this.subscriptions.subscribe(new HashSet<>(topics), listener))
 					// If the topic subscribed this time is inconsistent with the last subscribed topic, the metadata needs to be updated.
@@ -1123,6 +1125,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 				// 4.
                 log.info("Assigned to partition(s): {}", Utils.join(partitions, ", "));
 				// SubscriptionState to save info and update metadata
+	            // consumer以"TP"来assign时对SubscriptionState调用，来更新“状态”
                 if (this.subscriptions.assignFromUser(new HashSet<>(partitions)))
                     metadata.requestUpdateForNewTopics();
             }
