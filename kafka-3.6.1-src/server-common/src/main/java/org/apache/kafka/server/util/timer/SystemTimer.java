@@ -52,10 +52,14 @@ public class SystemTimer implements Timer {
         int wheelSize,
         long startMs
     ) {
+//  执行”延时请求“的”回调逻辑“的线程
+//      一个单线程的，且固定线程数的线程池。为什么要设置为单线程呢？如果某个应用的回调阻塞了，那岂不是所有线程池中的回调均会阻塞吗？
+//      的确是这样，不过考虑到这个线程池做的工作只是回调，一般是网络发送模块，数据其实都是已经准备好的，TPS响应是非常快的，因此通常也不会成为瓶颈
         this.taskExecutor = Executors.newFixedThreadPool(1,
             runnable -> KafkaThread.nonDaemon("executor-" + executorName, runnable));
         this.delayQueue = new DelayQueue<>();
         this.taskCounter = new AtomicInteger(0);
+        // 初始化时间轮
         this.timingWheel = new TimingWheel(
             tickMs,
             wheelSize,
@@ -92,6 +96,7 @@ public class SystemTimer implements Timer {
      * waits up to timeoutMs before giving up.
      */
     public boolean advanceClock(long timeoutMs) throws InterruptedException {
+        // 调用延迟队列的poll操作，用来获取那些已经超时的TimerTaskList
         TimerTaskList bucket = delayQueue.poll(timeoutMs, TimeUnit.MILLISECONDS);
         if (bucket != null) {
             writeLock.lock();
