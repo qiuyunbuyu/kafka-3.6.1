@@ -177,7 +177,7 @@ class ZkAdminManager(val config: KafkaConfig,
           throw new InvalidRequestException("Both numPartitions or replicationFactor and replicasAssignments were set. " +
             "Both cannot be used at the same time.")
         }
-        // if NumPartitions & ReplicationFactor set -1, will use default defaul
+        // if NumPartitions & ReplicationFactor set -1, will use default default
         // but some Some lower versions are inconsistent
         val resolvedNumPartitions = if (topic.numPartitions == NO_NUM_PARTITIONS)
           defaultNumPartitions else topic.numPartitions

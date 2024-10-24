@@ -352,6 +352,7 @@ class ControllerApis(val requestChannel: RequestChannel,
     val context = new ControllerRequestContext(request.context.header.data, request.context.principal,
       requestTimeoutMsToDeadlineNs(time, createTopicsRequest.data.timeoutMs),
       controllerMutationQuotaRecorderFor(controllerMutationQuota))
+      // call createTopics
     val future = createTopics(context,
         createTopicsRequest.data,
         authHelper.authorize(request.context, CREATE, CLUSTER, CLUSTER_NAME, logIfDenied = false),
@@ -383,8 +384,10 @@ class ControllerApis(val requestChannel: RequestChannel,
     getCreatableTopics: Iterable[String] => Set[String],
     getDescribableTopics: Iterable[String] => Set[String]
   ): CompletableFuture[CreateTopicsResponseData] = {
+
     val topicNames = new util.HashSet[String]()
     val duplicateTopicNames = new util.HashSet[String]()
+
     request.topics().forEach { topicData =>
       if (!duplicateTopicNames.contains(topicData.name())) {
         if (!topicNames.add(topicData.name())) {
@@ -417,6 +420,7 @@ class ControllerApis(val requestChannel: RequestChannel,
         iterator.remove()
       }
     }
+
     controller.createTopics(context, effectiveRequest, describableTopicNames).thenApply { response =>
       duplicateTopicNames.forEach { name =>
         response.topics().add(new CreatableTopicResult().

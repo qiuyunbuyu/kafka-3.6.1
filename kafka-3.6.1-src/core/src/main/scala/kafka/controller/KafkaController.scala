@@ -807,12 +807,14 @@ class KafkaController(val config: KafkaConfig,
    */
   private def onNewPartitionCreation(newPartitions: Set[TopicPartition]): Unit = {
     info(s"New partition creation callback for ${newPartitions.mkString(",")}")
+    // ----------------- partitionState 和 replicaStateMachine 都设置为 NEW --------------------
     // a. partitionState -> NewPartition
     partitionStateMachine.handleStateChanges(newPartitions.toSeq, NewPartition)
 
     // b. replicaStateState -> NewReplica
     replicaStateMachine.handleStateChanges(controllerContext.replicasForPartition(newPartitions).toSeq, NewReplica)
 
+    // ----------------- partitionState 和 replicaStateMachine 都从 NEW 往 Online转 --------------------
     // c. partitionState [ NewPartition -> OnlinePartition ]
     // 1. write zk data
     // 2. send LeaderAndIsrRequest to Brokers(the replica of TopicPartition)

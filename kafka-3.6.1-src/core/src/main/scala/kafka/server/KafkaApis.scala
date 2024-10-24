@@ -145,6 +145,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
     }
     // Forward Request to Controller
+    // MetadataSupport有2个实现类：RaftSupport和zkSupport，会有不同的实现
     metadataSupport.maybeForward(request, handler, responseCallback)
   }
 
@@ -1986,6 +1987,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     requestHelper.sendResponseMaybeThrottle(request, createResponseCallback)
   }
 
+  // zk模式下，对CreateTopics Request的处理
   def handleCreateTopicsRequest(request: RequestChannel.Request): Unit = {
     // 1. Get key variables
     val zkSupport = metadataSupport.requireZkOrThrow(KafkaApis.shouldAlwaysForward(request))
