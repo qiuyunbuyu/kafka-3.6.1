@@ -426,6 +426,7 @@ class ControllerBrokerRequestBatch(
                                          partitionErrorsForDeletingTopics: Map[TopicPartition, Errors]): Unit = {
     if (partitionErrorsForDeletingTopics.nonEmpty) {
       // StopReplica Response callback : put event to controllerEventManager
+      // 会走到
       sendEvent(TopicDeletionStopReplicaResponseReceived(brokerId, stopReplicaResponse.error, partitionErrorsForDeletingTopics))
     }
   }
@@ -744,7 +745,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
         }
       }
       if (partitionErrorsForDeletingTopics.nonEmpty) {
-        // *
+        // *发送StopReplicaRequest后，收到响应，执行回调
         handleStopReplicaResponse(stopReplicaResponse, brokerId, partitionErrorsForDeletingTopics.toMap)
       }
     }

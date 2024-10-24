@@ -282,7 +282,7 @@ class ZkAdminManager(val config: KafkaConfig,
           controllerMutationQuota.record(metadataCache.numPartitions(topic).getOrElse(0).toDouble)
           // * /admin/delete_topics/{TopicName}
           adminZkClient.deleteTopic(topic)
-          // delete Topic Metadata
+          // delete Topic Metadata： 这里是是操作？删除哪的元数据？
           DeleteTopicMetadata(topic, Errors.NONE)
         } catch {
           case _: TopicAlreadyMarkedForDeletionException =>
@@ -309,6 +309,7 @@ class ZkAdminManager(val config: KafkaConfig,
       }.toMap
       responseCallback(results)
     } else {
+      // 客户端传来的timeout必须大于0，根据超时时间来创建“延迟任务”
       // 3. else pass the topics and errors to the delayed operation and set the keys
       val delayedDelete = new DelayedDeleteTopics(timeout, metadata.toSeq, this, responseCallback)
       val delayedDeleteKeys = topics.map(TopicKey).toSeq

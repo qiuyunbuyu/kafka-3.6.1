@@ -174,7 +174,7 @@ class KafkaController(val config: KafkaConfig,
   val partitionStateMachine: PartitionStateMachine = new ZkPartitionStateMachine(config, stateChangeLogger, controllerContext, zkClient,
     new ControllerBrokerRequestBatch(config, controllerChannelManager, eventManager, controllerContext, stateChangeLogger))
 
-  // topic delete Manager: used for *delete topic and log*
+  // topic delete Manager: used for *delete topic and log* | TopicDeletionManager初始化时机在 kafkaController初始化时
   private val topicDeletionManager = new TopicDeletionManager(config, controllerContext, replicaStateMachine,
     partitionStateMachine, new ControllerDeletionClient(this, zkClient))
 
@@ -1608,6 +1608,7 @@ class KafkaController(val config: KafkaConfig,
     if (replicasInError.size != partitionErrors.size) {
       // some replicas could have been successfully deleted
       val deletedReplicas = partitionErrors.keySet.diff(partitionsInError)
+      // 收到成功删除后处理
       topicDeletionManager.completeReplicaDeletion(deletedReplicas.map(PartitionAndReplica(_, replicaId)))
     }
   }
@@ -1988,7 +1989,7 @@ class KafkaController(val config: KafkaConfig,
       onNewPartitionCreation(partitionsToBeAdded.keySet)
     }
   }
-
+  // controller监听到/admin/delete_topics/{TopicName}节点变化
   private def processTopicDeletion(): Unit = {
     // 1. if not Controller, return directly
     if (!isActive) return
@@ -2007,8 +2008,21 @@ class KafkaController(val config: KafkaConfig,
       if (topicsToBeDeleted.nonEmpty) {
         // important log
         info(s"Starting topic deletion for topics ${topicsToBeDeleted.mkString(",")}")
+
         // 4.1 mark topic ineligible for deletion if other state changes are in progress
         // if "topic reassignment in progress", can not delete immediatily
+        // 这里停止删除是“暂时不删除，后续等可以删除了再删除”，还是就是不删除了？
+        // TopicDeletionManager里面的注释很好的解答了
+        // ----------------------------------------------------------
+//        * 3. The controller's ControllerEventThread handles topic deletion. A topic will be ineligible
+//        *    for deletion in the following scenarios -
+//          *   3.1 broker hosting one of the replicas for that topic goes down
+//          *   3.2 partition reassignment for partitions of that topic is in progress
+//        * 4. Topic deletion is resumed when -
+//          *    4.1 broker hosting one of the replicas for that topic is started
+//          *    4.2 partition reassignment for partitions of that topic complete
+        // ----------------------------------------------------------
+
         topicsToBeDeleted.foreach { topic =>
           val partitionReassignmentInProgress =
             controllerContext.partitionsBeingReassigned.map(_.topic).contains(topic)
@@ -2016,7 +2030,7 @@ class KafkaController(val config: KafkaConfig,
             topicDeletionManager.markTopicIneligibleForDeletion(Set(topic),
               reason = "topic reassignment in progress")
         }
-        // 4.2 add topic to deletion list
+        // 4.2 add topic to deletion list： 放入独立线程的删除队列去删除
         topicDeletionManager.enqueueTopicsForDeletion(topicsToBeDeleted)
       }
     } else {
