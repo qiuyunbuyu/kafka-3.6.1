@@ -208,8 +208,9 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         this.throwOnFetchStableOffsetsUnsupported = throwOnFetchStableOffsetsUnsupported;
 
         if (autoCommitEnabled)
-            this.nextAutoCommitTimer = time.timer(autoCommitIntervalMs);
+            this.nextAutoCommitTimer = time.timer(autoCommitIntervalMs);// 允许自动提交，5000ms+间隔
 
+        // 设置rebalance protocol：最大的区别在于，发生重平衡时（发送JoinGroup）时，是否放弃消费当前partition
         // select the rebalance protocol such that:
         //   1. only consider protocols that are supported by all the assignors. If there is no common protocols supported
         //      across all the assignors, throw an exception.
@@ -546,13 +547,13 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 throw new IllegalStateException("User configured " + ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG +
                     " to empty while trying to subscribe for group protocol to auto assign partitions");
             }
-            // 3.2 *** send Heartbeat
+            // 3.2 *** send Heartbeat： 非assign模式下每次poll都会走到此处，【 在heartbeatThread != null情况下 -> 推进时间 + 判断是否expire（即是否需要发送心跳?）】
             // Always update the heartbeat last poll time so that the heartbeat thread does not leave the
             // group proactively due to application inactivity even if (say) the coordinator cannot be found.
             pollHeartbeat(timer.currentTimeMs());
 
             // 3.3 if not found coordinator, call AbstractCoordinator.ensureCoordinatorReady to ensure connect with coordinator
-            // ApiKeys.FIND_COORDINATOR
+            // ApiKeys.FIND_COORDINATOR：阻塞直到（获取broker端Coordinator信息或超时）
             if (coordinatorUnknownAndUnreadySync(timer)) {
                 return false;
             }
@@ -584,6 +585,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 // 3.5 If the consumer group is not joined or the heartbeat thread detects changes in the consumer group,
                 // should do "Joins the group ..." | ApiKeys.JOIN_GROUP + ApiKeys.SYNC_GROUP(already get assign plan)
                 // if not wait for join group, we would just use a timer of 0
+                // *** 启动心跳线程的地方 + ”保证groupis active：Ensure the group is active (i.e., joined and synced)“
                 if (!ensureActiveGroup(waitForJoinGroup ? timer : time.timer(0L))) {
                     // since we may use a different timer in the callee, we'd still need
                     // to update the original timer's current time after the call

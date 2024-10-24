@@ -1234,6 +1234,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 client.maybeTriggerWakeup();
 
 				// *1 get partition allocation plan
+	            // 每次consumer.poll()的时候都要做的：【拉取前的前置入口（保证group是"active"的 + 心跳线程的处理（sub模式下）+ 确定Fetch的位置】
                 if (includeMetadataInTimeout) {
                     // try to update assignment metadata BUT do not need to block on the timer for join group
                     updateAssignmentMetadataIfNeeded(timer, false);
@@ -1286,12 +1287,12 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 	 * @return
 	 */
     boolean updateAssignmentMetadataIfNeeded(final Timer timer, final boolean waitForJoinGroup) {
-		// 1. coordinator.poll: Interact with the broker side
+		// 1. coordinator.poll: Interact with the broker side ： 保证group是"active"的 + 心跳线程的处理（sub模式下）
 	    // if coordinator.poll(...) return true means "this consumer join consumer group successful
         if (coordinator != null && !coordinator.poll(timer, waitForJoinGroup)) {
             return false;
         }
-		// 2. Set the fetch position to the committed position (if there is one)
+		// 2. Set the fetch position to the committed position (if there is one) ： 确定Fetch的位置
 		//    or reset it using the offset reset policy[earliest, latest] the user has configured.
         return updateFetchPositions(timer);
     }
