@@ -420,7 +420,7 @@ public class RecordAccumulator {
                 callbacks, nowMs));
         // add to dq
         dq.addLast(batch);
-        // add to incomplete
+        // add to incomplete： incomplete添加
         incomplete.add(batch);
 
         return new RecordAppendResult(future, dq.size() > 1 || batch.isFull(), true, false, batch.estimatedSizeInBytes());
@@ -552,6 +552,7 @@ public class RecordAccumulator {
         Deque<ProducerBatch> partitionDequeue = getOrCreateDeque(bigBatch.topicPartition);
         while (!dq.isEmpty()) {
             ProducerBatch batch = dq.pollLast();
+            // incomplete添加
             incomplete.add(batch);
             // We treat the newly split batches as if they are not even tried.
             synchronized (partitionDequeue) {
@@ -1065,9 +1066,11 @@ public class RecordAccumulator {
      * Deallocate the record batch
      */
     public void deallocate(ProducerBatch batch) {
+        // incomplete删除
         incomplete.remove(batch);
         // Only deallocate the batch if it is not a split batch because split batch are allocated outside the
         // buffer pool.
+        // "Return buffers to the pool", 把这块batch占的空间还回去
         if (!batch.isSplitBatch())
             free.deallocate(batch.buffer(), batch.initialCapacity());
     }

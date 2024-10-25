@@ -159,9 +159,13 @@ public class Sender implements Runnable {
     }
 
     private void maybeRemoveFromInflightBatches(ProducerBatch batch) {
+        // 注意inFlightBatches的结构：Map<TopicPartition, List<ProducerBatch>> inFlightBatches
+        // 1. 先取出此batch所在的List
         List<ProducerBatch> batches = inFlightBatches.get(batch.topicPartition);
         if (batches != null) {
+            // 2. 从List中删除掉此batch
             batches.remove(batch);
+            // 3. 如果此List已经没有任何batch了，会再从Map中移除此TP（一般一直发送是不会空的）
             if (batches.isEmpty()) {
                 inFlightBatches.remove(batch.topicPartition);
             }
@@ -169,7 +173,9 @@ public class Sender implements Runnable {
     }
 
     private void maybeRemoveAndDeallocateBatch(ProducerBatch batch) {
+        // 处理sender的inFlightBatches
         maybeRemoveFromInflightBatches(batch);
+        // 处理accumulator的inFlightBatches
         this.accumulator.deallocate(batch);
     }
 
@@ -422,7 +428,7 @@ public class Sender implements Runnable {
         // 先利用accumulator.ready(...)，知道了哪些Node是可以发网络请求的
         // 然后再利用readyNodes作为入参，调用drain(...)来统一组织一把数据
         Map<Integer, List<ProducerBatch>> batches = this.accumulator.drain(metadata, result.readyNodes, this.maxRequestSize, now);
-
+        // InflightBatches添加时机
         // 5. put to inFlightBatches at same time
         addToInflightBatches(batches);
 
@@ -789,7 +795,7 @@ public class Sender implements Runnable {
         }
         // 2. do producer callback
         if (batch.complete(response.baseOffset, response.logAppendTime)) {
-            // try to release batch
+            // try to release batch：再触发完用户回调之后，会开始删除Sender和Accumulator的”inflight“batch
             maybeRemoveAndDeallocateBatch(batch);
         }
     }
