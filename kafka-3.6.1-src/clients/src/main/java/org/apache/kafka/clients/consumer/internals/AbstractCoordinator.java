@@ -276,6 +276,7 @@ public abstract class AbstractCoordinator implements Closeable {
             // 1. construct FindCoordinatorRequest: ApiKeys.FIND_COORDINATOR
             final RequestFuture<Void> future = lookupCoordinator();
             // 2. do send FindCoordinatorRequest, attach SelectionKey.OP_WRITE for each request
+            // ”超时阻塞“，此处发了2个请求[MetdataRequest(前面有地方标记了更新) + FIND_COORDINATOR Request]
             client.poll(future, timer, disableWakeup);
             // 3. if isDone, break loop
             if (!future.isDone()) {

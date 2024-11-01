@@ -1211,6 +1211,10 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * @throws org.apache.kafka.common.errors.UnsupportedVersionException if the consumer attempts to fetch stable offsets
      *             when the broker doesn't support this feature
      * @throws org.apache.kafka.common.errors.FencedInstanceIdException if this consumer instance gets fenced by broker.
+     *
+     * 上面的ConsumerRecords<K, V> poll(final long timeoutMs)中设置了 includeMetadataInTimeout = false，但已被废弃
+     * 最新的设置 includeMetadataInTimeout = true
+     * includeMetadataInTimeout的设置影响了“是否在Fetch前，阻塞至，一切工作都准备完成”，最新的已经不阻塞了， KIP-266
      */
     @Override
     public ConsumerRecords<K, V> poll(final Duration timeout) {
@@ -1239,6 +1243,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     // try to update assignment metadata BUT do not need to block on the timer for join group
                     updateAssignmentMetadataIfNeeded(timer, false);
                 } else {
+					// 一直阻塞至，拉取前置完成，这还能不阻塞的吗？ -》 可以看下KIP-266
                     while (!updateAssignmentMetadataIfNeeded(time.timer(Long.MAX_VALUE), true)) {
                         log.warn("Still waiting for metadata");
                     }

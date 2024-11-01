@@ -536,12 +536,12 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
      * @return true iff the operation succeeded
      */
     public boolean poll(Timer timer, boolean waitForJoinGroup) {
-        // 1. Update Subscription Metadata
+        // 1. Update Subscription Metadata: 根据subscribe的信息，标记更新元数据（未发送网络请求）
         maybeUpdateSubscriptionMetadata();
-        // 2. call completed Offset Commit Callbacks
+        // 2. call completed Offset Commit Callbacks： 触发consumer.commitAsync(currentOffsets, new OffsetCommitCallback()...设置的回调
         invokeCompletedOffsetCommitCallbacks();
         // 3. hasAutoAssignedPartitions
-        if (subscriptions.hasAutoAssignedPartitions()) {
+        if (subscriptions.hasAutoAssignedPartitions()) { // subscribe模式下的处理
             // 3.1 check RebalanceProtocol if null throw Exception
             if (protocol == null) {
                 throw new IllegalStateException("User configured " + ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG +
@@ -594,7 +594,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     return false;
                 }
             }
-        } else {
+        } else { // assign模式下的处理
             // 4. manually assigned partitions
             // For manually assigned partitions, we do not try to pro-actively lookup coordinator;
             // instead we only try to refresh metadata when necessary.

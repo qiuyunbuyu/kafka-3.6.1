@@ -69,7 +69,7 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
      * @throws IllegalStateException if the future is not complete or failed
      */
     @SuppressWarnings("unchecked")
-    public T value() {
+    public T value() { // complete(T value)会设置值，此方法用于取得返回值
         if (!succeeded())
             throw new IllegalStateException("Attempt to retrieve value from future which hasn't successfully completed");
         return (T) result.get();
@@ -123,7 +123,7 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
         try {
             if (value instanceof RuntimeException)
                 throw new IllegalArgumentException("The argument to complete can not be an instance of RuntimeException");
-
+            // 设置值
             if (!result.compareAndSet(INCOMPLETE_SENTINEL, value))
                 throw new IllegalStateException("Invalid attempt to complete a request future which is already complete");
             // handle success response
@@ -162,23 +162,29 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
     }
 
     private void fireSuccess() {
+        // 获取request的响应，正常情况下
         T value = value();
         while (true) {
             // 1. get all RequestFutureListeners
             RequestFutureListener<T> listener = listeners.poll();
+            // 循环依次处理，直到清空掉队列
             if (listener == null)
                 break;
-            // 2. call onSuccess
+            // 2. call onSuccess, 调用设置的“成功情况下的”回调
+            // heartbeatFuture.addListener(new RequestFutureListener<Void>() {
             listener.onSuccess(value);
         }
     }
 
     private void fireFailure() {
+        // // 获取request的响应，失败情况下
         RuntimeException exception = exception();
         while (true) {
+            // 循环依次处理，直到清空掉队列
             RequestFutureListener<T> listener = listeners.poll();
             if (listener == null)
                 break;
+            // call onFailure, 调用设置的“失败情况下的”回调
             listener.onFailure(exception);
         }
     }
@@ -189,6 +195,7 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
      */
     public void addListener(RequestFutureListener<T> listener) {
         this.listeners.add(listener);
+        // 添加后执行一次判断
         if (failed())
             fireFailure();
         else if (succeeded())
@@ -196,6 +203,7 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
     }
 
     /**
+     * compose方法，负责转换RequestFuture的泛型。比如一个RequestFuture 类型，表示它的结果是String类型的。现在需要将结果转换为Integer类型，返回RequestFuture ，那么就需要compose方法。
      * Convert from a request future of one type to another type
      * @param adapter The adapter which does the conversion
      * @param <S> The type of the future adapted to
@@ -217,6 +225,10 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
         return adapted;
     }
 
+    /**
+     * chain方法，负责连接一个RequestFuture。当父RequestFuture完成时，子RequestFuture也同时完成
+     * @param future : 子RequestFuture
+     */
     public void chain(final RequestFuture<T> future) {
         addListener(new RequestFutureListener<T>() {
             @Override
