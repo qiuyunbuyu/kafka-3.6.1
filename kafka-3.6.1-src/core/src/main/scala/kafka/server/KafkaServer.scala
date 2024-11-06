@@ -272,6 +272,7 @@ class KafkaServer(
         // =======================================
 
         // 2.4.1: load meta.properties in each LogDir[like /data1/meta.properties, /data2/meta.properties....]*/
+        // 获取initialOfflineDirs的地方： 没能正确读到目录下：meta.properties的会被认为是OfflineDirs
         val (preloadedBrokerMetadataCheckpoint, initialOfflineDirs) =
           BrokerMetadataCheckpoint.getBrokerMetadataAndOfflineDirs(config.logDirs, ignoreMissing = true, kraftMode = false)
 

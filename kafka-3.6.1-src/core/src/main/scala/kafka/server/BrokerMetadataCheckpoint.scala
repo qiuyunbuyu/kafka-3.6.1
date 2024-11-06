@@ -166,6 +166,11 @@ object BrokerMetadataCheckpoint extends Logging {
     val offlineDirs = mutable.ArrayBuffer.empty[String]
 
     for (logDir <- logDirs) {
+//  meta.properties大致内容如下：
+//      #Fri Nov 01 07:55:17 UTC 2024
+//      cluster.id=tWgIXcafT9Wjb4TquwS89A
+//      version=0
+//      broker.id=1
       val brokerCheckpointFile = new File(logDir, "meta.properties")
       val brokerCheckpoint = new BrokerMetadataCheckpoint(brokerCheckpointFile)
 
@@ -181,6 +186,7 @@ object BrokerMetadataCheckpoint extends Logging {
         }
       } catch {
         case e: IOException =>
+        // 如果某个存储目录无法读到meta.properties，就会被认为是offlineDirs
           offlineDirs += logDir
           error(s"Failed to read $brokerCheckpointFile", e)
       }

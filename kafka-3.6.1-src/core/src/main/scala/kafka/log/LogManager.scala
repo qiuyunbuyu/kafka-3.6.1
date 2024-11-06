@@ -98,6 +98,7 @@ class LogManager(logDirs: Seq[File],
   // Visible for testing
   private val strayLogs = new Pool[TopicPartition, UnifiedLog]()
 
+  // 获取所有的liveLogDirs(排除异常情况，剩余的就是liveLogDirs) : 入参initialOfflineDirs是所有没读到meta.properties的dir
   private val _liveLogDirs: ConcurrentLinkedQueue[File] = createAndValidateLogDirs(logDirs, initialOfflineDirs)
   @volatile private var _currentDefaultConfig = initialDefaultConfig
   @volatile private var numRecoveryThreadsPerDataDir = recoveryThreadsPerDataDir
@@ -121,7 +122,7 @@ class LogManager(logDirs: Seq[File],
     else
       _liveLogDirs.asScala.toBuffer
   }
-
+  // LogManager new 出来的时候，就要先获取liveLogDirs， 再尝试lock liveLogDirs
   private val dirLocks = lockLogDirs(liveLogDirs)
   @volatile private var recoveryPointCheckpoints = liveLogDirs.map(dir =>
     (dir, new OffsetCheckpointFile(new File(dir, RecoveryPointCheckpointFile), logDirFailureChannel))).toMap
@@ -130,6 +131,7 @@ class LogManager(logDirs: Seq[File],
 
   private val preferredLogDirs = new ConcurrentHashMap[TopicPartition, String]()
 
+  // logmanager中认为的offlineLogDirs， 只是【配置中设置的dir】 - 【_liveLogDirs】
   private def offlineLogDirs: Iterable[File] = {
     val logDirsSet = mutable.Set[File]() ++= logDirs
     _liveLogDirs.forEach(dir => logDirsSet -= dir)
@@ -167,26 +169,29 @@ class LogManager(logDirs: Seq[File],
 
     for (dir <- dirs) {
       try {
+        // 存在initialOfflineDirs中
         if (initialOfflineDirs.contains(dir))
           throw new IOException(s"Failed to load ${dir.getAbsolutePath} during broker startup")
-
+        // 目录不存在
         if (!dir.exists) {
           info(s"Log directory ${dir.getAbsolutePath} not found, creating it.")
+          //尝试创建
           val created = dir.mkdirs()
           if (!created)
             throw new IOException(s"Failed to create data directory ${dir.getAbsolutePath}")
           Utils.flushDir(dir.toPath.toAbsolutePath.normalize.getParent)
         }
+        // 不可读
         if (!dir.isDirectory || !dir.canRead)
           throw new IOException(s"${dir.getAbsolutePath} is not a readable log directory.")
-
+        // 重复
         // getCanonicalPath() throws IOException if a file system query fails or if the path is invalid (e.g. contains
         // the Nul character). Since there's no easy way to distinguish between the two cases, we treat them the same
         // and mark the log directory as offline.
         if (!canonicalPaths.add(dir.getCanonicalPath))
           throw new KafkaException(s"Duplicate log directory found: ${dirs.mkString(", ")}")
 
-
+        // 排除异常情况，剩余的就是liveLogDirs
         liveLogDirs.add(dir)
       } catch {
         case e: IOException =>
@@ -210,28 +215,37 @@ class LogManager(logDirs: Seq[File],
    * The log directory failure handler. It will stop log cleaning in that directory.
    *
    * @param dir        the absolute path of the log directory
+   * 处理失败dir
    */
   def handleLogDirFailure(dir: String): Unit = {
     warn(s"Stopping serving logs in dir $dir")
     logCreationOrDeletionLock synchronized {
+      // 从_liveLogDirs 移除此 目录
       _liveLogDirs.remove(new File(dir))
+
       if (_liveLogDirs.isEmpty) {
         fatal(s"Shutdown broker because all log dirs in ${logDirs.mkString(", ")} have failed")
         Exit.halt(1)
       }
-
+      // recoveryPointCheckpoints集合中去除此offline dir
       recoveryPointCheckpoints = recoveryPointCheckpoints.filter { case (file, _) => file.getAbsolutePath != dir }
+      // logStartOffsetCheckpoints集合中去除此offline dir
       logStartOffsetCheckpoints = logStartOffsetCheckpoints.filter { case (file, _) => file.getAbsolutePath != dir }
+
+      // LogCleaner处理“Failure Dir”： ”Stopping cleaning logs in dir“
       if (cleaner != null)
         cleaner.handleLogDirFailure(dir)
 
+      // *
       def removeOfflineLogs(logs: Pool[TopicPartition, UnifiedLog]): Iterable[TopicPartition] = {
         val offlineTopicPartitions: Iterable[TopicPartition] = logs.collect {
           case (tp, log) if log.parentDir == dir => tp
         }
         offlineTopicPartitions.foreach { topicPartition => {
+          //  从logs: Pool[TopicPartition, UnifiedLog]移除offline tp
           val removedLog = removeLogAndMetrics(logs, topicPartition)
           removedLog.foreach {
+          // "Close file handlers used by this log but don't write to disk. This is called if the log directory is offline"
             log => log.closeHandlers()
           }
         }}
@@ -239,11 +253,14 @@ class LogManager(logDirs: Seq[File],
         offlineTopicPartitions
       }
 
+      // currentLogs和futureLogs 一起调用 removeOfflineLogs
       val offlineCurrentTopicPartitions = removeOfflineLogs(currentLogs)
       val offlineFutureTopicPartitions = removeOfflineLogs(futureLogs)
 
       warn(s"Logs for partitions ${offlineCurrentTopicPartitions.mkString(",")} are offline and " +
            s"logs for future partitions ${offlineFutureTopicPartitions.mkString(",")} are offline due to failure on log directory $dir")
+
+      // dir.destroy(): Destroy this lock, closing the associated FileChannel
       dirLocks.filter(_.file.getParent == dir).foreach(dir => CoreUtils.swallow(dir.destroy(), this))
     }
   }
@@ -254,6 +271,7 @@ class LogManager(logDirs: Seq[File],
   private def lockLogDirs(dirs: Seq[File]): Seq[FileLock] = {
     dirs.flatMap { dir =>
       try {
+        // 尝试lock
         val lock = new FileLock(new File(dir, LockFileName))
         if (!lock.tryLock())
           throw new KafkaException("Failed to acquire lock on file .lock in " + lock.file.getParent +
@@ -261,6 +279,7 @@ class LogManager(logDirs: Seq[File],
         Some(lock)
       } catch {
         case e: IOException =>
+        // 因为.lock 权限不对，发生了IOException，所以加入了offlineLogDirQueue和offlineLogDirs
           logDirFailureChannel.maybeAddOfflineLogDir(dir.getAbsolutePath, s"Disk error while locking directory $dir", e)
           None
       }
@@ -363,6 +382,7 @@ class LogManager(logDirs: Seq[File],
     info(s"Loading logs from log dirs $liveLogDirs")
     val startMs = time.hiResClockMs()
     val threadPools = ArrayBuffer.empty[ExecutorService]
+    // loadLogs定义的offlineDirs
     val offlineDirs = mutable.Set.empty[(String, IOException)]
     val jobs = ArrayBuffer.empty[Seq[Future[_]]]
     var numTotalLogs = 0
@@ -450,6 +470,7 @@ class LogManager(logDirs: Seq[File],
               log = Some(loadLog(logDir, hadCleanShutdown, recoveryPoints, logStartOffsets,
                 defaultConfig, topicConfigOverrides, numRemainingSegments))
             } catch {
+              // load过程中发生IOException，调用handleIOException
               case e: IOException =>
                 handleIOException(logDirAbsolutePath, e)
               case e: KafkaStorageException if e.getCause.isInstanceOf[IOException] =>
@@ -484,10 +505,11 @@ class LogManager(logDirs: Seq[File],
 
     try {
       addLogRecoveryMetrics(numRemainingLogs, numRemainingSegments)
+      // future.get()
       for (dirJobs <- jobs) {
         dirJobs.foreach(_.get)
       }
-
+      // load结束，遍历offlineDirs，加入offlineLogDirQueue
       offlineDirs.foreach { case (dir, e) =>
         logDirFailureChannel.maybeAddOfflineLogDir(dir, s"Error while loading log dir $dir", e)
       }
@@ -976,6 +998,7 @@ class LogManager(logDirs: Seq[File],
   def getOrCreateLog(topicPartition: TopicPartition, isNew: Boolean = false, isFuture: Boolean = false, topicId: Option[Uuid]): UnifiedLog = {
     logCreationOrDeletionLock synchronized {
       val log = getLog(topicPartition, isFuture).getOrElse {
+        // 如果一个dir是offline的，无法在offlineLogDirs创建新的topic
         // create the log if it has not already been created in another thread
         if (!isNew && offlineLogDirs.nonEmpty)
           throw new KafkaStorageException(s"Can not create log for $topicPartition because log directories ${offlineLogDirs.mkString(",")} are offline")
@@ -1064,6 +1087,7 @@ class LogManager(logDirs: Seq[File],
         Success(dir)
       } catch {
         case e: IOException =>
+          // LogManager创建TopicPartition本地目录时，发生IOException
           val msg = s"Error while creating log for $logDirName in dir $logDirPath"
           logDirFailureChannel.maybeAddOfflineLogDir(logDirPath, msg, e)
           warn(msg, e)
@@ -1410,7 +1434,9 @@ class LogManager(logDirs: Seq[File],
   }
 
   private def removeLogAndMetrics(logs: Pool[TopicPartition, UnifiedLog], tp: TopicPartition): Option[UnifiedLog] = {
+    // 从logs: Pool[TopicPartition, UnifiedLog]移除tp
     val removedLog = logs.remove(tp)
+    //
     if (removedLog != null) {
       removedLog.removeLogMetrics()
       Some(removedLog)
@@ -1421,6 +1447,7 @@ class LogManager(logDirs: Seq[File],
 }
 
 object LogManager {
+  // lock file定义处
   val LockFileName = ".lock"
 
   /**
@@ -1441,8 +1468,11 @@ object LogManager {
   val RecoveryPointCheckpointFile = "recovery-point-offset-checkpoint"
   val LogStartOffsetCheckpointFile = "log-start-offset-checkpoint"
 
+  // 谁调这个apply初始化了LogManager？
+  // zk模式是 KafkaServer
+  // raft模式是 BrokerServer
   def apply(config: KafkaConfig,
-            initialOfflineDirs: Seq[String],
+            initialOfflineDirs: Seq[String], // 没能读到meta.properties的会被认为是initialOfflineDirs
             configRepository: ConfigRepository,
             kafkaScheduler: Scheduler,
             time: Time,

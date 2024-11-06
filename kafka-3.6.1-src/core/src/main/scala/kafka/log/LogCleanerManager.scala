@@ -441,6 +441,7 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
   def handleLogDirFailure(dir: String): Unit = {
     warn(s"Stopping cleaning logs in dir $dir")
     inLock(lock) {
+      // "cleaner-offset-checkpoint"中去除此offline dir
       checkpoints = checkpoints.filter { case (k, _) => k.getAbsolutePath != dir }
     }
   }

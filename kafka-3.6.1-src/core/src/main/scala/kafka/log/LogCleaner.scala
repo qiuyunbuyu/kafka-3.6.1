@@ -449,6 +449,7 @@ class LogCleaner(initialConfig: CleanerConfig,
         case _: KafkaStorageException => // partition is already offline. let it go.
         case e: IOException =>
           val logDirectory = cleanable.log.parentDir
+          // LogCleaner cleanLog 时，发生 IOException
           val msg = s"Failed to clean up log for ${cleanable.topicPartition} in dir $logDirectory due to IOException"
           logDirFailureChannel.maybeAddOfflineLogDir(logDirectory, msg, e)
       } finally {

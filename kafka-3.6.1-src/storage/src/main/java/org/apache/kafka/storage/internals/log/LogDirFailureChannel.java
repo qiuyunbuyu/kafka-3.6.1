@@ -26,6 +26,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /*
+===== block waiting ==========
+======== If IOException is encountered while accessing a log directory, the corresponding class can add the log directory name =========
+
  * LogDirFailureChannel allows an external thread to block waiting for new offline log dirs.
  *
  * There should be a single instance of LogDirFailureChannel accessible by any class that does disk-IO operation.

@@ -249,7 +249,7 @@ class ReplicaManager(val config: KafkaConfig,
                      val remoteLogManager: Option[RemoteLogManager] = None,
                      quotaManagers: QuotaManagers,
                      val metadataCache: MetadataCache,
-                     logDirFailureChannel: LogDirFailureChannel,
+                     logDirFailureChannel: LogDirFailureChannel, // ReplicaManager管理着一个LogDirFailureChannel
                      val alterPartitionManager: AlterPartitionManager,
                      val brokerTopicStats: BrokerTopicStats = new BrokerTopicStats(),
                      val isShuttingDown: AtomicBoolean = new AtomicBoolean(false),
@@ -310,13 +310,17 @@ class ReplicaManager(val config: KafkaConfig,
 
   private var logDirFailureHandler: LogDirFailureHandler = _
 
+  // LogDirFailureHandler
   private class LogDirFailureHandler(name: String, haltBrokerOnDirFailure: Boolean) extends ShutdownableThread(name) {
+    // 定义logDirFailureHandler线程处理方法
     override def doWork(): Unit = {
+      // 确定newOfflineLogDir
       val newOfflineLogDir = logDirFailureChannel.takeNextOfflineLogDir()
       if (haltBrokerOnDirFailure) {
         fatal(s"Halting broker because dir $newOfflineLogDir is offline")
         Exit.halt(1)
       }
+      // 处理offlineLogDirQueue下的某目录
       handleLogDirFailure(newOfflineLogDir)
     }
   }
@@ -386,6 +390,7 @@ class ReplicaManager(val config: KafkaConfig,
     // In this case, the broker receiving the request cannot determine whether it is safe to create a partition if a log directory has failed.
     // Thus, we choose to halt the broker on any log directory failure if IBP < 1.0
     val haltBrokerOnFailure = metadataCache.metadataVersion().isLessThan(IBP_1_0_IV0)
+    // 启动logDirFailureHandler线程
     logDirFailureHandler = new LogDirFailureHandler("LogDirFailureHandler", haltBrokerOnFailure)
     logDirFailureHandler.start()
     addPartitionsToTxnManager.foreach(_.start())
@@ -2357,6 +2362,7 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   def markPartitionOffline(tp: TopicPartition): Unit = replicaStateChangeLock synchronized {
+    // 更新allPartitions中该tp状态为offline + 调用partition.markOffline()
     allPartitions.put(tp, HostedPartition.Offline) match {
       case HostedPartition.Online(partition) =>
         partition.markOffline()
@@ -2369,37 +2375,52 @@ class ReplicaManager(val config: KafkaConfig,
    *
    * @param dir                     the absolute path of the log directory
    * @param sendZkNotification      check if we need to send notification to zookeeper node (needed for unit test)
+   *
+   * logDirFailureHandler线程关键处理方法
    */
   def handleLogDirFailure(dir: String, sendZkNotification: Boolean = true): Unit = {
     if (!logManager.isLogDirOnline(dir))
       return
     warn(s"Stopping serving replicas in dir $dir")
+    // future log 是啥 ： "If ReplicaAlterLogDir command is in progress, this is future location of the log"
+    // 获取dir中的TP作为 OfflinePartitions[newOfflinePartitions + partitionsWithOfflineFutureReplica]
     replicaStateChangeLock synchronized {
+      // newOfflinePartitions
       val newOfflinePartitions = onlinePartitionsIterator.filter { partition =>
         partition.log.exists { _.parentDir == dir }
       }.map(_.topicPartition).toSet
-
+      // partitionsWithOfflineFutureReplica
       val partitionsWithOfflineFutureReplica = onlinePartitionsIterator.filter { partition =>
         partition.futureLog.exists { _.parentDir == dir }
       }.toSet
 
+      // 为啥有replicaFetcherManager和replicaAlterLogDirsManager？ 还都调用了removeFetcherForPartitions ？
       replicaFetcherManager.removeFetcherForPartitions(newOfflinePartitions)
       replicaAlterLogDirsManager.removeFetcherForPartitions(newOfflinePartitions ++ partitionsWithOfflineFutureReplica.map(_.topicPartition))
 
+      // markPartitionOffline
+      // 处理future log
       partitionsWithOfflineFutureReplica.foreach(partition => partition.removeFutureLocalReplica(deleteFromLogDir = false))
+      // 更新allPartitions中该tp状态为offline + 调用partition.markOffline()
       newOfflinePartitions.foreach { topicPartition =>
         markPartitionOffline(topicPartition)
       }
       newOfflinePartitions.map(_.topic).foreach { topic: String =>
         maybeRemoveTopicMetrics(topic)
       }
-      highWatermarkCheckpoints = highWatermarkCheckpoints.filter { case (checkpointDir, _) => checkpointDir != dir }
 
+      // highWatermarkCheckpoints handle： 过滤条件：只有当checkpointDir不等于dir时，当前的键值对才会被保留。
+      // 移除highWatermarkCheckpoints集合中的 offline的dir
+      highWatermarkCheckpoints = highWatermarkCheckpoints.filter { case (checkpointDir, _) => checkpointDir != dir }
+      // 关键日志： 确定newOfflinePartitions，因为“they are in the failed log directory”
       warn(s"Broker $localBrokerId stopped fetcher for partitions ${newOfflinePartitions.mkString(",")} and stopped moving logs " +
            s"for partitions ${partitionsWithOfflineFutureReplica.mkString(",")} because they are in the failed log directory $dir.")
     }
+
+    // 调用 logManager 能力来处理Failure LogDir
     logManager.handleLogDirFailure(dir)
 
+    // zk节点: /log_dir_event_notification/log_dir_event_("version" -> 1, "broker" -> brokerId, "event" -> LogDirFailureEvent)
     if (sendZkNotification)
       if (zkClient.isEmpty) {
         warn("Unable to propagate log dir failure via Zookeeper in KRaft mode")

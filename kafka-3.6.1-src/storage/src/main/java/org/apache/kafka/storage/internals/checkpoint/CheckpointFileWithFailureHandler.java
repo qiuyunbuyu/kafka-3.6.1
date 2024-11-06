@@ -45,6 +45,7 @@ public class CheckpointFileWithFailureHandler<T> {
         try {
             checkpointFile.write(entries);
         } catch (IOException e) {
+            // checkpointFile写失败，会被加入offlineLogDirQueue
             String msg = "Error while writing to checkpoint file " + file.getAbsolutePath();
             logDirFailureChannel.maybeAddOfflineLogDir(logDir, msg, e);
             throw new KafkaStorageException(msg, e);
@@ -55,6 +56,7 @@ public class CheckpointFileWithFailureHandler<T> {
         try {
             return checkpointFile.read();
         } catch (IOException e) {
+            // checkpointFile读失败，会被加入offlineLogDirQueue
             String msg = "Error while reading checkpoint file " + file.getAbsolutePath();
             logDirFailureChannel.maybeAddOfflineLogDir(logDir, msg, e);
             throw new KafkaStorageException(msg, e);

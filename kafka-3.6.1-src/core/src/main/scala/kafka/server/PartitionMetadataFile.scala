@@ -125,6 +125,7 @@ class PartitionMetadataFile(val file: File,
             Utils.atomicMoveWithFallback(tempPath, path)
           } catch {
             case e: IOException =>
+              // PartitionMetadataFile调用maybeFlush()写”partition.metadata“文件失败
               val msg = s"Error while writing to partition metadata file ${file.getAbsolutePath}"
               logDirFailureChannel.maybeAddOfflineLogDir(logDir, msg, e)
               throw new KafkaStorageException(msg, e)
@@ -147,6 +148,7 @@ class PartitionMetadataFile(val file: File,
         }
       } catch {
         case e: IOException =>
+          // PartitionMetadataFile调用 read() 读”partition.metadata“文件失败
           val msg = s"Error while reading partition metadata file ${file.getAbsolutePath}"
           logDirFailureChannel.maybeAddOfflineLogDir(logDir, msg, e)
           throw new KafkaStorageException(msg, e)
