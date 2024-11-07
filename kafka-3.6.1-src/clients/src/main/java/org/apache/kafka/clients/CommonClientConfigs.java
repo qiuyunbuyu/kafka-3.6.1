@@ -98,6 +98,7 @@ public class CommonClientConfigs {
     public static final String METRICS_RECORDING_LEVEL_CONFIG = "metrics.recording.level";
     public static final String METRICS_RECORDING_LEVEL_DOC = "The highest recording level for metrics.";
 
+    // 指标reporter类定义
     public static final String METRIC_REPORTER_CLASSES_CONFIG = "metric.reporters";
     public static final String METRIC_REPORTER_CLASSES_DOC = "A list of classes to use as metrics reporters. Implementing the <code>org.apache.kafka.common.metrics.MetricsReporter</code> interface allows plugging in classes that will be notified of new metric creation. The JmxReporter is always included to register JMX statistics.";
 
@@ -235,8 +236,10 @@ public class CommonClientConfigs {
     }
 
     public static List<MetricsReporter> metricsReporters(Map<String, Object> clientIdOverride, AbstractConfig config) {
+        // 获取配置的 reporters
         List<MetricsReporter> reporters = config.getConfiguredInstances(CommonClientConfigs.METRIC_REPORTER_CLASSES_CONFIG,
                 MetricsReporter.class, clientIdOverride);
+        // 默认开启 JMX Reporter
         if (config.getBoolean(CommonClientConfigs.AUTO_INCLUDE_JMX_REPORTER_CONFIG) &&
                 reporters.stream().noneMatch(r -> JmxReporter.class.equals(r.getClass()))) {
             JmxReporter jmxReporter = new JmxReporter();

@@ -22,6 +22,7 @@ package org.apache.kafka.common.metrics;
 public interface Measurable extends MetricValueProvider<Double> {
 
     /**
+     * 获取被监控的值
      * Measure this quantity and return the result as a double
      * @param config The configuration for this metric
      * @param now The POSIX time in milliseconds the measurement is being taken

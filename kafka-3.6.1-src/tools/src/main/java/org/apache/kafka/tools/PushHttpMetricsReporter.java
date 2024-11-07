@@ -123,7 +123,7 @@ public class PushHttpMetricsReporter implements MetricsReporter {
                 throw new ConfigException("Failed to get canonical hostname", e);
             }
         }
-
+        // 周期性exporter指标
         executor.scheduleAtFixedRate(new HttpReporter(), period, period, TimeUnit.SECONDS);
 
         log.info("Configured PushHttpMetricsReporter for {} to report every {} seconds", url, period);
@@ -143,6 +143,7 @@ public class PushHttpMetricsReporter implements MetricsReporter {
     public void metricChange(KafkaMetric metric) {
         synchronized (lock) {
             log.debug("Updating metric {}", metric.metricName());
+            // 值更新时
             metrics.put(metric.metricName(), metric);
         }
     }
@@ -172,6 +173,7 @@ public class PushHttpMetricsReporter implements MetricsReporter {
             final List<MetricValue> samples;
             synchronized (lock) {
                 samples = new ArrayList<>(metrics.size());
+                // 遍历汇聚指标
                 for (KafkaMetric metric : metrics.values()) {
                     MetricName name = metric.metricName();
                     samples.add(new MetricValue(name.name(), name.group(), name.tags(), metric.metricValue()));
@@ -196,6 +198,7 @@ public class PushHttpMetricsReporter implements MetricsReporter {
 
                 connection.setDoOutput(true);
 
+                // 吐出指标
                 try (OutputStream os = connection.getOutputStream()) {
                     os.write(data);
                     os.flush();

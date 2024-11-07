@@ -123,7 +123,7 @@ public class JmxReporter implements MetricsReporter {
         synchronized (LOCK) {
             for (KafkaMetric metric : metrics)
                 addAttribute(metric);
-
+            // 注册Mbean
             mbeans.forEach((name, mbean) -> {
                 if (mbeanPredicate.test(name)) {
                     reregister(mbean);
@@ -177,6 +177,7 @@ public class JmxReporter implements MetricsReporter {
             if (!this.mbeans.containsKey(mBeanName))
                 mbeans.put(mBeanName, new KafkaMbean(mBeanName));
             KafkaMbean mbean = this.mbeans.get(mBeanName);
+            // 更新mbean， KafkaMetric的MetricValueProvider维护对应值
             mbean.setAttribute(metricName.name(), metric);
             return mBeanName;
         } catch (JMException e) {
@@ -224,6 +225,7 @@ public class JmxReporter implements MetricsReporter {
     private void reregister(KafkaMbean mbean) {
         unregister(mbean);
         try {
+            // 单例的MBeanServer对象，由于register的时候是KafkaMbean，所以get的时候也是调用的KafkaMbean的getAttribute(String name)方法来返回值
             ManagementFactory.getPlatformMBeanServer().registerMBean(mbean, mbean.name());
         } catch (JMException e) {
             throw new KafkaException("Error registering mbean " + mbean.name(), e);
@@ -249,6 +251,7 @@ public class JmxReporter implements MetricsReporter {
 
         @Override
         public Object getAttribute(String name) throws AttributeNotFoundException {
+            // 获取值的地方record-send-total
             if (this.metrics.containsKey(name))
                 return this.metrics.get(name).metricValue();
             else

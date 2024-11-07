@@ -67,8 +67,9 @@ import static java.util.Collections.emptyList;
  * </pre>
  */
 public class Metrics implements Closeable {
-
+    // 配置信息
     private final MetricConfig config;
+    // 添加到Metrics中的KafkaMetrics对象
     private final ConcurrentMap<MetricName, KafkaMetric> metrics;
     private final ConcurrentMap<String, Sensor> sensors;
     private final ConcurrentMap<Sensor, List<Sensor>> childrenSensors;

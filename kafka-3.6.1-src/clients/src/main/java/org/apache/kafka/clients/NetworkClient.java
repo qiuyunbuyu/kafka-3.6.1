@@ -946,6 +946,7 @@ public class NetworkClient implements KafkaClient {
             // parse Response
             AbstractResponse response = parseResponse(receive.payload(), req.header);
             if (throttleTimeSensor != null)
+                // senor发挥记录值的作用
                 throttleTimeSensor.record(response.throttleTimeMs(), now);
 
             if (log.isDebugEnabled()) {
