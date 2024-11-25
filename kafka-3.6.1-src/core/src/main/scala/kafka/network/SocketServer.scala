@@ -633,6 +633,8 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
   private val listenBacklogSize = config.socketListenBacklogSize
 
   // *: java nio Selector
+  // server-net step1:
+  // like: Selector selector = Selector.open();
   private val nioSelector = NSelector.open()
 
   // If the port is configured as 0, we are using a wildcard port, so we need to open the socket
@@ -644,6 +646,8 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
   private[network] val localPort: Int  = if (endPoint.port != 0) {
     endPoint.port
   } else {
+    // server-net step2:
+    // init ServerSocketChannel
     serverChannel = openServerSocket(endPoint.host, endPoint.port, listenBacklogSize)
     val newPort = serverChannel.socket().getLocalPort()
     info(s"Opened wildcard endpoint ${endPoint.host}:${newPort}")
@@ -739,6 +743,9 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
    */
   override def run(): Unit = {
     // 1. register
+    // server-net step3: in jdk like:
+    // SelectionKey selectionKey = serverSocketChannel.register(selector, 0, null);
+    // selectionKey.interestOps(SelectionKey.OP_ACCEPT);
     serverChannel.register(nioSelector, SelectionKey.OP_ACCEPT)
     try {
       while (shouldRun.get()) {
@@ -775,13 +782,16 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
       else
         new InetSocketAddress(host, port)
     // 1. open
+    // like: ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
     val serverChannel = ServerSocketChannel.open()
     // 2. Configure parameters
+    // like: serverSocketChannel.configureBlocking(false);
     serverChannel.configureBlocking(false)
     if (recvBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
       serverChannel.socket().setReceiveBufferSize(recvBufferSize)
     // 3. bind
     try {
+      // like: serverSocketChannel.bind(new InetSocketAddress(8000));
       serverChannel.socket.bind(socketAddress, listenBacklogSize)
       info(s"Awaiting socket connections on ${socketAddress.getHostString}:${serverChannel.socket.getLocalPort}.")
     } catch {
