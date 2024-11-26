@@ -399,6 +399,7 @@ class KafkaServer(
         // Note that we allow the use of KRaft mode controller APIs when forwarding is enabled
         // so that the Envelope request is exposed. This is only used in testing currently.
         // network port
+        // SocketServer初始化
         socketServer = new SocketServer(config, metrics, time, credentialProvider, apiVersionManager)
 
         // 2.18 Start alter partition manager based on the IBP version
@@ -652,6 +653,7 @@ class KafkaServer(
           }
         }
         // ** 2.34 socketServer do work, acceptor, processor...
+        // socketServer线程启动
         socketServer.enableRequestProcessing(authorizerFutures)
         // Block here until all the authorizer futures are complete
         try {

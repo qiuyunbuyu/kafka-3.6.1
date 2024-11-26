@@ -80,7 +80,9 @@ class SocketServer(val config: KafkaConfig,
                    val apiVersionManager: ApiVersionManager)
   extends Logging with BrokerReconfigurable {
 
-  // * queued.max.requests
+  // * queued.max.requests: 默认500，请求队列的长度。
+  // 哪个请求队列？ -> dataPlaneRequestChannel
+  // 多个Processor线程会注册OP_READ事件，将接到的“Request”放入dataPlaneRequestChannel
   private val maxQueuedRequests = config.queuedMaxRequests
   // brokerID
   protected val nodeId = config.brokerId
@@ -96,13 +98,16 @@ class SocketServer(val config: KafkaConfig,
   memoryPoolSensor.add(new Meter(TimeUnit.MILLISECONDS, memoryPoolDepletedPercentMetricName, memoryPoolDepletedTimeMetricName))
   private val memoryPool = if (config.queuedMaxBytes > 0) new SimpleMemoryPool(config.queuedMaxBytes, config.socketRequestMaxBytes, false, memoryPoolSensor) else MemoryPool.NONE
 
-  // * data-plane
+  // * data-plane: 1 EndPoint <-> 1 DataPlaneAcceptor
   private[network] val dataPlaneAcceptors = new ConcurrentHashMap[EndPoint, DataPlaneAcceptor]()
+
+  // 多个Processor会共享此Channel
   // RequestChannel[handle data request len 500]
   val dataPlaneRequestChannel = new RequestChannel(maxQueuedRequests, DataPlaneAcceptor.MetricPrefix, time, apiVersionManager.newRequestMetrics)
 
-  // * control-plane
+  // * control-plane: 控制面的Acceptor线程, 控制面是否单独一套处理，是根据有无设置"control.plane.listener.name"决定的
   private[network] var controlPlaneAcceptorOpt: Option[ControlPlaneAcceptor] = None
+
   // RequestChannel[handle control request len 20]
   val controlPlaneRequestChannelOpt: Option[RequestChannel] = config.controlPlaneListenerName.map(_ =>
     new RequestChannel(20, ControlPlaneAcceptor.MetricPrefix, time, apiVersionManager.newRequestMetrics))
@@ -170,14 +175,17 @@ class SocketServer(val config: KafkaConfig,
     })
   }
 
+  // SocketServer初始化中Acceptor和Processor的初始化
   // Create acceptors and processors for the statically configured endpoints when the
   // SocketServer is constructed. Note that this just opens the ports and creates the data
   // structures. It does not start the acceptors and processors or their associated JVM
   // threads.
-  if (apiVersionManager.listenerType.equals(ListenerType.CONTROLLER)) {
+  if (apiVersionManager.listenerType.equals(ListenerType.CONTROLLER)) { // ListenerType干啥的？
     config.controllerListeners.foreach(createDataPlaneAcceptorAndProcessors)
   } else {
+    // 控制面
     config.controlPlaneListener.foreach(createControlPlaneAcceptorAndProcessor)
+    // 数据面
     config.dataPlaneListeners.foreach(createDataPlaneAcceptorAndProcessors)
   }
 
@@ -188,6 +196,7 @@ class SocketServer(val config: KafkaConfig,
   }
 
   /**
+   * broker启动时调用，启动网络请求处理线程
    * called in KafkaServer.scala startup()
    * This method enables request processing for all endpoints managed by this SocketServer. Each
    * endpoint will be brought up asynchronously as soon as its associated future is completed.
@@ -227,15 +236,17 @@ class SocketServer(val config: KafkaConfig,
         } else {
           // Once the authorizer has started, attempt to start the associated acceptor. The Acceptor.start()
           // function will complete the acceptor started future (either successfully or not)
+          // 调用Acceptor的start()方法，会同时启动Acceptor线程以及Processor线程
           acceptor.start()
         }
       })
     }
 
     info("Enabling request processing.")
-    // each controlPlane Acceptor start
+    // * each controlPlane Acceptor start
     controlPlaneAcceptorOpt.foreach(chainAcceptorFuture)
-    // each dataPlane Acceptor start
+
+    // * each dataPlane Acceptor start
     dataPlaneAcceptors.values().forEach(chainAcceptorFuture)
     FutureUtils.chainFuture(CompletableFuture.allOf(authorizerFutures.values.toArray: _*),
         allAuthorizerFuturesComplete)
@@ -249,6 +260,11 @@ class SocketServer(val config: KafkaConfig,
   }
 
   /**
+   * 初始化：
+   * Acceptor线程[几个EndPoint，几个Acceptor线程]
+   * Processor线程[默认3]
+   * [dataPlaneRequestChannel - Acceptor - Processor]组成绑定
+   *
    * create Acceptor and add processor for Acceptor
    * @param endpoint
    */
@@ -260,11 +276,14 @@ class SocketServer(val config: KafkaConfig,
     connectionQuotas.addListener(config, endpoint.listenerName)
     val isPrivilegedListener = controlPlaneRequestChannelOpt.isEmpty &&
       config.interBrokerListenerName == endpoint.listenerName
-    // 1. create Acceptor
+    // 1. create Acceptor：创建Acceptor线程，将dataPlaneRequestChannel与之绑定
     val dataPlaneAcceptor = createDataPlaneAcceptor(endpoint, isPrivilegedListener, dataPlaneRequestChannel)
     config.addReconfigurable(dataPlaneAcceptor)
-    // 2. add processor for Acceptor
+
+    // 2. add processor for Acceptor： “绑定”Processor线程和Acceptor线程
     dataPlaneAcceptor.configure(parsedConfigs)
+
+    // 3. 更新SocketServer中dataPlaneAcceptors，1 EndPoint: 1 Acceptor
     dataPlaneAcceptors.put(endpoint, dataPlaneAcceptor)
     info(s"Created data-plane acceptor and processors for endpoint : ${endpoint.listenerName}")
   }
@@ -543,6 +562,7 @@ class DataPlaneAcceptor(socketServer: SocketServer,
    * Configure this class with the given key-value pairs
    */
   override def configure(configs: util.Map[String, _]): Unit = {
+    // num.network.threads: 3
     addProcessors(configs.get(KafkaConfig.NumNetworkThreadsProp).asInstanceOf[Int])
   }
 }
@@ -612,7 +632,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
                                        val connectionQuotas: ConnectionQuotas,
                                        time: Time,
                                        isPrivilegedListener: Boolean,
-                                       requestChannel: RequestChannel,
+                                       requestChannel: RequestChannel, // requestChannel in Acceptor
                                        metrics: Metrics,
                                        credentialProvider: CredentialProvider,
                                        logContext: LogContext,
@@ -671,6 +691,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
     s"${threadPrefix()}-kafka-socket-acceptor-${endPoint.listenerName}-${endPoint.securityProtocol}-${endPoint.port}",
     this)
 
+  // Acceptor与processor线程启动
   def start(): Unit = synchronized {
     try {
       if (!shouldRun.get()) {
@@ -940,7 +961,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
     val listenerProcessors = new ArrayBuffer[Processor]()
 
     for (_ <- 0 until toCreate) {
-      // create processor thread
+      // create processor thread: 创建processor线程
       val processor = newProcessor(socketServer.nextProcessorId(), listenerName, securityProtocol)
       listenerProcessors += processor
       // add new ConcurrentHashMap[Int, Processor]() in RequestChannel
@@ -950,6 +971,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
       }
     }
     // add new ArrayBuffer[Processor]() in Acceptor
+    // Acceptor中processors维护所有processor
     processors ++= listenerProcessors
   }
 
@@ -1005,7 +1027,7 @@ private[kafka] class Processor(
   val id: Int,
   time: Time,
   maxRequestSize: Int,
-  requestChannel: RequestChannel,
+  requestChannel: RequestChannel, // requestChannel in Processor
   connectionQuotas: ConnectionQuotas,
   connectionsMaxIdleMs: Long,
   failedAuthenticationDelayMs: Int,
@@ -1108,6 +1130,7 @@ private[kafka] class Processor(
   // closed, connection ids are not reused while requests from the closed connection are being processed.
   private var nextConnectionIndex = 0
 
+  // processor线程运行方法
   override def run(): Unit = {
     try {
       while (shouldRun.get()) {
