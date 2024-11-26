@@ -691,7 +691,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
     s"${threadPrefix()}-kafka-socket-acceptor-${endPoint.listenerName}-${endPoint.securityProtocol}-${endPoint.port}",
     this)
 
-  // Acceptor与processor线程启动
+  // *Acceptor与processor线程启动
   def start(): Unit = synchronized {
     try {
       if (!shouldRun.get()) {
@@ -727,6 +727,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
     override def compare(that: DelayedCloseSocket): Int = endThrottleTimeMs compare that.endThrottleTimeMs
   }
 
+  // 移除Processors线程
   private[network] def removeProcessors(removeCount: Int): Unit = synchronized {
     // Shutdown `removeCount` processors. Remove them from the processor list first so that no more
     // connections are assigned. Shutdown the removed processors, closing the selector and its connections.
@@ -761,17 +762,20 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
 
   /**
    * Accept loop that checks for new connection attempts
+   * Acceptor线程的while(...)工作方法
    */
   override def run(): Unit = {
     // 1. register
     // server-net step3: in jdk like:
     // SelectionKey selectionKey = serverSocketChannel.register(selector, 0, null);
     // selectionKey.interestOps(SelectionKey.OP_ACCEPT);
+    // 线程启动的时候，才关注了OP_ACCEPT事件
     serverChannel.register(nioSelector, SelectionKey.OP_ACCEPT)
     try {
       while (shouldRun.get()) {
         try {
           // 2. accept new connection
+          // 接收New Connections方法
           acceptNewConnections()
           // 3. maybe close some socketChannel
           closeThrottledConnections()
@@ -848,10 +852,10 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
               // all processors, block until the last one is able to accept a connection.
               var retriesLeft = synchronized(processors.length)
               var processor: Processor = null
-              // ** assign NewConnection
+              // ** assign NewConnection： 把取出socketchannel交给processor线程
               do {
                 retriesLeft -= 1
-                // * choose a processor to handle
+                // * choose a processor to handle：选择processor线程
                 processor = synchronized {
                   // adjust the index (if necessary) and retrieve the processor atomically for
                   // correct behaviour in case the number of processors is reduced dynamically
@@ -862,7 +866,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
               } while (!assignNewConnection(socketChannel, processor, retriesLeft == 0))
             }
           } else {
-            // If an event other than OP_ACCEPT is received, an exception will throw
+            // If an event other than OP_ACCEPT is received, an exception will throw：OP_ACCEPT其他的事件抛异常
             throw new IllegalStateException("Unrecognized key state for acceptor thread.")
           }
         } catch {
@@ -874,15 +878,17 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
 
   /**
    * Accept a new connection
+   * Acceptor 接收
    */
   private def accept(key: SelectionKey): Option[SocketChannel] = {
     // 1. get socketChannel
+    // 理解SelectionKey.OP_ACCEPT <-> serverSocketChannel.accept() <-> socketChannel 直接的联系
     val serverSocketChannel = key.channel().asInstanceOf[ServerSocketChannel]
     val socketChannel = serverSocketChannel.accept()
     try {
       // 2. quota manage
       connectionQuotas.inc(endPoint.listenerName, socketChannel.socket.getInetAddress, blockedPercentMeter)
-      // 3. setting SocketChannel
+      // 3. setting SocketChannel：设置socketChannel
       configureAcceptedSocketChannel(socketChannel)
       Some(socketChannel)
     } catch {
@@ -952,6 +958,7 @@ private[kafka] abstract class Acceptor(val socketServer: SocketServer,
 
   /**
    * add Processor for Acceptor
+   * 添加Processor线程
    * @param toCreate
    */
   def addProcessors(toCreate: Int): Unit = synchronized {
