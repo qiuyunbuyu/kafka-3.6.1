@@ -1034,7 +1034,7 @@ private[kafka] class Processor(
   val id: Int,
   time: Time,
   maxRequestSize: Int,
-  requestChannel: RequestChannel, // requestChannel in Processor
+  requestChannel: RequestChannel, // 这里RequestChannel就是socketserver中定义的 | RequestChannel[handle data request len 500]
   connectionQuotas: ConnectionQuotas,
   connectionsMaxIdleMs: Long,
   failedAuthenticationDelayMs: Int,
@@ -1070,9 +1070,11 @@ private[kafka] class Processor(
   private[network] case class ConnectionId(localHost: String, localPort: Int, remoteHost: String, remotePort: Int, index: Int) {
     override def toString: String = s"$localHost:$localPort-$remoteHost:$remotePort-$index"
   }
-  // ArrayBlockingQueue: store SocketChannel, size 20
+  // ArrayBlockingQueue: store SocketChannel, size 20, 保存socketchannel的地方
   private val newConnections = new ArrayBlockingQueue[SocketChannel](connectionQueueSize)
-  // tmp Response Queue
+
+  // tmp Response Queue： 存放Response的地方，这个和下面那个有啥区别？
+  // inflightResponses: key是客户端，value是response，有些response有回调逻辑，需要在发给客户端之后才执行
   private val inflightResponses = mutable.Map[String, RequestChannel.Response]()
   // Response Queue
   private val responseQueue = new LinkedBlockingDeque[RequestChannel.Response]()
@@ -1095,7 +1097,7 @@ private[kafka] class Processor(
   private val expiredConnectionsKilledCountMetricName = metrics.metricName("expired-connections-killed-count", MetricsGroup, metricTags)
   metrics.addMetric(expiredConnectionsKilledCountMetricName, expiredConnectionsKilledCount)
 
-  // * KSelector
+  // * KSelector：监听网络事件
   private[network] val selector = createSelector(
     ChannelBuilders.serverChannelBuilder(
       listenerName,
@@ -1143,18 +1145,32 @@ private[kafka] class Processor(
       while (shouldRun.get()) {
         try {
           // setup any new connections that have been queued up, register SocketChannel on Selector and listen [OP_READ]
+          // 1. 把sc注册到selector，并监听OP_READ
           configureNewConnections()
+
           // register any new responses for writing, add to inflightResponses
+          // 2. 给客户端发response(预发送)，关注OP_WRITE
           processNewResponses()
+
           // Do whatever net I/O can be done on each connection without blocking.
+          // 3.无论怎么包，最后还是调了，下面nio最基础的
+          // Selector.select() + socketChannel.write/read
           poll()
+
           // handle Completed Receive Request
+          // 4. 处理接收到的request，其实就是丢给RequestChannel的Queue中
           processCompletedReceives()
+
           // handle Completed Send Response(Execute the callback logic after sending the response, Very little response is needed, like Fetch)
+          // 5. 处理发送成功的Response，目的：执行发送成功后的回调
           processCompletedSends()
+
           // Get the connection that was disconnected due to a send failure and then process it
+          // 6. 处理断开的连接，怎么发现连接断开的？
           processDisconnected()
+
           //  close Exceed Quota connections
+          // 7. 设置quota场景下，发现超quota时关闭部分连接
           closeExcessConnections()
         } catch {
           // We catch all the throwables here to prevent the processor thread from exiting. We do this because
@@ -1449,17 +1465,21 @@ private[kafka] class Processor(
 
   /**
    * Queue up a new connection for reading
+   * acceptor线程会在run方法中把客户端socketchannel，拿出来，交给Processor
    */
   def accept(socketChannel: SocketChannel,
              mayBlock: Boolean,
              acceptorIdlePercentMeter: com.yammer.metrics.core.Meter): Boolean = {
     val accepted = {
       // case 1: queue not full, add socketChannel to newConnections
+      // 保存socketchannel
       if (newConnections.offer(socketChannel))
         true
       else if (mayBlock) {
         // case2: If the queue is full and can block
         val startNs = time.nanoseconds
+        // 利用ArrayBlockingQueue的能力
+        // “Inserts the specified element at the tail of this queue, waiting for space to become available if the queue is full.”
         newConnections.put(socketChannel)
         acceptorIdlePercentMeter.mark(time.nanoseconds() - startNs)
         true
@@ -1469,7 +1489,8 @@ private[kafka] class Processor(
       }
     }
     if (accepted) {
-      // * wake up selector
+      // * wake up selector：唤醒selector，走到这里了，就代表一定有网络事件发生，selector的select就别阻塞了
+      // 所以说虽然“NIO”也有阻塞，但是是有方法优化的
       wakeup()
     }
     accepted

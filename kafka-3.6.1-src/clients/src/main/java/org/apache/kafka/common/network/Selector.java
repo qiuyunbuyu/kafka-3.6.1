@@ -527,7 +527,7 @@ public class Selector implements Selectable, AutoCloseable {
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds(), false);
         // some "things" occur || immediatelyConnectedKeys not empty || Cached data exists(only occur in SSL connected)
         if (numReadyKeys > 0 || !immediatelyConnectedKeys.isEmpty() || dataInBuffers) {
-            // get ready keys
+            // *get ready keys：获取SelectionKey，可处理的网络事件集合
             Set<SelectionKey> readyKeys = this.nioSelector.selectedKeys();
 
             // Poll from channels that have buffered data (but nothing more from the underlying socket)
@@ -539,6 +539,7 @@ public class Selector implements Selectable, AutoCloseable {
             }
 
             // * Poll from channels where the underlying socket has more data
+            // * 有了上面的readyKeys，就能拿到对应的socketchannel，就能socketChannel.write/read了
             pollSelectionKeys(readyKeys, false, endSelect);
             // Clear all selected keys so that they are excluded from the ready count for the next select
             readyKeys.clear();

@@ -105,6 +105,7 @@ public class NetworkReceive implements Receive {
         int read = 0;
         // 1. read and get response size
         if (size.hasRemaining()) {
+            // like “NIO”： socketChannel.read(buffer);
             int bytesRead = channel.read(size);
             if (bytesRead < 0)
                 throw new EOFException();
