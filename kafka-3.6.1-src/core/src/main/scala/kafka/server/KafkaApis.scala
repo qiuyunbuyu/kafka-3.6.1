@@ -167,6 +167,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   /**
    * Top-level method that handles all requests and multiplexes to the right api
+   * 走到这里，就像SpringBoot的Controller了
    */
   override def handle(request: RequestChannel.Request, requestLocal: RequestLocal): Unit = {
     def handleError(e: Throwable): Unit = {

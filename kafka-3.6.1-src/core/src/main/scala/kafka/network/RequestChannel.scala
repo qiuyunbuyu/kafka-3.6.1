@@ -495,6 +495,7 @@ class RequestChannel(val queueSize: Int,
     if (callbackRequest != null)
       callbackRequest
     else {
+      // 取出下一个Request
       val request = requestQueue.poll(timeout, TimeUnit.MILLISECONDS)
       request match {
         case WakeupRequest => callbackQueue.poll()

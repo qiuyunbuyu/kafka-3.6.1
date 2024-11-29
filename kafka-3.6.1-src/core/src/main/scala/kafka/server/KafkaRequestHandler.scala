@@ -100,10 +100,13 @@ class KafkaRequestHandler(id: Int,
   this.logIdent = s"[Kafka Request Handler $id on Broker $brokerId], "
   // stop the thread
   private val shutdownComplete = new CountDownLatch(1)
+
+  // ? 存储请求处理期间需要的临时数据
   private val requestLocal = RequestLocal.withThreadConfinedCaching
   // mark the state of thread
   @volatile private var stopped = false
 
+  // Request处理线程的run方法
   def run(): Unit = {
     threadRequestChannel.set(requestChannel)
     while (!stopped) {
@@ -114,19 +117,26 @@ class KafkaRequestHandler(id: Int,
 
       // 1. calculate the metric of time and get the Request
       val startSelectTime = time.nanoseconds
-      // * get the Request from RequestChannel
+
+      // * get the Request from RequestChannel， 从RequestChannel中取出下一个Request
       val req = requestChannel.receiveRequest(300)
+
       val endTime = time.nanoseconds
       val idleTime = endTime - startSelectTime
+      // 计算线程空闲百分比
       aggregateIdleMeter.mark(idleTime / totalHandlerThreads.get)
 
       // 2. Match the request type and process it
+      // 匹配Request类型，分情况处理
       req match {
+        // case1
         // 2.1 Shutdown thread Request
         case RequestChannel.ShutdownRequest =>
           debug(s"Kafka request handler $id on broker $brokerId received shut down command")
           completeShutdown()
           return
+
+        // case2
         // 2.2 Callback Request, finally call KafkaApis to handle
         case callback: RequestChannel.CallbackRequest =>
           val originalRequest = callback.originalRequest
@@ -158,12 +168,14 @@ class KafkaRequestHandler(id: Int,
             threadCurrentRequest.remove()
           }
 
+        // case3： CommonRequest
         // 2.3 common Request, call KafkaApis to handle
         case request: RequestChannel.Request =>
           try {
             request.requestDequeueTimeNanos = endTime
             trace(s"Kafka request handler $id on broker $brokerId handling request $request")
             threadCurrentRequest.set(request)
+            // 调用KafkaApis 来实际处理 Request
             apis.handle(request, requestLocal)
           } catch {
             case e: FatalExitError =>
@@ -228,19 +240,24 @@ class KafkaRequestHandlerPool(val brokerId: Int,
   private val aggregateIdleMeter = metricsGroup.newMeter(requestHandlerAvgIdleMetricName, "percent", TimeUnit.NANOSECONDS)
 
   this.logIdent = "[" + logAndThreadNamePrefix + " Kafka Request Handler on Broker " + brokerId + "], "
+
   // the thread poll of KafkaRequestHandler
   val runnables = new mutable.ArrayBuffer[KafkaRequestHandler](numThreads)
-  // create Thread
+
+  // create Thread: 创建多个KafkaRequestHandler线程
+  // numThreads: 根据 num.io.threads配置， 默认8
   for (i <- 0 until numThreads) {
     createHandler(i)
   }
 
+  // 创建KafkaRequestHandler线程
   def createHandler(id: Int): Unit = synchronized {
     // create KafkaRequestHandler Thread
     runnables += new KafkaRequestHandler(id, brokerId, aggregateIdleMeter, threadPoolSize, requestChannel, apis, time)
     KafkaThread.daemon(logAndThreadNamePrefix + "-kafka-request-handler-" + id, runnables(id)).start()
   }
 
+  // 重置线程池至目标大小
   def resizeThreadPool(newSize: Int): Unit = synchronized {
     // 1. get currentSize
     val currentSize = threadPoolSize.get
@@ -260,12 +277,13 @@ class KafkaRequestHandlerPool(val brokerId: Int,
     threadPoolSize.set(newSize)
   }
 
+  // Broker发起了关闭的动作, 会发送ShutdownRequest到RequestChannel，并等待所有KafkaRequestHandler线程关闭
   def shutdown(): Unit = synchronized {
     info("shutting down")
-    // 1. initiateShutdown
+    // 1. initiateShutdown：告知关闭
     for (handler <- runnables)
       handler.initiateShutdown()
-    // 2. awaitShutdown
+    // 2. awaitShutdown： 等待关闭
     for (handler <- runnables)
       handler.awaitShutdown()
     info("shut down completely")
