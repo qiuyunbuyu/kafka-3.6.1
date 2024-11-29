@@ -105,6 +105,7 @@ object RequestChannel extends Logging {
 
     val session = Session(context.principal, context.clientAddress)
 
+    // 解析出RequestAndSize = RequestBody + size
     private val bodyAndSize: RequestAndSize = context.parseRequest(buffer)
 
     // This is constructed on creation of a Request so that the JSON representation is computed before the request is
@@ -358,7 +359,7 @@ class RequestChannel(val queueSize: Int,
   private val metricsGroup = new KafkaMetricsGroup(this.getClass)
 
   // the size of request Queue, default 500
-  // request 队列大小
+  // request 队列大小: 收纳的是BaseRequest类型
   private val requestQueue = new ArrayBlockingQueue[BaseRequest](queueSize)
 
   // processors in RequestChannel, default 3

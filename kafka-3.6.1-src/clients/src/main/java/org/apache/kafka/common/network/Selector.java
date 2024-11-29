@@ -749,18 +749,24 @@ public class Selector implements Selectable, AutoCloseable {
         }
     }
 
+    /**
+     * 拆包，封帧
+     * @param channel
+     * @throws IOException
+     */
     private void attemptRead(KafkaChannel channel) throws IOException {
         // get channel id
         String nodeId = channel.id();
-        // actual read
+        // *1. actual read：socketChannel 读ByteBuffer
         long bytesReceived = channel.read();
         if (bytesReceived != 0) {
             long currentTimeMs = time.milliseconds();
             sensors.recordBytesReceived(nodeId, bytesReceived, currentTimeMs);
             madeReadProgressLastPoll = true;
-            // Determine whether complete read
+            // *2. Determine whether complete read：确认ByteBuffer读的“合理”
             NetworkReceive receive = channel.maybeCompleteReceive();
             if (receive != null) {
+            // *3. 保存一个请求对应的合理的“ByteBuffer”，以备后续从ByteBuffer往Request转
                 addToCompletedReceives(channel, receive, currentTimeMs);
             }
         }

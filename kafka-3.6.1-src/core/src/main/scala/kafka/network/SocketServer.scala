@@ -1302,7 +1302,9 @@ private[kafka] class Processor(
   }
 
   protected def parseRequestHeader(buffer: ByteBuffer): RequestHeader = {
+    // *RequestHeader = RequestHeaderData + headerVersion
     val header = RequestHeader.parse(buffer)
+    // 结合 RequestHeader 的apiKey和apiVersion，来判度RequestHeader是否合理
     if (apiVersionManager.isApiEnabled(header.apiKey, header.apiVersion)) {
       header
     } else {
@@ -1317,8 +1319,10 @@ private[kafka] class Processor(
         // 2. get Channel and ChannelID
         openOrClosingChannel(receive.source) match {
           case Some(channel) =>
-            // 3. get Request Header
+
+            // 3. get Request Header： 解析出Request Header
             val header = parseRequestHeader(receive.payload)
+
             // 4. if SASL_HANDSHAKE Request, need Reauthentication
             if (header.apiKey == ApiKeys.SASL_HANDSHAKE && channel.maybeBeginServerReauthentication(receive,
               () => time.nanoseconds()))
@@ -1338,6 +1342,8 @@ private[kafka] class Processor(
                   channel.principal, listenerName, securityProtocol,
                   channel.channelMetadataRegistry.clientInformation, isPrivilegedListener, channel.principalSerde)
 
+                //  解析出Request Body
+                //  Request Body中有个重要的对象：【bodyAndSize: RequestAndSize = context.parseRequest(buffer)】
                 val req = new RequestChannel.Request(processor = id, context = context,
                   startTimeNanos = nowNanos, memoryPool, receive.payload, requestChannel.metrics, None)
 
