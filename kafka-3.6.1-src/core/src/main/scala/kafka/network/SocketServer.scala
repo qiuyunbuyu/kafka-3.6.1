@@ -1550,8 +1550,14 @@ private[kafka] class Processor(
     connId
   }
 
+  /**
+   * 保存RequestChannel的sendResponse中保存的Response
+   * @param response
+   */
   private[network] def enqueueResponse(response: RequestChannel.Response): Unit = {
+    // 先放入responseQueue队列
     responseQueue.put(response)
+    // 唤醒processor线程的selector，别阻塞在select(..)了
     wakeup()
   }
 
