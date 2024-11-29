@@ -1212,6 +1212,7 @@ private[kafka] class Processor(
     // 1. declare a Response object
     var currentResponse: RequestChannel.Response = null
     // 2. get Response from responseQueue(add Response to responseQueue in KafkaApis) and handle; [Contact KafkaApis-requestChannel.sendResponse(....) for thoughts]
+    // 从responseQueue中取出一个response
     while ({currentResponse = dequeueResponse(); currentResponse != null}) {
       // 3. get channelId
       val channelId = currentResponse.request.context.connectionId
@@ -1232,6 +1233,7 @@ private[kafka] class Processor(
             tryUnmuteChannel(channelId)
           // case2: truly send Response, add Response to inflightResponses
           case response: SendResponse =>
+            // 预发送发送response逻辑
             sendResponse(response, response.responseSend)
           // case3: response the [Close Connection Request] and handle close
           case response: CloseConnectionResponse =>
@@ -1280,6 +1282,7 @@ private[kafka] class Processor(
     // 3. handle
     if (openOrClosingChannel(connectionId).isDefined) {
       // *[send Response to Corresponding Client]
+      // 调用封的selector能力
       selector.send(new NetworkSend(connectionId, responseSend))
       // *[add Response to inflightResponses]
       inflightResponses += (connectionId -> response)
@@ -1568,7 +1571,7 @@ private[kafka] class Processor(
   }
 
   /**
-   * get response from RequestChannel
+   * get response from responseQueue
    * @return RequestChannel.Response
    */
   private def dequeueResponse(): RequestChannel.Response = {

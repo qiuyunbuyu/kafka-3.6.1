@@ -416,9 +416,11 @@ class RequestChannel(val queueSize: Int,
     onComplete: Option[Send => Unit] // onComplete method
   ): Unit = {
     updateErrorMetrics(request.header.apiKey, response.errorCounts.asScala)
+    //  1. 编码response
+    //  2. 将response交给processor的responseQueue
     sendResponse(new RequestChannel.SendResponse(
       request,
-      request.buildResponseSend(response),
+      request.buildResponseSend(response), // 此处完成了response的编码
       request.responseNode(response),
       onComplete
     ))

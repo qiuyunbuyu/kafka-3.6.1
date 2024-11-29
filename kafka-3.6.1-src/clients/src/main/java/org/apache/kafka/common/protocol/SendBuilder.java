@@ -209,6 +209,7 @@ public class SendBuilder implements Writable {
 
     /**
      * Messages are compiled into byte network code
+     * response被编码成byte，能在网络间传输了
      * @param header
      * @param headerVersion
      * @param apiMessage

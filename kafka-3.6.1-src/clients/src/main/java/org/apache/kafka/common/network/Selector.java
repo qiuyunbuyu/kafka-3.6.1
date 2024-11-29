@@ -447,6 +447,8 @@ public class Selector implements Selectable, AutoCloseable {
         } else {
             try {
                 // Ready to send: Add attention to the write event
+                // 关注OP_WRITE
+                // 将response对应的ByteBuffer绑定到对应的socketchannel上
                 channel.setSend(send);
             } catch (Exception e) {
                 // update the state for consistency, the channel will be discarded after `close`

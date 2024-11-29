@@ -127,6 +127,8 @@ class RequestHandlerHelper(
     // Only throttle non-forwarded requests
     if (!request.isForwarded)
       throttle(quotas.request, request, throttleTimeMs)
+
+    // 调requestChannel
     requestChannel.sendResponse(request, createResponse(throttleTimeMs), None)
   }
 

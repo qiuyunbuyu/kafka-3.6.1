@@ -1442,7 +1442,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case KRaftCachedControllerId(_) => metadataCache.getRandomAliveBrokerId
       }
     }
-
+    // 发送response给客户端， 基本每个Handle都有这个方法
     requestHelper.sendResponseMaybeThrottle(request, requestThrottleMs =>
        MetadataResponse.prepareResponse(
          requestVersion,
