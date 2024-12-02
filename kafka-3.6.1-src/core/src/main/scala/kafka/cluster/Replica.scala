@@ -66,6 +66,7 @@ case class ReplicaState(
     currentTimeMs: Long,
     replicaMaxLagMs: Long
   ): Boolean = {
+    // compare "lastCaughtUpTimeMs of follower replica" and "currentTimeMs"
     leaderEndOffset == logEndOffset || currentTimeMs - lastCaughtUpTimeMs <= replicaMaxLagMs
   }
 }

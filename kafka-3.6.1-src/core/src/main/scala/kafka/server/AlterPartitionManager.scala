@@ -160,6 +160,7 @@ class DefaultAlterPartitionManager(
     val alterPartitionItem = AlterPartitionItem(topicIdPartition, leaderAndIsr, future, controllerEpoch)
     val enqueued = unsentIsrUpdates.putIfAbsent(alterPartitionItem.topicIdPartition.topicPartition, alterPartitionItem) == null
     if (enqueued) {
+      // send request
       maybePropagateIsrChanges()
     } else {
       future.completeExceptionally(new OperationNotAttemptedException(
@@ -174,6 +175,7 @@ class DefaultAlterPartitionManager(
       // Copy current unsent ISRs but don't remove from the map, they get cleared in the response handler
       val inflightAlterPartitionItems = new ListBuffer[AlterPartitionItem]()
       unsentIsrUpdates.values.forEach(item => inflightAlterPartitionItems.append(item))
+      // true send
       sendRequest(inflightAlterPartitionItems.toSeq)
     }
   }
@@ -186,6 +188,7 @@ class DefaultAlterPartitionManager(
 
   private def sendRequest(inflightAlterPartitionItems: Seq[AlterPartitionItem]): Unit = {
     val brokerEpoch = brokerEpochSupplier()
+    // build "AlterPartition request"
     val (request, topicNamesByIds) = buildRequest(inflightAlterPartitionItems, brokerEpoch)
     debug(s"Sending AlterPartition to controller $request")
 
@@ -226,6 +229,7 @@ class DefaultAlterPartitionManager(
                 maybePropagateIsrChanges()
               case _ =>
                 // If we received a top-level error from the controller, retry the request in the near future
+                // Call maybePropagateIsrChanges method every 50ms
                 scheduler.scheduleOnce("send-alter-partition", () => maybePropagateIsrChanges(), 50)
             }
         }

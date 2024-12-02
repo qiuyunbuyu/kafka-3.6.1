@@ -318,12 +318,14 @@ class UnifiedLog(@volatile var logStartOffset: Long,
         s"log end offset ${localLog.logEndOffsetMetadata}")
 
     lock.synchronized {
+      // Get the offset and metadata for the current high watermark
       val oldHighWatermark = fetchHighWatermarkMetadata
 
       // Ensure that the high watermark increases monotonically. We also update the high watermark when the new
       // offset metadata is on a newer segment, which occurs whenever the log is rolled to a new segment.
       if (oldHighWatermark.messageOffset < newHighWatermark.messageOffset ||
         (oldHighWatermark.messageOffset == newHighWatermark.messageOffset && oldHighWatermark.onOlderSegment(newHighWatermark))) {
+        // update HighWatermarkMetadata
         updateHighWatermarkMetadata(newHighWatermark)
         Some(oldHighWatermark)
       } else {
@@ -380,7 +382,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
       if (newHighWatermark.messageOffset < highWatermarkMetadata.messageOffset) {
         warn(s"Non-monotonic update of high watermark from $highWatermarkMetadata to $newHighWatermark")
       }
-
+      // update "highWatermarkMetadata" to "newHighWatermark"
       highWatermarkMetadata = newHighWatermark
       producerStateManager.onHighWatermarkUpdated(newHighWatermark.messageOffset)
       logOffsetsListener.onHighWatermarkUpdated(newHighWatermark.messageOffset)
@@ -970,6 +972,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
 
   def endOffsetForEpoch(leaderEpoch: Int): Option[OffsetAndEpoch] = {
     leaderEpochCache.flatMap { cache =>
+      // found leader epoch and end offset
       val entry = cache.endOffsetFor(leaderEpoch, logEndOffset)
       val (foundEpoch, foundOffset) = (entry.getKey(), entry.getValue())
       if (foundOffset == UNDEFINED_EPOCH_OFFSET)
@@ -2060,13 +2063,16 @@ object UnifiedLog extends Logging {
                                   logDirFailureChannel: LogDirFailureChannel,
                                   recordVersion: RecordVersion,
                                   logPrefix: String): Option[LeaderEpochFileCache] = {
+    // create leaderEpoch file
     val leaderEpochFile = LeaderEpochCheckpointFile.newFile(dir)
 
+    // create leaderEpoch cache
     def newLeaderEpochFileCache(): LeaderEpochFileCache = {
       val checkpointFile = new LeaderEpochCheckpointFile(leaderEpochFile, logDirFailureChannel)
       new LeaderEpochFileCache(topicPartition, checkpointFile)
     }
 
+    // Special handling for record versions lower than V2
     if (recordVersion.precedes(RecordVersion.V2)) {
       val currentCache = if (leaderEpochFile.exists())
         Some(newLeaderEpochFileCache())
