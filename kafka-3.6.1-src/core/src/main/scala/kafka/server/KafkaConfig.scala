@@ -944,6 +944,7 @@ object KafkaConfig {
   /** ********* Replication configuration ***********/
   val ControllerSocketTimeoutMsDoc = "The socket timeout for controller-to-broker channels."
   val DefaultReplicationFactorDoc = "The default replication factors for automatically created topics."
+  // follower副本 30秒没发Fetch Request或者还没能追上leader的LEO，就会被移除isr
   val ReplicaLagTimeMaxMsDoc = "If a follower hasn't sent any fetch requests or hasn't consumed up to the leaders log end offset for at least this time," +
   " the leader will remove the follower from isr"
   val ReplicaSocketTimeoutMsDoc = "The socket timeout for network requests. Its value should be at least replica.fetch.wait.max.ms"

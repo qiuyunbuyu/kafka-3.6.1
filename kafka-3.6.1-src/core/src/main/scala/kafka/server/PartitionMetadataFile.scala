@@ -127,6 +127,7 @@ class PartitionMetadataFile(val file: File,
             case e: IOException =>
               // PartitionMetadataFile调用maybeFlush()写”partition.metadata“文件失败
               val msg = s"Error while writing to partition metadata file ${file.getAbsolutePath}"
+              // 一个文件的刷写失败，会导致整个logdir级别下的所有partition纳入到logDirFailureChannel里面,,,,
               logDirFailureChannel.maybeAddOfflineLogDir(logDir, msg, e)
               throw new KafkaStorageException(msg, e)
           }

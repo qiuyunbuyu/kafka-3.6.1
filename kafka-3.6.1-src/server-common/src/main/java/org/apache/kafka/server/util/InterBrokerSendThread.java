@@ -101,6 +101,10 @@ public abstract class InterBrokerSendThread extends ShutdownableThread {
         );
     }
 
+    /**
+     * InterBrokerSendThread体系下线程实际执行的任务
+     * @param maxTimeoutMs
+     */
     protected void pollOnce(long maxTimeoutMs) {
         try {
             drainGeneratedRequests();

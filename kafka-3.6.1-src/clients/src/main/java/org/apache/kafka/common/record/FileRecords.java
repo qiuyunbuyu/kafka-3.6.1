@@ -40,14 +40,21 @@ import java.util.concurrent.atomic.AtomicInteger;
  * instance to enable slicing a range of the log records.
  */
 public class FileRecords extends AbstractRecords implements Closeable {
+    // isSlice - true - 截取的片段
+    // isSlice - false - 原始的日志文件，可追加
     private final boolean isSlice;
     private final int start;
     private final int end;
 
+    // FileRecords由多个FileChannelRecordBatch组成
     private final Iterable<FileLogInputStream.FileChannelRecordBatch> batches;
 
     // mutable state
+    // isSlice - true - 截取的片段的大小
+    // isSlice - false - 原始的日志文件的大小
     private final AtomicInteger size;
+
+    // JDK操作文件的对象
     private final FileChannel channel;
     private volatile File file;
 
@@ -136,6 +143,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
     public FileRecords slice(int position, int size) throws IOException {
         int availableBytes = availableBytes(position, size);
         int startPosition = this.start + position;
+        // 这里是截取一段，所以isSlice是true了
         return new FileRecords(file, channel, startPosition, startPosition + availableBytes, true);
     }
 
@@ -184,9 +192,12 @@ public class FileRecords extends AbstractRecords implements Closeable {
         if (records.sizeInBytes() > Integer.MAX_VALUE - size.get())
             throw new IllegalArgumentException("Append of size " + records.sizeInBytes() +
                     " bytes is too large for segment with current file position at " + size.get());
-        // write to channel
+
+        // write to channel, file nio: channel.write(buffer)
         // need to call flush() later to actually write to the physical disk
         int written = records.writeFullyTo(channel);
+
+        // 更新size
         size.getAndAdd(written);
         return written;
     }
@@ -195,6 +206,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Commit all written data to the physical disk
      */
     public void flush() throws IOException {
+        // Forces any updates to this channel's file to be written to the storage device that contains it.
         channel.force(true);
     }
 
@@ -268,6 +280,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
             throw new KafkaException("Attempt to truncate log segment " + file + " to " + targetSize + " bytes failed, " +
                     " size of this log segment is " + originalSize + " bytes.");
         if (targetSize < (int) channel.size()) {
+            // 调用JDK中FileChannel的原生truncate能力
             channel.truncate(targetSize);
             size.set(targetSize);
         }
@@ -315,8 +328,11 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param startingPosition The starting position in the file to begin searching from.
      */
     public LogOffsetPosition searchForOffsetWithSize(long targetOffset, int startingPosition) {
+        // batchesFrom(startingPosition)，以startingPosition为起点后的FileChannelRecordBatch集合
         for (FileChannelRecordBatch batch : batchesFrom(startingPosition)) {
+            // 某个batch的最后一个offset
             long offset = batch.lastOffset();
+            // 找到目标offset所处的batch了
             if (offset >= targetOffset)
                 return new LogOffsetPosition(offset, batch.position(), batch.sizeInBytes());
         }
@@ -421,7 +437,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
         FileLogInputStream inputStream = new FileLogInputStream(this, start, end);
         return new RecordBatchIterator<>(inputStream);
     }
-
+    // 封了能操作文件的channel
     public static FileRecords open(File file,
                                    boolean mutable,
                                    boolean fileAlreadyExists,

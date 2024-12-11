@@ -44,6 +44,14 @@ import scala.jdk.CollectionConverters._
 case class SplitSegmentResult(deletedSegments: Iterable[LogSegment], newSegments: Iterable[LogSegment])
 
 /**
+ * 提前想一下，LocalLog是用于管理本地LogSegments的，最基本的能力需要有哪些？
+ * 操作限定于Local logsegment
+ * C：创建一个新的LogSegment
+ * R：从LogSegment中读取数据
+ * U：”更新“-LogSegment
+ *   1. 往某个LogSegment中写数据
+ * D：删除某个LogSegment
+ *
  * An append-only log for storing messages locally. The log is a sequence of LogSegments, each with a base offset.
  * New log segments are created according to a configurable policy that controls the size in bytes or time interval
  * for a given segment.
@@ -76,12 +84,16 @@ class LocalLog(@volatile private var _dir: File,
 
   // The memory mapped buffer for index files of this log will be closed with either delete() or closeHandlers()
   // After memory mapped buffer is closed, no disk IO operation should be performed for this log.
+  // index的内存映射缓冲区是否关闭了?
+  // deleteAllSegments()方法中，会将isMemoryMappedBufferClosed = true
+  // 如果memory mapped buffer是关闭的，就不能操作此log了
   @volatile private[log] var isMemoryMappedBufferClosed = false
 
   // Cache value of parent directory to avoid allocations in hot paths like ReplicaManager.checkpointHighWatermarks
   @volatile private var _parentDir: String = dir.getParent
 
   // Last time the log was flushed
+  // 上一次flush的时间
   private val lastFlushedTime = new AtomicLong(time.milliseconds)
 
   private[log] def dir: File = _dir
@@ -150,6 +162,7 @@ class LocalLog(@volatile private var _dir: File,
    */
   private[log] def markFlushed(offset: Long): Unit = {
     checkIfMemoryMappedBufferClosed()
+    // 更新recoveryPoint
     if (offset > recoveryPoint) {
       updateRecoveryPoint(offset)
       lastFlushedTime.set(time.milliseconds)
@@ -168,9 +181,12 @@ class LocalLog(@volatile private var _dir: File,
    * @param offset The offset to flush up to (non-inclusive)
    */
   private[log] def flush(offset: Long): Unit = {
+    // 上一次flush的时候记录的recoveryPoint
     val currentRecoveryPoint = recoveryPoint
     if (currentRecoveryPoint <= offset) {
+      // 找到处于(currentRecoveryPoint, offset)之间的logsegment
       val segmentsToFlush = segments.values(currentRecoveryPoint, offset)
+      // 调用logsegment的flush
       segmentsToFlush.foreach(_.flush())
       // If there are any new segments, we need to flush the parent directory for crash consistency.
       if (segmentsToFlush.exists(_.baseOffset >= currentRecoveryPoint)) {
@@ -270,6 +286,7 @@ class LocalLog(@volatile private var _dir: File,
       val deletable = ArrayBuffer.empty[LogSegment]
       val segmentsIterator = segments.values.iterator
       var segmentOpt = nextOption(segmentsIterator)
+      // 遍历LogSegment
       while (segmentOpt.isDefined) {
         val segment = segmentOpt.get
         val nextSegmentOpt = nextOption(segmentsIterator)
@@ -939,11 +956,13 @@ object LocalLog extends Logging {
                                       scheduler: Scheduler,
                                       logDirFailureChannel: LogDirFailureChannel,
                                       logPrefix: String): Unit = {
+
+    // part1: 给logsegment中相关文件打上 .deleted后缀
     segmentsToDelete.foreach { segment =>
       if (!segment.hasSuffix(LogFileUtils.DELETED_FILE_SUFFIX))
         segment.changeFileSuffixes("", LogFileUtils.DELETED_FILE_SUFFIX)
     }
-
+    // part2: 定义删除方法
     def deleteSegments(): Unit = {
       info(s"${logPrefix}Deleting segment files ${segmentsToDelete.mkString(",")}")
       val parentDir = dir.getParent
@@ -953,7 +972,7 @@ object LocalLog extends Logging {
         }
       }
     }
-
+    // part3: scheduler.scheduleOnce 删除LogSegment中相关文件
     if (asyncDelete)
       scheduler.scheduleOnce("delete-file", () => deleteSegments(), config.fileDeleteDelayMs)
     else

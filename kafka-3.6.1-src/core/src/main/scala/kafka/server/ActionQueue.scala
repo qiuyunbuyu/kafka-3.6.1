@@ -54,9 +54,10 @@ class DelayedActionQueue extends Logging with ActionQueue {
     var done = false
     while (!done && count < maxToComplete) {
       try {
+        // 尝试取出“延迟”任务
         val action = queue.poll()
-        if (action == null) done = true
-        else action()
+        if (action == null) done = true // “延迟任务”都已经执行完成 -> done
+        else action() // 执行延迟任务
       } catch {
         case e: Throwable =>
           error("failed to complete delayed actions", e)

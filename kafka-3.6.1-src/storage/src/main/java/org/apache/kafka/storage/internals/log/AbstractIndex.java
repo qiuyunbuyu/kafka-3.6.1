@@ -549,7 +549,7 @@ public abstract class AbstractIndex implements Closeable {
         }
         return result;
     }
-
+    // 计算 新增的offset 和 baseOffset 之间的差距
     private OptionalInt toRelative(long offset) {
         long relativeOffset = offset - baseOffset;
         if (relativeOffset < 0 || relativeOffset > Integer.MAX_VALUE)

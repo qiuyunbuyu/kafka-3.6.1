@@ -95,8 +95,15 @@ class LogLoader(
    *
    * @throws LogSegmentOffsetOverflowException if we encounter a .swap file with messages that
    *                                           overflow index offset
+   *
+   * 目标是什么：
+   * 目标1：返回LoadedLogOffsets对象，包含下面的描述Log的信息 logStartOffset + recoveryPoint + nextOffsetMetadata
+   * 目标2：把跳表map对象，即segments: LogSegments, 构造起来
+   * 目标3：更新LeaderEpochFileCache
+   * 目标4：更新ProducerStateManager
    */
   def load(): LoadedLogOffsets = {
+    // ========================================= 环节1： 处理临时文件.swap .clean .delete 文件 =========================
     // [ First pass ]: through the files in the log directory and remove any temporary files
     // and find any interrupted swap operations
     // Clean up files with .clean and .delete suffixes, and keep files with valid .swap suffixes
@@ -110,13 +117,17 @@ class LogLoader(
     var minSwapFileOffset = Long.MaxValue
     var maxSwapFileOffset = Long.MinValue
     swapFiles.filter(f => UnifiedLog.isLogFile(new File(Utils.replaceSuffix(f.getPath, SwapFileSuffix, "")))).foreach { f =>
+      // 从文件名获取baseOffset
       val baseOffset = offsetFromFile(f)
+      // 从.swap文件中构建出一个 .swap结尾的 logsegment， 这步能有数据吗？ ↓
+      // 在完成对日志数据的压缩操作后，会将压缩的结果先保存为 swap 文件（以“.swap”作为文件后缀），并最终替换压缩前的日志文件，所以 swap 文件中的数据都是完整，只需要移除对应的“.swap”后缀，并构建对应的 LogSegment 对象即可
       val segment = LogSegment.open(f.getParentFile,
         baseOffset = baseOffset,
         config,
         time = time,
         fileSuffix = UnifiedLog.SwapFileSuffix)
       info(s"Found log file ${f.getPath} from interrupted swap operation, which is recoverable from ${UnifiedLog.SwapFileSuffix} files by renaming.")
+      // 遍历所有的.swap文件，构建出一个[minSwapFileOffset, maxSwapFileOffset]区间给下一步使用
       minSwapFileOffset = Math.min(segment.baseOffset, minSwapFileOffset)
       maxSwapFileOffset = Math.max(segment.readNextOffset, maxSwapFileOffset)
     }
@@ -127,7 +138,7 @@ class LogLoader(
     for (file <- dir.listFiles if file.isFile) {
       try {
         if (!file.getName.endsWith(SwapFileSuffix)) {
-          val offset = offsetFromFile(file)
+          val offset = offsetFromFile(file) // baseoffset处于[minSwapFileOffset, maxSwapFileOffset]的被认为是”is compacted but has not been deleted yet“，所以可以直接删掉了
           if (offset >= minSwapFileOffset && offset < maxSwapFileOffset) {
             info(s"Deleting segment files ${file.getName} that is compacted but has not been deleted yet.")
             file.delete()
@@ -141,6 +152,7 @@ class LogLoader(
     }
 
     // [ Third pass ]: rename all swap files.
+    // 前面有"从.swap文件中构建出一个 .swap结尾的 LogSegment"的步骤, 此时可删除 ”.swap结尾“，临时swap结尾的LogSegment转正了
     for (file <- dir.listFiles if file.isFile) {
       if (file.getName.endsWith(SwapFileSuffix)) {
         info(s"Recovering file ${file.getName} by renaming from ${UnifiedLog.SwapFileSuffix} files.")
@@ -148,6 +160,7 @@ class LogLoader(
       }
     }
 
+    // ========================================= 环节2： LogSegments对象处理 =========================
     // [ Fourth pass ]: load all the log and index files.
     // We might encounter legacy log segments with offset overflow (KAFKA-6264). We need to split such segments. When
     // this happens, restart loading segment files from scratch.
@@ -156,15 +169,19 @@ class LogLoader(
       // loading of segments. In that case, we also need to close all segments that could have been left open in previous
       // call to loadSegmentFiles().
       segments.close()
+      // 清空原Map对象
       segments.clear()
       // * Loads segments from disk into the provided params.segments.
       loadSegmentFiles()
     })
 
+    // “a tuple containing ( [newRecoveryPoint] + [nextOffset] ).”
     val (newRecoveryPoint: Long, nextOffset: Long) = {
       // case1: a directory that is scheduled to be deleted, skip it
       // case2: a normal directory that should check "Need to check whether recovery is needed"
       if (!dir.getAbsolutePath.endsWith(UnifiedLog.DeleteDirSuffix)) {
+
+        // 执行recoverLog，会判断是否unclean shutdown
         // "Recover the log segments (if there was an unclean shutdown)"
         val (newRecoveryPoint, nextOffset) = retryOnOffsetOverflow(recoverLog)
 
@@ -188,6 +205,8 @@ class LogLoader(
     }
 
     leaderEpochCache.foreach(_.truncateFromEnd(nextOffset))
+
+    // [ logStartOffset ]
     val newLogStartOffset = if (isRemoteLogEnabled) {
       logStartOffsetCheckpoint
     } else {
@@ -215,10 +234,12 @@ class LogLoader(
       reloadFromCleanShutdown = hadCleanShutdown,
       logIdent)
     val activeSegment = segments.lastSegment.get
+
+    // 返回 LoadedLogOffsets
     new LoadedLogOffsets(
-      newLogStartOffset,
-      newRecoveryPoint,
-      new LogOffsetMetadata(nextOffset, activeSegment.baseOffset, activeSegment.size))
+      newLogStartOffset, // [ logStartOffset ]
+      newRecoveryPoint, // [newRecoveryPoint]
+      new LogOffsetMetadata(nextOffset, activeSegment.baseOffset, activeSegment.size)) // nextOffset -> logEndOffset
   }
 
   /**
@@ -227,12 +248,20 @@ class LogLoader(
    * the smallest offset .clean file could be part of an incomplete split operation. Such .swap files are also deleted
    * by this method.
    *
+   * 就干了2个活：
+   * 删除了 (invalid .swap .clean .delete)
+   * 返回了 (valid .swap)
+   *
+   * 要想看懂这个，还是得懂 .swap .clean .delete 文件的生命周期以及作用
    * @return Set of .swap files that are valid to be swapped in as segment files and index files
    */
   private def removeTempFilesAndCollectSwapFiles(): Set[File] = {
     // Set to store swapFiles & cleanedFiles
+    // 收集 .swap files
     val swapFiles = mutable.Set[File]()
+    // 收集 .clean files
     val cleanedFiles = mutable.Set[File]()
+    // .clean files中 最小的 offset
     var minCleanedFileOffset = Long.MaxValue
 
     for (file <- dir.listFiles if file.isFile) {
@@ -245,17 +274,18 @@ class LogLoader(
       if (filename.endsWith(LogFileUtils.DELETED_FILE_SUFFIX) && !filename.endsWith(Snapshots.DELETE_SUFFIX)) {
         // case1: Delete all files ending with .delete except .checkpoint.delete
         debug(s"Deleting stray temporary file ${file.getAbsolutePath}")
-        Files.deleteIfExists(file.toPath)
+        Files.deleteIfExists(file.toPath) // 删除.checkpoint.delete之外的所有.delete结尾的文件
       } else if (filename.endsWith(CleanedFileSuffix)) {
         // case2: store cleanedFiles[.cleaned] and update minCleanedFileOffset
         minCleanedFileOffset = Math.min(offsetFromFile(file), minCleanedFileOffset)
-        cleanedFiles += file
+        cleanedFiles += file // 保存.cleaned结尾的文件
       } else if (filename.endsWith(SwapFileSuffix)) {
         // case3:  store swapFiles[.swap]
-        swapFiles += file
+        swapFiles += file // 保存.swap结尾的文件
       }
     }
 
+    // 删除invalid的 .swap文件
     // KAFKA-6264: Delete all .swap files whose base offset is greater than the minimum .cleaned segment offset. Such .swap
     // files could be part of an incomplete split operation that could not complete. See Log#splitOverflowedSegment
     // for more details about the split operation.
@@ -266,13 +296,16 @@ class LogLoader(
       Files.deleteIfExists(file.toPath)
     }
 
+    // 删除.cleaned结尾的文件
     // delete cleanedFiles
     // Now that we have deleted all .swap files that constitute an incomplete split operation, let's delete all .clean files
     cleanedFiles.foreach { file =>
       debug(s"Deleting stray .clean file ${file.getAbsolutePath}")
       Files.deleteIfExists(file.toPath)
     }
+
     // return validSwapFiles
+    // 返回valid的.swap文件
     validSwapFiles
   }
 
@@ -321,8 +354,11 @@ class LogLoader(
   private def loadSegmentFiles(): Unit = {
     // load segments in ascending order because transactional data from one segment may depend on the
     // segments that come before it
+    // 遍历某个Topic-Partition-x目录下所以文件
     for (file <- dir.listFiles.sortBy(_.getName) if file.isFile) {
+      // index索引文件
       if (isIndexFile(file)) {
+        // 如果有索引文件，但没对应的log文件，则删除
         // if it is an index file, make sure it has a corresponding .log file
         val offset = offsetFromFile(file)
         val logFile = UnifiedLog.logFile(dir, offset)
@@ -331,9 +367,13 @@ class LogLoader(
           Files.deleteIfExists(file.toPath)
         }
       } else if (isLogFile(file)) {
+        // 处理log文件
         // if it's a log file, load the corresponding log segment
+        // 获取baseoffset
         val baseOffset = offsetFromFile(file)
+        // 判断timeindex文件是否存在
         val timeIndexFileNewlyCreated = !UnifiedLog.timeIndexFile(dir, baseOffset).exists()
+        // 创建了xxxx.log文件(如果不存在) + 拿到了能操作这个logsegment中相关文件的channel
         val segment = LogSegment.open(
           dir = dir,
           baseOffset = baseOffset,
@@ -341,6 +381,7 @@ class LogLoader(
           time = time,
           fileAlreadyExists = true)
 
+        // 对index进行校验，出现异常，会进入recoverSegment逻辑
         try segment.sanityCheck(timeIndexFileNewlyCreated)
         catch {
           case _: NoSuchFileException =>
@@ -354,6 +395,7 @@ class LogLoader(
               " rebuilding index files...")
             recoverSegment(segment)
         }
+        // 将此LogSegment加入[segments: ConcurrentNavigableMap[Long, LogSegment]]中
         segments.add(segment)
       }
     }
@@ -401,7 +443,7 @@ class LogLoader(
    * This method does not need to convert IOException to KafkaStorageException because it is only
    * called before all logs are loaded.
    *
-   * @return a tuple containing (newRecoveryPoint, nextOffset).
+   * @return a tuple containing (newRecoveryPoint, nextOffset(logEndOffset)).
    *
    * @throws LogSegmentOffsetOverflowException if we encountered a legacy segment with offset overflow
    */
@@ -485,6 +527,12 @@ class LogLoader(
     // the recovery point when the log is flushed. If we advanced the recovery point here, we could
     // skip recovery for unflushed segments if the broker crashed after we checkpoint the recovery
     // point and before we flush the segment.
+    // recover完，更新了一把(newRecoveryPoint, nextOffset)
+    // 从这一步就可以知道即使手动把recovery Checkpoint 文件删除掉也没有关系，因为你不管是不是hadCleanShutdown，都需要走recover逻辑
+    // 走完recover逻辑，对应的recoveryPointCheckpoint就会尝试更新至logEndOffset的地方
+
+    // 但是如果是unclean shut down，并且recovery Checkpoint 文件也删掉了，就要付出巨大的“代价”，
+    // 因为recovery Checkpoint没了，代表recoverpoint取出的值是0， 也就意味着每个LogSegment都要建立recover流程
     (hadCleanShutdown, logEndOffsetOption) match {
       case (true, Some(logEndOffset)) =>
         (logEndOffset, logEndOffset)
