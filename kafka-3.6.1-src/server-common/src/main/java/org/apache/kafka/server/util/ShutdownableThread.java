@@ -126,6 +126,7 @@ public abstract class ShutdownableThread extends Thread {
         isStarted = true;
         log.info("Starting");
         try {
+            // 循环调用子类doWork()方法
             while (isRunning())
                 doWork();
         } catch (FatalExitError e) {

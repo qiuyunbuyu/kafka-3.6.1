@@ -430,6 +430,11 @@ class UnifiedLog(@volatile var logStartOffset: Long,
   }
 
   /**
+   * LSO的解释
+   * 1. no transactional messages in the log -> LSO = HW
+   * 2. have transactional messages in the log -> LSO = "corresponding COMMIT or ABORT marker is written"
+   * 3. LSO <= HW
+   *
    * The last stable offset (LSO) is defined as the first offset such that all lower offsets have been "decided."
    * Non-transactional messages are considered decided immediately, but transactional messages are only decided when
    * the corresponding COMMIT or ABORT marker is written. This implies that the last stable offset will be equal
@@ -1873,11 +1878,14 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     logString.toString
   }
 
+  // LogCleaner中需调用来用已【清理的newSegments】置换【oldSegments】
   private[log] def replaceSegments(newSegments: Seq[LogSegment], oldSegments: Seq[LogSegment]): Unit = {
     lock synchronized {
       localLog.checkIfMemoryMappedBufferClosed()
+      // 调用LocalLog的replaceSegments能力， 返回删除掉的Iterable[”old“ LogSegment]
       val deletedSegments = UnifiedLog.replaceSegments(localLog.segments, newSegments, oldSegments, dir, topicPartition,
         config, scheduler, logDirFailureChannel, logIdent)
+      // ”old“ LogSegment 被删除掉了，其对应的 ProducerSnapshot文件 也需要删除掉
       deleteProducerSnapshots(deletedSegments, asyncDelete = true)
     }
   }

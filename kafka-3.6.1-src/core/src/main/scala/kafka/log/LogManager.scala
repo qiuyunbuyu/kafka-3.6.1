@@ -667,7 +667,7 @@ class LogManager(logDirs: Seq[File],
                          InitialTaskDelayMs) // 30S
     }
 
-    // LogCleaner线程
+    // LogCleaner线程入口
     if (cleanerConfig.enableCleaner) {
       _cleaner = new LogCleaner(cleanerConfig, liveLogDirs, currentLogs, logDirFailureChannel, time = time)
       _cleaner.startup()
@@ -1544,6 +1544,7 @@ object LogManager {
     LogConfig.validateBrokerLogConfigValues(defaultProps, config.isRemoteLogStorageSystemEnabled)
     val defaultLogConfig = new LogConfig(defaultProps)
 
+    // cleanerConfig配置初始化的地方
     val cleanerConfig = LogCleaner.cleanerConfig(config)
 
     new LogManager(logDirs = config.logDirs.map(new File(_).getAbsoluteFile),

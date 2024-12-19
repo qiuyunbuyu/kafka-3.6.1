@@ -44,6 +44,11 @@ private[log] class LogCleaningException(val log: UnifiedLog,
                                         private val cause: Throwable) extends KafkaException(message, cause)
 
 /**
+  * 作用：
+  * 1. 维护每个Log clean的状态
+  * 2. 维护更新cleaner-offset-checkpoint
+  * cleaner-offset-checkpoint
+  *
   * This class manages the state of each partition being cleaned.
   * LogCleaningState defines the cleaning states that a TopicPartition can be in.
   * 1. None                    : No cleaning state in a TopicPartition. In this state, it can become LogCleaningInProgress
@@ -173,6 +178,9 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
   }
 
    /**
+    * 目标：
+    *  1. 选择出需要执行Compact的“Log”
+    *  2. 将选择的“Log”加入 inProgress 集合
     * Choose the log to clean next and add it to the in-progress set. We recompute this
     * each time from the full set of logs to allow logs to be dynamically added to the pool of logs
     * the log manager maintains.
@@ -183,35 +191,52 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
       this.timeOfLastRun = now
       val lastClean = allCleanerCheckpoints
 
+      // a. 针对每个UnifiedLog，计算封装出其对应的LogToClean对象,以其构建成一个列表
       val dirtyLogs = logs.filter {
+        // 过滤掉cleaner.policy不是compact的log
         case (_, log) => log.config.compact
       }.filterNot {
+        // 过滤掉 “已经在inProgress中”或者“在uncleanablePartitions”中的log
         case (topicPartition, log) =>
           inProgress.contains(topicPartition) || isUncleanablePartition(log, topicPartition)
       }.map {
+        // 针对余下的Log来为其构建LogToClean对象
         case (topicPartition, log) => // create a LogToClean instance for each
           try {
+            // 从checkpoint中读取出上次此Log已经clean到的offset
             val lastCleanOffset = lastClean.get(topicPartition)
+
+            // ** 确定此Log可被清理的范围
+            // [firstDirtyOffset the lower (inclusive) offset to begin cleaning from,  the upper(exclusive) offset to clean to)
             val offsetsToClean = cleanableOffsets(log, lastCleanOffset, now)
+
             // update checkpoint for logs with invalid checkpointed offsets
+            // 如果强制更新Checkpoint，会以firstDirtyOffset来更新
             if (offsetsToClean.forceUpdateCheckpoint)
               updateCheckpoints(log.parentDirFile, partitionToUpdateOrAdd = Option(topicPartition, offsetsToClean.firstDirtyOffset))
+
+            // 计算出此Log需要执行Compact操作的max delay ms
             val compactionDelayMs = maxCompactionDelay(log, offsetsToClean.firstDirtyOffset, now)
             preCleanStats.updateMaxCompactionDelay(compactionDelayMs)
 
+            // 封装返回某个Log的LogToClean对象
             LogToClean(topicPartition, log, offsetsToClean.firstDirtyOffset, offsetsToClean.firstUncleanableDirtyOffset, compactionDelayMs > 0)
           } catch {
             case e: Throwable => throw new LogCleaningException(log,
               s"Failed to calculate log cleaning stats for partition $topicPartition", e)
           }
-      }.filter(ltc => ltc.totalBytes > 0) // skip any empty logs
+      }.filter(ltc => ltc.totalBytes > 0) // skip any empty logs 过滤掉 LogToClean中totalBytes <= 0的LogToClean
 
+      // 计算出上面的LogToClean列表中 max.cleanableRatio
       this.dirtiestLogCleanableRatio = if (dirtyLogs.nonEmpty) dirtyLogs.max.cleanableRatio else 0
+
+      // b. 继续对LogToClean列表进行过滤：时间 || cleanableRatio维度进行过滤
       // and must meet the minimum threshold for dirty byte ratio or have some bytes required to be compacted
       val cleanableLogs = dirtyLogs.filter { ltc =>
         (ltc.needCompactionNow && ltc.cleanableBytes > 0) || ltc.cleanableRatio > ltc.log.config.minCleanableRatio
       }
 
+      // c. 从最终剩余的LogToClean列表中获取“filthiest”的Log，即cleanableRatio最大的Log
       if (cleanableLogs.isEmpty)
         None
       else {
@@ -469,7 +494,9 @@ private[log] class LogCleanerManager(val logDirs: Seq[File],
     inLock(lock) {
       inProgress.get(topicPartition) match {
         case Some(LogCleaningInProgress) =>
+          // 更新cleaner-offset-checkpoint
           updateCheckpoints(dataDir, partitionToUpdateOrAdd = Option(topicPartition, endOffset))
+          // 从inProgress HashMap中移除此TP
           inProgress.remove(topicPartition)
         case Some(LogCleaningAborted) =>
           inProgress.put(topicPartition, LogCleaningPaused(1))
@@ -624,10 +651,16 @@ private[log] object LogCleanerManager extends Logging {
   def cleanableOffsets(log: UnifiedLog, lastCleanOffset: Option[Long], now: Long): OffsetsToClean = {
     // If the log segments are abnormally truncated and hence the checkpointed offset is no longer valid;
     // reset to the log starting offset and log the error
+
+    // 1. 校验确定[起始位置]：firstDirtyOffset
     val (firstDirtyOffset, forceUpdateCheckpoint) = {
+      // 获取 logStartOffset
       val logStartOffset = log.logStartOffset
+
+      //  获取 checkpointDirtyOffset， lastCleanOffset不存在就选择logStartOffset
       val checkpointDirtyOffset = lastCleanOffset.getOrElse(logStartOffset)
 
+      // 校验checkpointDirtyOffset， 异常值，将会被重置为logStartOffset
       if (checkpointDirtyOffset < logStartOffset) {
         // Don't bother with the warning if compact and delete are enabled.
         if (!isCompactAndDelete(log))
@@ -645,8 +678,10 @@ private[log] object LogCleanerManager extends Logging {
       }
     }
 
+    // 最小压缩延时时间，默认为0
     val minCompactionLagMs = math.max(log.config.compactionLagMs, 0L)
 
+    // 2. 校验确定[结束位置]：firstUncleanableDirtyOffset，取下面3个值中的最小值
     // Find the first segment that cannot be cleaned. We cannot clean past:
     // 1. The active segment
     // 2. The last stable offset (including the high watermark)
@@ -660,10 +695,13 @@ private[log] object LogCleanerManager extends Logging {
       Option(log.activeSegment.baseOffset),
 
       // the first segment whose largest message timestamp is within a minimum time lag from now
+      // 默认是0，不主动设置，不会走到这分支，
       if (minCompactionLagMs > 0) {
         // dirty log segments
         val dirtyNonActiveSegments = log.nonActiveLogSegmentsFrom(firstDirtyOffset)
         dirtyNonActiveSegments.find { s =>
+          // 只有达到最小的延时，才能执行compact
+          // s.largestTimestamp + minCompactionLagMs > now 的时候证明还没有能达到compact的时间
           val isUncleanable = s.largestTimestamp > now - minCompactionLagMs
           debug(s"Checking if log segment may be cleaned: log='${log.name}' segment.baseOffset=${s.baseOffset} " +
             s"segment.largestTimestamp=${s.largestTimestamp}; now - compactionLag=${now - minCompactionLagMs}; " +
@@ -677,6 +715,7 @@ private[log] object LogCleanerManager extends Logging {
       s"now=$now => firstDirtyOffset=$firstDirtyOffset firstUncleanableOffset=$firstUncleanableDirtyOffset " +
       s"activeSegment.baseOffset=${log.activeSegment.baseOffset}")
 
+    // 返回封装：OffsetsToClean
     OffsetsToClean(firstDirtyOffset, math.max(firstDirtyOffset, firstUncleanableDirtyOffset), forceUpdateCheckpoint)
   }
 
@@ -685,8 +724,11 @@ private[log] object LogCleanerManager extends Logging {
    * @return the biggest uncleanable offset and the total amount of cleanable bytes
    */
   def calculateCleanableBytes(log: UnifiedLog, firstDirtyOffset: Long, uncleanableOffset: Long): (Long, Long) = {
+    // 获取firstUncleanableOffset，是第一个firstUncleanableSegment的baseOffset
     val firstUncleanableSegment = log.nonActiveLogSegmentsFrom(uncleanableOffset).headOption.getOrElse(log.activeSegment)
     val firstUncleanableOffset = firstUncleanableSegment.baseOffset
+
+    // 获取[firstDirtyOffset - firstUncleanableOffset]之间的所有logsegments的sizeInBytes总和
     val cleanableBytes = log.logSegments(math.min(firstDirtyOffset, firstUncleanableOffset), firstUncleanableOffset).map(_.size.toLong).sum
 
     (firstUncleanableOffset, cleanableBytes)

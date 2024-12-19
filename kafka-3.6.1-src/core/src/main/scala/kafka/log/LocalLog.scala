@@ -846,6 +846,11 @@ object LocalLog extends Logging {
   }
 
   /**
+   * new logsegment: .cleaned -> .swap -> "common logsegment"
+   * old logsegment: "common logsegment" -> .deleted -> LogManager Schedule Async delete
+   * ---
+   * 1. 以“crash-safe”的方式，Swap一个或多个LogSegment至LocalLog中
+   * 2. 旧的segments将被异步删除
    * Swap one or more new segment in place and delete one or more existing segments in a crash-safe
    * manner. The old segments will be asynchronously deleted.
    *
@@ -854,20 +859,36 @@ object LocalLog extends Logging {
    *
    * The sequence of operations is:
    *
+   *  · LogCleaner会创建一个或多个带有.cleaned后缀的”new segments“
+   *  · LogCleaner会调用replaceSegments()方法，来完成 新旧 segments的替换
+   *  · 如果在此过程中 broker down了，”clean-and-swap“操作将会终止掉
+   *  · .cleaned 文件将在 LogManager启动时 loadlog() 恢复时被删除
    * - Cleaner creates one or more new segments with suffix .cleaned and invokes replaceSegments() on
    *   the Log instance. If broker crashes at this point, the clean-and-swap operation is aborted and
    *   the .cleaned files are deleted on recovery in LogLoader.
+   *
+   *  ”new segments“会从”.cleaned“后缀，重命名为”.swap“后缀
+   *  文件按偏移量的降序重命名
+   *  在Log恢复过程中所有偏移量大于最小偏移量 .clean 文件的 .swap 文件都将被删除
    * - New segments are renamed .swap. If the broker crashes before all segments were renamed to .swap, the
    *   clean-and-swap operation is aborted - .cleaned as well as .swap files are deleted on recovery in
    *   in LogLoader. We detect this situation by maintaining a specific order in which files are renamed
    *   from .cleaned to .swap. Basically, files are renamed in descending order of offsets. On recovery,
    *   all .swap files whose offset is greater than the minimum-offset .clean file are deleted.
+   *
+   *  - 如果broker在所有新段重命名为 .swap 后崩溃，则操作完成，交换操作将在LogManager load时恢复
    * - If the broker crashes after all new segments were renamed to .swap, the operation is completed,
    *   the swap operation is resumed on recovery as described in the next step.
+   *
+   *  ”Old segment“被重命名为 .deleted，并被LogManager里的Schedule-delete周期性任务异步删除。
+   *  如果broker崩溃，则在 LogLoader 中lodlog时将删除任何遗留的 .deleted 文件
+   *  然后调用 replaceSegments() 来完成交换，newSegment 从.swap 文件重新创建
    * - Old segment files are renamed to .deleted and asynchronous delete is scheduled. If the broker
    *   crashes, any .deleted files left behind are deleted on recovery in LogLoader.
    *   replaceSegments() is then invoked to complete the swap with newSegment recreated from the
    *   .swap file and oldSegments containing segments which were not renamed before the crash.
+   *
+   *
    * - Swap segment(s) are renamed to replace the existing segments, completing this operation.
    *   If the broker crashes, any .deleted files which may be left behind are deleted
    *   on recovery in LogLoader.
@@ -893,7 +914,10 @@ object LocalLog extends Logging {
                                    logDirFailureChannel: LogDirFailureChannel,
                                    logPrefix: String,
                                    isRecoveredSwapFile: Boolean = false): Iterable[LogSegment] = {
+    // 1. 对newSegments按照baseOffset进行排序
     val sortedNewSegments = newSegments.sortBy(_.baseOffset)
+
+    // 2. 也对oldSegments按照baseOffset进行排序，不过要先判断一下是否维护在LogSegments的跳表结构中，可能执行这个操作前就已经被异步删除调了
     // Some old segments may have been removed from index and scheduled for async deletion after the caller reads segments
     // but before this method is executed. We want to filter out those segments to avoid calling deleteSegmentFiles()
     // multiple times for the same segment.
@@ -901,16 +925,28 @@ object LocalLog extends Logging {
 
     // need to do this in two phases to be crash safe AND do the delete asynchronously
     // if we crash in the middle of this we complete the swap in loadSegments()
-    if (!isRecoveredSwapFile)
+    if (!isRecoveredSwapFile) {
+      // 3. 把sortedNewSegments下所有.cleaned后缀，改为.swap后缀
       sortedNewSegments.reverse.foreach(_.changeFileSuffixes(CleanedFileSuffix, SwapFileSuffix))
+    }
+
+    // 4. "Add the given segment, or replace an existing entry"
+    // 将newSegments纳入LogSegments的跳表结构中管理
     sortedNewSegments.reverse.foreach(existingSegments.add)
+
+    // 5. 获取sortedNewSegments中每个Segment的BaseOffset
     val newSegmentBaseOffsets = sortedNewSegments.map(_.baseOffset).toSet
 
+    // 定义遍历处理OldSegments的方法
     // delete the old files
     val deletedNotReplaced = sortedOldSegments.map { seg =>
       // remove the index entry
+
+      // 8.1 将OldSegment移除LogSegments的跳表结构
       if (seg.baseOffset != sortedNewSegments.head.baseOffset)
         existingSegments.remove(seg.baseOffset)
+
+      // 8.2 调用LocalLog的deleteSegmentFiles来实际删除OldSegment
       deleteSegmentFiles(
         List(seg),
         asyncDelete = true,
@@ -920,12 +956,18 @@ object LocalLog extends Logging {
         scheduler,
         logDirFailureChannel,
         logPrefix)
+
       if (newSegmentBaseOffsets.contains(seg.baseOffset)) Option.empty else Some(seg)
     }.filter(item => item.isDefined).map(item => item.get)
 
     // okay we are safe now, remove the swap suffix
+    // 6. 将newLogSegment的”.swap“后缀去掉
     sortedNewSegments.foreach(_.changeFileSuffixes(SwapFileSuffix, ""))
+
+    // 7. 将更新 flush 至磁盘
     Utils.flushDir(dir.toPath)
+
+    // 8. 遍历处理oldSegment
     deletedNotReplaced
   }
 
