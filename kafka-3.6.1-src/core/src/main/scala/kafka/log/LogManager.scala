@@ -292,6 +292,10 @@ class LogManager(logDirs: Seq[File],
   }
 
   /**
+   * 加入logsToBeDeleted队列的方法
+   * 加入logsToBeDeleted队列场景1：LogManager启动时loadLog时发现存在.delete后缀的TopicPartition-x
+   * 加入logsToBeDeleted队列场景2：Alter Replica时，如果”future“已经就绪，那么就可以将”current“删除了
+   * 加入logsToBeDeleted队列场景3：接收到topic-delete请求时，删除TopicPartition-x
    * @param log: 名字带-delete后缀的UnifiedLog
    */
   private def addLogToBeDeleted(log: UnifiedLog): Unit = {
@@ -351,6 +355,7 @@ class LogManager(logDirs: Seq[File],
     // part2：--后缀处理
     // -delete 待删除TopicPartition-x目录处理
     if (logDir.getName.endsWith(UnifiedLog.DeleteDirSuffix)) {
+      // 加入logsToBeDeleted队列场景1：LogManager启动时loadLog时发现存在.delete后缀的TopicPartition-x
       addLogToBeDeleted(log)
     } else if (logDir.getName.endsWith(UnifiedLog.StrayDirSuffix)) {
       // --stray 流浪的partition？
@@ -1169,6 +1174,9 @@ class LogManager(logDirs: Seq[File],
       }
       // nextDelayMs <= 0 即还没有到达执行删除的时间
       while ({nextDelayMs = nextDeleteDelayMs; nextDelayMs <= 0}) {
+        // 删除场景：删除是UnifiedLog级别的，logsToBeDeleted队列中不为空场景
+        // 会根据其定义的“延迟”删除时间，来不断删除
+        // 那么问题来了？ -> 什么场景下log会被加入logsToBeDeleted呢？
         // 取出待删除的UnifiedLog
         val (removedLog, _) = logsToBeDeleted.take()
         if (removedLog != null) {
@@ -1232,6 +1240,7 @@ class LogManager(logDirs: Seq[File],
       }
 
       try {
+        // 加入logsToBeDeleted队列场景2：Alter Replica时，如果”future“已经就绪，那么就可以给本地的”current“带上-delete后缀了
         sourceLog.renameDir(UnifiedLog.logDeleteDirName(topicPartition), true)
         // Now that replica in source log directory has been successfully renamed for deletion.
         // Close the log, update checkpoint files, and enqueue this log to be deleted.
@@ -1242,6 +1251,7 @@ class LogManager(logDirs: Seq[File],
         checkpointLogStartOffsetsInDir(logDir, logsToCheckpoint)
         sourceLog.removeLogMetrics()
         destLog.newMetrics()
+        // 加入logsToBeDeleted队列
         addLogToBeDeleted(sourceLog)
       } catch {
         case e: KafkaStorageException =>
@@ -1295,7 +1305,10 @@ class LogManager(logDirs: Seq[File],
           removedLog.renameDir(UnifiedLog.logStrayDirName(topicPartition), false)
           warn(s"Log for partition ${removedLog.topicPartition} is marked as stray and renamed to ${removedLog.dir.getAbsolutePath}")
         } else {
+          // 加入logsToBeDeleted队列场景3：接收到topic-delete请求时，删除TopicPartition-x
+          // 先改名给Topic-Partition-x带上.delete
           removedLog.renameDir(UnifiedLog.logDeleteDirName(topicPartition), false)
+          // 将该TopicPartition加入logsToBeDeleted队列
           // * add removeLog to logsToBeDeleted, will be deleted asynchronously later
           addLogToBeDeleted(removedLog)
           info(s"Log for partition ${removedLog.topicPartition} is renamed to ${removedLog.dir.getAbsolutePath} and is scheduled for deletion")

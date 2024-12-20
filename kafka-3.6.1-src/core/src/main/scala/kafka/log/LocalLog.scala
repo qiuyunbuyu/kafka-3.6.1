@@ -265,6 +265,7 @@ class LocalLog(@volatile private var _dir: File,
   private[log] def deleteAllSegments(): Iterable[LogSegment] = {
     maybeHandleIOException(s"Error while deleting all segments for $topicPartition in dir ${dir.getParent}") {
       val deletableSegments = List[LogSegment]() ++ segments.values
+      // 注意这里是不采用异步删除的 | asyncDelete = false
       removeAndDeleteSegments(segments.values, asyncDelete = false, LogDeletion(this))
       isMemoryMappedBufferClosed = true
       deletableSegments
@@ -946,6 +947,10 @@ object LocalLog extends Logging {
       if (seg.baseOffset != sortedNewSegments.head.baseOffset)
         existingSegments.remove(seg.baseOffset)
 
+      // 删除场景：
+      // LogCleaner流程中，new的部分“加入了”，old的部分需要执行删除
+      // 使用的是scheduler.scheduleOnce-"delete-file"异步删除
+      // 使用的Files.deleteIfExists(....)删除
       // 8.2 调用LocalLog的deleteSegmentFiles来实际删除OldSegment
       deleteSegmentFiles(
         List(seg),
@@ -1010,6 +1015,7 @@ object LocalLog extends Logging {
       val parentDir = dir.getParent
       maybeHandleIOException(logDirFailureChannel, parentDir, s"Error while deleting segments for $topicPartition in dir $parentDir") {
         segmentsToDelete.foreach { segment =>
+          // 调用jdk里面的Files.deleteIfExists(file.toPath());
           segment.deleteIfExists()
         }
       }

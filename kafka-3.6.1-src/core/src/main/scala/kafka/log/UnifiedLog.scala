@@ -1586,7 +1586,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
   // 基于策略[3]的删除
   private def deleteLogStartOffsetBreachedSegments(): Int = {
     def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]): Boolean = {
-      // 探测的logsegment的 下一个 logsegment 的 baseOffset < 整个UnifiedLog的logStartOffset
+      // 探测的logsegment的 下一个 logsegment 的 baseOffset(即自己的logsegment的“end offset”) < 整个UnifiedLog的logStartOffset
       // 就代表探测的这个logsegment满足了 [3] Whether or not deletion is enabled, delete any local log segments that are [3. before the log start offset]
       nextSegmentOpt.exists(_.baseOffset <= (if (remoteLogEnabled()) localLogStartOffset() else logStartOffset))
     }
@@ -1741,12 +1741,13 @@ class UnifiedLog(@volatile var logStartOffset: Long,
         localLog.checkIfMemoryMappedBufferClosed()
         // 关闭producerExpireCheck schedule任务
         producerExpireCheck.cancel(true)
-        // leaderEpochCache
+        // 清除：leaderEpochCache
         leaderEpochCache.foreach(_.clear())
-        // logsegment清除
+        // 清除：所有logsegment
         val deletedSegments = localLog.deleteAllSegments()
-        // producer snapshot
+        // 清除：producer snapshot
         deleteProducerSnapshots(deletedSegments, asyncDelete = false)
+        // 删除Topic-Partition文件夹
         localLog.deleteEmptyDir()
       }
     }
