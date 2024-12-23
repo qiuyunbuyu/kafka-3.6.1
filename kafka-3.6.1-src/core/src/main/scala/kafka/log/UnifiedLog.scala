@@ -917,6 +917,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
               s"to partition $topicPartition, which exceeds the maximum configured segment size of ${config.segmentSize}.")
           }
 
+          // "Roll logsegment 场景2"
           // maybe roll the log if this segment is full
           // 创建一个新的segment
           val segment = maybeRoll(validRecords.sizeInBytes, appendInfo)
@@ -1506,10 +1507,15 @@ class UnifiedLog(@volatile var logStartOffset: Long,
   private def deleteSegments(deletable: Iterable[LogSegment], reason: SegmentDeletionReason): Int = {
     maybeHandleIOException(s"Error while deleting segments for $topicPartition in dir ${dir.getParent}") {
       val numToDelete = deletable.size
+      //  "Roll logsegment 场景1": 所有调用到deleteSegments的地方，都会判断是否需要Roll出一段 new logsegment
       if (numToDelete > 0) {
         // we must always have at least one segment, so if we are going to delete all the segments, create a new one first
         var segmentsToDelete = deletable
+
+        // localLog的中logsegments的数据 与 要删除的logsegments数量相等，意味着全部得删除了
         if (localLog.segments.numberOfSegments == numToDelete) {
+
+          // localLog至少得有一个logsegment
           val newSegment = roll()
           if (deletable.last.baseOffset == newSegment.baseOffset) {
             warn(s"Empty active segment at ${deletable.last.baseOffset} was deleted and recreated due to $reason")
@@ -1636,6 +1642,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     val maxTimestampInMessages = appendInfo.maxTimestamp
     val maxOffsetInMessages = appendInfo.lastOffset
 
+    // 判断是否Roll出一个新 LogSegment
     if (segment.shouldRoll(new RollParams(config.maxSegmentMs, config.segmentSize, appendInfo.maxTimestamp, appendInfo.lastOffset, messagesSize, now))) {
       debug(s"Rolling new log segment (log_size = ${segment.size}/${config.segmentSize}}, " +
         s"offset_index_size = ${segment.offsetIndex.entries}/${segment.offsetIndex.maxEntries}, " +
@@ -1654,6 +1661,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
         Note that this is only required for pre-V2 message formats because these do not store the first message offset
         in the header.
       */
+      // 入参：待append 的 Records中 的firstOffset
       val rollOffset = appendInfo
         .firstOffset
         .map[Long](_.messageOffset)
@@ -1666,14 +1674,17 @@ class UnifiedLog(@volatile var logStartOffset: Long,
   }
 
   /**
-   * Roll the local log over to a new active segment starting with the expectedNextOffset (when provided),
+   * Roll the local log over to a new active segment “starting with the expectedNextOffset (when provided)”,
    * or localLog.logEndOffset otherwise. This will trim the index to the exact size of the number of entries
    * it currently contains.
    *
    * @return The newly rolled segment
    */
   def roll(expectedNextOffset: Option[Long] = None): LogSegment = lock synchronized {
+    // 1. roll出一个新LogSegment
     val newSegment = localLog.roll(expectedNextOffset)
+
+    // 2.
     // Take a snapshot of the producer state to facilitate recovery. It is useful to have the snapshot
     // offset align with the new segment offset since this ensures we can recover the segment by beginning
     // with the corresponding snapshot file and scanning the segment data. Because the segment base offset
@@ -1681,8 +1692,11 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     // we manually override the state offset here prior to taking the snapshot.
     producerStateManager.updateMapEndOffset(newSegment.baseOffset)
     producerStateManager.takeSnapshot()
+
+    // 3. 确保highWatermark < LEO
     updateHighWatermarkWithLogEndOffset()
-    // Schedule an asynchronous flush of the old segment
+
+    // 4. Schedule an asynchronous flush of the old segment
     scheduler.scheduleOnce("flush-log", () => flushUptoOffsetExclusive(newSegment.baseOffset))
     newSegment
   }

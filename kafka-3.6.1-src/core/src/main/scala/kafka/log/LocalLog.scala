@@ -355,20 +355,28 @@ class LocalLog(@volatile private var _dir: File,
                                           segmentToDelete: LogSegment,
                                           asyncDelete: Boolean,
                                           reason: SegmentDeletionReason): LogSegment = {
+    // 打上.delete标志
     if (newOffset == segmentToDelete.baseOffset)
       segmentToDelete.changeFileSuffixes("", LogFileUtils.DELETED_FILE_SUFFIX)
 
+    // 以newOffset来创建一个新的logsegemnt
     val newSegment = LogSegment.open(dir,
       baseOffset = newOffset,
       config,
       time = time,
       initFileSize = config.initFileSize,
       preallocate = config.preallocate)
+
+    // 将new logsegemnt纳入跳表结构管理
     segments.add(newSegment)
 
     reason.logReason(List(segmentToDelete))
+
+    // 将old logsegemnt移除跳表结构管理
     if (newOffset != segmentToDelete.baseOffset)
       segments.remove(segmentToDelete.baseOffset)
+
+    // 删除 “old active segment”
     LocalLog.deleteSegmentFiles(List(segmentToDelete), asyncDelete, dir, topicPartition, config, scheduler, logDirFailureChannel, logIdent)
 
     newSegment
@@ -514,44 +522,57 @@ class LocalLog(@volatile private var _dir: File,
     maybeHandleIOException(s"Error while rolling log segment for $topicPartition in dir ${dir.getParent}") {
       val start = time.hiResClockMs()
       checkIfMemoryMappedBufferClosed()
+      // 确定 “newly rolled segment” 的 baseoffset
       val newOffset = math.max(expectedNextOffset.getOrElse(0L), logEndOffset)
+
+      // *这里并没有创建出以newOffset为baseoffset的log文件，只是拿到了File对象，后面会用来校验磁盘是是否已存在此文件，如果存在，会删除
       val logFile = LogFileUtils.logFile(dir, newOffset, "")
       val activeSegment = segments.activeSegment
-      if (segments.contains(newOffset)) {
+
+      // 3个分支的 if else，目的是啥?
+      if (segments.contains(newOffset)) { // 分支1：跳表结构中，有以newOffset为key的LogSegment
         // segment with the same base offset already exists and loaded
-        if (activeSegment.baseOffset == newOffset && activeSegment.size == 0) {
+        if (activeSegment.baseOffset == newOffset && activeSegment.size == 0) { // 在特殊场景下替换掉activeSegment
           // We have seen this happen (see KAFKA-6388) after shouldRoll() returns true for an
           // active segment of size zero because of one of the indexes is "full" (due to _maxEntries == 0).
           warn(s"Trying to roll a new log segment with start offset $newOffset " +
             s"=max(provided offset = $expectedNextOffset, LEO = $logEndOffset) while it already " +
             s"exists and is active with size 0. Size of time index: ${activeSegment.timeIndex.entries}," +
             s" size of offset index: ${activeSegment.offsetIndex.entries}.")
+          // 异步删除“old activeSegment”
+          // 以newOffset创建一个新的LogSegment
           val newSegment = createAndDeleteSegment(newOffset, activeSegment, asyncDelete = true, LogRoll(this))
           updateLogEndOffset(nextOffsetMetadata.messageOffset)
           info(s"Rolled new log segment at offset $newOffset in ${time.hiResClockMs() - start} ms.")
           return newSegment
-        } else {
+        } else { // 异常情况
           throw new KafkaException(s"Trying to roll a new log segment for topic partition $topicPartition with start offset $newOffset" +
             s" =max(provided offset = $expectedNextOffset, LEO = $logEndOffset) while it already exists. Existing " +
             s"segment is ${segments.get(newOffset)}.")
         }
-      } else if (!segments.isEmpty && newOffset < activeSegment.baseOffset) {
+      } else if (!segments.isEmpty && newOffset < activeSegment.baseOffset) {  // 异常情况
         throw new KafkaException(
           s"Trying to roll a new log segment for topic partition $topicPartition with " +
             s"start offset $newOffset =max(provided offset = $expectedNextOffset, LEO = $logEndOffset) lower than start offset of the active segment $activeSegment")
       } else {
+        // 常规情况： roll出的 “new logsegmnet” 的 baseoffset > activeSegment.baseOffset
+
+        // 拿到索引文件的File对象
         val offsetIdxFile = LogFileUtils.offsetIndexFile(dir, newOffset)
         val timeIdxFile = LogFileUtils.timeIndexFile(dir, newOffset)
         val txnIdxFile = LogFileUtils.transactionIndexFile(dir, newOffset)
 
+        // 用log，index的File对象来校验磁盘上是否已有以newOffset为名的存在的文件，存在则删除
         for (file <- List(logFile, offsetIdxFile, timeIdxFile, txnIdxFile) if file.exists) {
           warn(s"Newly rolled segment file ${file.getAbsolutePath} already exists; deleting it first")
           Files.delete(file.toPath)
         }
 
+        // “Trim index and log according to ValidSize”，注意这里操作的是“old active segment”，即“roll 出的 new logsegment中的前一个”
         segments.lastSegment.foreach(_.onBecomeInactiveSegment())
       }
 
+      // 创建newSegment，并纳入跳表结构中管理
       val newSegment = LogSegment.open(dir,
         baseOffset = newOffset,
         config,
@@ -560,6 +581,7 @@ class LocalLog(@volatile private var _dir: File,
         preallocate = config.preallocate)
       segments.add(newSegment)
 
+      //  更新LEO
       // We need to update the segment base offset and append position data of the metadata when log rolls.
       // The next offset should not change.
       updateLogEndOffset(nextOffsetMetadata.messageOffset)
