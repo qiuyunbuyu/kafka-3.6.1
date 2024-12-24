@@ -496,6 +496,11 @@ class LogLoader(
           // we had an invalid message, delete all remaining log
           warn(s"Corruption found in segment ${segment.baseOffset}," +
             s" truncating to offset ${segment.readNextOffset}")
+          // 删除场景：
+          // unclean down场景下recoverSegment(segment) 时 truncatedBytes > 0
+          // 证明[segment-x]出现下“异常”消息，那么处理流程如下
+          // 1. [segment-x] 执行 truncate
+          // 2. [segment-x +] 全部删除掉
           removeAndDeleteSegmentsAsync(unflushedIter.toList)
           truncated = true
           // segment is truncated, so set remaining segments to 0
