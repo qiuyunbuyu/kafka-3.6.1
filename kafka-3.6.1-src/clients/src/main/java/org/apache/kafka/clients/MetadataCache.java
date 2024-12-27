@@ -164,6 +164,8 @@ public class MetadataCache {
                 newTopicIds.remove(partition.topic());
         }
         for (Map.Entry<TopicPartition, PartitionMetadata> entry : metadataByPartition.entrySet()) {
+            // **先测试原先保存的metadataByPartition中的topic是否还需要保存，只有还需要保存的newMetadataByPartition才会继续保存
+            // ”有新增，但也有过期“
             if (shouldRetainTopic.test(entry.getKey().topic())) {
                 newMetadataByPartition.putIfAbsent(entry.getKey(), entry.getValue());
             }

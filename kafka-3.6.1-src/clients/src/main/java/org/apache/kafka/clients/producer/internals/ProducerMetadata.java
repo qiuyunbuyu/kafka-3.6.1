@@ -36,8 +36,9 @@ public class ProducerMetadata extends Metadata {
     // If a topic hasn't been accessed for this many milliseconds, it is removed from the cache.
     private final long metadataIdleMs;
 
-    /* Topics with expiry time [topic, nowMs + metadataIdleMs] */
+    /* Topics(already get metadata) with expiry time [topic, nowMs + metadataIdleMs] */
     private final Map<String, Long> topics = new HashMap<>();
+    /* Topics(want to get metadata) */
     private final Set<String> newTopics = new HashSet<>();
     private final Logger log;
     private final Time time;
@@ -48,6 +49,7 @@ public class ProducerMetadata extends Metadata {
                             LogContext logContext,
                             ClusterResourceListeners clusterResourceListeners,
                             Time time) {
+        // call Metadata init
         super(refreshBackoffMs, metadataExpireMs, logContext, clusterResourceListeners);
         this.metadataIdleMs = metadataIdleMs;
         this.log = logContext.logger(ProducerMetadata.class);
@@ -69,6 +71,7 @@ public class ProducerMetadata extends Metadata {
         // A null return indicate that the map previously associated null with key, means new topic add
         if (topics.put(topic, nowMs + metadataIdleMs) == null) {
             newTopics.add(topic);
+            // mark need update
             requestUpdateForNewTopics();
         }
     }
@@ -121,6 +124,7 @@ public class ProducerMetadata extends Metadata {
         // 3. topic metadata expire, do remove and return false
         } else if (expireMs <= nowMs) {
             log.debug("Removing unused topic {} from the metadata list, expiryMs {} now {}", topic, expireMs, nowMs);
+            // 会出现移除了这个topic，但后续还需要的场景吗？如何处理？ => doSend时都会把需要的record的topic重新放进去
             topics.remove(topic);
             return false;
         } else {
@@ -139,6 +143,8 @@ public class ProducerMetadata extends Metadata {
         long deadlineMs = currentTimeMs + timeoutMs < 0 ? Long.MAX_VALUE : currentTimeMs + timeoutMs;
         // updateVersion() will return [now updateVersion]
         // next method update() will "updateVersion += 1", so updateVersion() > lastVersion means "update metadata successfully"
+        // main线程和sender线程通过wait(), notify()交互合作（通过共同持有producermetadata）
+        // main会阻塞直至：updateVersion() > lastVersion, updateVersion()中所返回的updateVersion会在update()中被更新
         time.waitObject(this, () -> {
             // Throw fatal exceptions, if there are any. Recoverable topic errors will be handled by the caller.
             maybeThrowFatalException();
@@ -171,7 +177,7 @@ public class ProducerMetadata extends Metadata {
             }
         }
         // 3. notify awaitUpdate
-        notifyAll();
+        notifyAll(); // 唤醒了谁？，哪个线程在哪被阻塞了 =》 唤醒main， main在awaitUpdate中被阻塞了
     }
 
     @Override

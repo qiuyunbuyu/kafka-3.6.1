@@ -133,6 +133,7 @@ public class Metadata implements Closeable {
      * @return remaining time in ms till updating the cluster info
      */
     public synchronized long timeToNextUpdate(long nowMs) {
+        // 5分钟既是topic刷新的时间，也是topic驱除的时间，所以这就保证了虽然全刷，但是我也刷的是未过期，需要的，避免在”全刷场景下更新大量不需要的topic元数据“
         long timeToExpire = updateRequested() ? 0 : Math.max(this.lastSuccessfulRefreshMs + this.metadataExpireMs - nowMs, 0);
         return Math.max(timeToExpire, timeToAllowUpdate(nowMs));
     }
@@ -242,6 +243,7 @@ public class Metadata implements Closeable {
         // need full update when Producer init
         this.needFullUpdate = true;
         this.updateVersion += 1;
+        // 仅仅返回了包含cluster-nodes信息的MetadataCache
         this.cache = MetadataCache.bootstrap(addresses);
     }
 
@@ -269,14 +271,23 @@ public class Metadata implements Closeable {
         if (isClosed())
             throw new IllegalStateException("Update requested after metadata close");
         // Determine whether it is a partial update
+        // newTopics中每新增1个，就会让requestVersion + 1， requestVersion < this.requestVersion表示又有新的topic需要metadata了
         this.needPartialUpdate = requestVersion < this.requestVersion;
         // use nowMs to update lastRefreshMs
         this.lastRefreshMs = nowMs;
         // add updateVersion
-        this.updateVersion += 1;
+        this.updateVersion += 1; // awaitUpdate中一直obj.wait至更新完成， updateVersion += 1会达成其condition.get()的条件
         // when not partial update, means already full update, so update needFullUpdate to false means no need to full update now
         if (!isPartialUpdate) {
             this.needFullUpdate = false;
+            // 为啥这里设置成false？
+            // 参考下面：NetworkClient.maybeUpdate(long now)
+            // 1. “立即更新”：needFullUpdate或者needPartialUpdate只要有一个为true，都会“立即”触发更新元数据的时间设置成
+            // 2. “周期性更新”：needFullUpdate或者needPartialUpdate都为false情况下，通过设置lastSuccessfulRefreshMs+ metadataExpireMs进行周期性更新
+            //            public synchronized long timeToNextUpdate(long nowMs) {
+            //                long timeToExpire = updateRequested() ? 0 : Math.max(this.lastSuccessfulRefreshMs + this.metadataExpireMs - nowMs, 0);
+            //                return Math.max(timeToExpire, timeToAllowUpdate(nowMs));
+            //            }
             this.lastSuccessfulRefreshMs = nowMs;
         }
         // get previous ClusterId
@@ -567,7 +578,7 @@ public class Metadata implements Closeable {
         // not set needFullUpdate=true and "The update time for all topics has not been reached"
         if (!this.needFullUpdate && this.lastSuccessfulRefreshMs + this.metadataExpireMs > nowMs) {
             request = newMetadataRequestBuilderForNewTopics();
-            isPartialUpdate = true;
+            isPartialUpdate = true; // needPartialUpdate并且也没有到达fullupdate的时间才会认为确实PartialUpdate，避免已经执行fullupdate情况下再次执行PartialUpdate？
         }
         if (request == null) {
             request = newMetadataRequestBuilder();

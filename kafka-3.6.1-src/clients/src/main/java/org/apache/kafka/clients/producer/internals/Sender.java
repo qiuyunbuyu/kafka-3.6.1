@@ -361,9 +361,9 @@ public class Sender implements Runnable {
         // 3. 网络发送
         // actual read/write
         // The process of "poll" is as follows：
-        // first poll: try to initialize the connection to node
-        // second poll: send request, like metadata
-        // "wait" poll: block for a while to get response
+        // first poll: try to initialize the connection to node [建立连接]
+        // second poll: send request, like metadata [发送request]
+        // "wait" poll: block for a while to get response [接收处理response]
         client.poll(pollTimeout, currentTimeMs);
     }
 
