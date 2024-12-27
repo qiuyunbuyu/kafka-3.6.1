@@ -20,7 +20,8 @@ package org.apache.kafka.storage.internals.log;
  * A class used to hold params required to decide to rotate a log segment or not.
  */
 public class RollParams {
-
+    // 参数含义，可以看UnifiedLog中maybeRoll中的构造
+    // new RollParams(config.maxSegmentMs, config.segmentSize, appendInfo.maxTimestamp, appendInfo.lastOffset, messagesSize, now)
     public final long maxSegmentMs;
     public final int maxSegmentBytes;
     public final long maxTimestampInMessages;

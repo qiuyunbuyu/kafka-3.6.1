@@ -44,6 +44,14 @@ import scala.jdk.CollectionConverters._
 case class SplitSegmentResult(deletedSegments: Iterable[LogSegment], newSegments: Iterable[LogSegment])
 
 /**
+ * 提前想一下，LocalLog是用于管理本地LogSegments的，最基本的能力需要有哪些？
+ * 操作限定于Local logsegment
+ * C：创建一个新的LogSegment
+ * R：从LogSegment中读取数据
+ * U：”更新“-LogSegment
+ *   1. 往某个LogSegment中写数据
+ * D：删除某个LogSegment
+ *
  * An append-only log for storing messages locally. The log is a sequence of LogSegments, each with a base offset.
  * New log segments are created according to a configurable policy that controls the size in bytes or time interval
  * for a given segment.
@@ -76,12 +84,16 @@ class LocalLog(@volatile private var _dir: File,
 
   // The memory mapped buffer for index files of this log will be closed with either delete() or closeHandlers()
   // After memory mapped buffer is closed, no disk IO operation should be performed for this log.
+  // index的内存映射缓冲区是否关闭了?
+  // deleteAllSegments()方法中，会将isMemoryMappedBufferClosed = true
+  // 如果memory mapped buffer是关闭的，就不能操作此log了
   @volatile private[log] var isMemoryMappedBufferClosed = false
 
   // Cache value of parent directory to avoid allocations in hot paths like ReplicaManager.checkpointHighWatermarks
   @volatile private var _parentDir: String = dir.getParent
 
   // Last time the log was flushed
+  // 上一次flush的时间
   private val lastFlushedTime = new AtomicLong(time.milliseconds)
 
   private[log] def dir: File = _dir
@@ -150,6 +162,7 @@ class LocalLog(@volatile private var _dir: File,
    */
   private[log] def markFlushed(offset: Long): Unit = {
     checkIfMemoryMappedBufferClosed()
+    // 更新recoveryPoint
     if (offset > recoveryPoint) {
       updateRecoveryPoint(offset)
       lastFlushedTime.set(time.milliseconds)
@@ -168,9 +181,12 @@ class LocalLog(@volatile private var _dir: File,
    * @param offset The offset to flush up to (non-inclusive)
    */
   private[log] def flush(offset: Long): Unit = {
+    // 上一次flush的时候记录的recoveryPoint
     val currentRecoveryPoint = recoveryPoint
     if (currentRecoveryPoint <= offset) {
+      // 找到处于(currentRecoveryPoint, offset)之间的logsegment
       val segmentsToFlush = segments.values(currentRecoveryPoint, offset)
+      // 调用logsegment的flush
       segmentsToFlush.foreach(_.flush())
       // If there are any new segments, we need to flush the parent directory for crash consistency.
       if (segmentsToFlush.exists(_.baseOffset >= currentRecoveryPoint)) {
@@ -202,7 +218,9 @@ class LocalLog(@volatile private var _dir: File,
    * @param endOffset the new end offset of the log
    */
   private[log] def updateLogEndOffset(endOffset: Long): Unit = {
+    // 1. 更新 LEO
     nextOffsetMetadata = new LogOffsetMetadata(endOffset, segments.activeSegment.baseOffset, segments.activeSegment.size)
+    // 2. 更新 recoveryPoint
     if (recoveryPoint > endOffset) {
       updateRecoveryPoint(endOffset)
     }
@@ -249,6 +267,7 @@ class LocalLog(@volatile private var _dir: File,
   private[log] def deleteAllSegments(): Iterable[LogSegment] = {
     maybeHandleIOException(s"Error while deleting all segments for $topicPartition in dir ${dir.getParent}") {
       val deletableSegments = List[LogSegment]() ++ segments.values
+      // 注意这里是不采用异步删除的 | asyncDelete = false
       removeAndDeleteSegments(segments.values, asyncDelete = false, LogDeletion(this))
       isMemoryMappedBufferClosed = true
       deletableSegments
@@ -270,6 +289,7 @@ class LocalLog(@volatile private var _dir: File,
       val deletable = ArrayBuffer.empty[LogSegment]
       val segmentsIterator = segments.values.iterator
       var segmentOpt = nextOption(segmentsIterator)
+      // 遍历LogSegment
       while (segmentOpt.isDefined) {
         val segment = segmentOpt.get
         val nextSegmentOpt = nextOption(segmentsIterator)
@@ -337,20 +357,28 @@ class LocalLog(@volatile private var _dir: File,
                                           segmentToDelete: LogSegment,
                                           asyncDelete: Boolean,
                                           reason: SegmentDeletionReason): LogSegment = {
+    // 打上.delete标志
     if (newOffset == segmentToDelete.baseOffset)
       segmentToDelete.changeFileSuffixes("", LogFileUtils.DELETED_FILE_SUFFIX)
 
+    // 以newOffset来创建一个新的logsegemnt
     val newSegment = LogSegment.open(dir,
       baseOffset = newOffset,
       config,
       time = time,
       initFileSize = config.initFileSize,
       preallocate = config.preallocate)
+
+    // 将new logsegemnt纳入跳表结构管理
     segments.add(newSegment)
 
     reason.logReason(List(segmentToDelete))
+
+    // 将old logsegemnt移除跳表结构管理
     if (newOffset != segmentToDelete.baseOffset)
       segments.remove(segmentToDelete.baseOffset)
+
+    // 删除 “old active segment”
     LocalLog.deleteSegmentFiles(List(segmentToDelete), asyncDelete, dir, topicPartition, config, scheduler, logDirFailureChannel, logIdent)
 
     newSegment
@@ -496,44 +524,57 @@ class LocalLog(@volatile private var _dir: File,
     maybeHandleIOException(s"Error while rolling log segment for $topicPartition in dir ${dir.getParent}") {
       val start = time.hiResClockMs()
       checkIfMemoryMappedBufferClosed()
+      // 确定 “newly rolled segment” 的 baseoffset
       val newOffset = math.max(expectedNextOffset.getOrElse(0L), logEndOffset)
+
+      // *这里并没有创建出以newOffset为baseoffset的log文件，只是拿到了File对象，后面会用来校验磁盘是是否已存在此文件，如果存在，会删除
       val logFile = LogFileUtils.logFile(dir, newOffset, "")
       val activeSegment = segments.activeSegment
-      if (segments.contains(newOffset)) {
+
+      // 3个分支的 if else，目的是啥?
+      if (segments.contains(newOffset)) { // 分支1：跳表结构中，有以newOffset为key的LogSegment
         // segment with the same base offset already exists and loaded
-        if (activeSegment.baseOffset == newOffset && activeSegment.size == 0) {
+        if (activeSegment.baseOffset == newOffset && activeSegment.size == 0) { // 在特殊场景下替换掉activeSegment
           // We have seen this happen (see KAFKA-6388) after shouldRoll() returns true for an
           // active segment of size zero because of one of the indexes is "full" (due to _maxEntries == 0).
           warn(s"Trying to roll a new log segment with start offset $newOffset " +
             s"=max(provided offset = $expectedNextOffset, LEO = $logEndOffset) while it already " +
             s"exists and is active with size 0. Size of time index: ${activeSegment.timeIndex.entries}," +
             s" size of offset index: ${activeSegment.offsetIndex.entries}.")
+          // 异步删除“old activeSegment”
+          // 以newOffset创建一个新的LogSegment
           val newSegment = createAndDeleteSegment(newOffset, activeSegment, asyncDelete = true, LogRoll(this))
           updateLogEndOffset(nextOffsetMetadata.messageOffset)
           info(s"Rolled new log segment at offset $newOffset in ${time.hiResClockMs() - start} ms.")
           return newSegment
-        } else {
+        } else { // 异常情况
           throw new KafkaException(s"Trying to roll a new log segment for topic partition $topicPartition with start offset $newOffset" +
             s" =max(provided offset = $expectedNextOffset, LEO = $logEndOffset) while it already exists. Existing " +
             s"segment is ${segments.get(newOffset)}.")
         }
-      } else if (!segments.isEmpty && newOffset < activeSegment.baseOffset) {
+      } else if (!segments.isEmpty && newOffset < activeSegment.baseOffset) {  // 异常情况
         throw new KafkaException(
           s"Trying to roll a new log segment for topic partition $topicPartition with " +
             s"start offset $newOffset =max(provided offset = $expectedNextOffset, LEO = $logEndOffset) lower than start offset of the active segment $activeSegment")
       } else {
+        // 常规情况： roll出的 “new logsegmnet” 的 baseoffset > activeSegment.baseOffset
+
+        // 拿到索引文件的File对象
         val offsetIdxFile = LogFileUtils.offsetIndexFile(dir, newOffset)
         val timeIdxFile = LogFileUtils.timeIndexFile(dir, newOffset)
         val txnIdxFile = LogFileUtils.transactionIndexFile(dir, newOffset)
 
+        // 用log，index的File对象来校验磁盘上是否已有以newOffset为名的存在的文件，存在则删除
         for (file <- List(logFile, offsetIdxFile, timeIdxFile, txnIdxFile) if file.exists) {
           warn(s"Newly rolled segment file ${file.getAbsolutePath} already exists; deleting it first")
           Files.delete(file.toPath)
         }
 
+        // “Trim index and log according to ValidSize”，注意这里操作的是“old active segment”，即“roll 出的 new logsegment中的前一个”
         segments.lastSegment.foreach(_.onBecomeInactiveSegment())
       }
 
+      // 创建newSegment，并纳入跳表结构中管理
       val newSegment = LogSegment.open(dir,
         baseOffset = newOffset,
         config,
@@ -542,6 +583,7 @@ class LocalLog(@volatile private var _dir: File,
         preallocate = config.preallocate)
       segments.add(newSegment)
 
+      //  更新LEO
       // We need to update the segment base offset and append position data of the metadata when log rolls.
       // The next offset should not change.
       updateLogEndOffset(nextOffsetMetadata.messageOffset)
@@ -584,10 +626,16 @@ class LocalLog(@volatile private var _dir: File,
    * @return the list of segments that were scheduled for deletion
    */
   private[log] def truncateTo(targetOffset: Long): Iterable[LogSegment] = {
+    // [ 0 ---- ] | [1000 ---- targetOffset(1050)] | [2000 ----- ] | [3000 ----- ] | [4000 ----- ]......
+    // 找出所有大于”target truncateTo Offset“的 LogSegments | [2000 ----- ] | [3000 ----- ] | [4000 ----- ]......
     val deletableSegments = List[LogSegment]() ++ segments.filter(segment => segment.baseOffset > targetOffset)
+    // 删除上述LogSegments |  [2000 ----- ] | [3000 ----- ] | [4000 ----- ]......
     removeAndDeleteSegments(deletableSegments, asyncDelete = true, LogTruncation(this))
+    // baseOffset低于targetOffset的第一个LogSegment，执行truncate | [1000 ---- targetOffset(1050)]
     segments.activeSegment.truncateTo(targetOffset)
+    // 更新 LEO/ recoveryPoint
     updateLogEndOffset(targetOffset)
+    // 返回所有被删除掉的 LogSegments
     deletableSegments
   }
 }
@@ -829,6 +877,11 @@ object LocalLog extends Logging {
   }
 
   /**
+   * new logsegment: .cleaned -> .swap -> "common logsegment"
+   * old logsegment: "common logsegment" -> .deleted -> LogManager Schedule Async delete
+   * ---
+   * 1. 以“crash-safe”的方式，Swap一个或多个LogSegment至LocalLog中
+   * 2. 旧的segments将被异步删除
    * Swap one or more new segment in place and delete one or more existing segments in a crash-safe
    * manner. The old segments will be asynchronously deleted.
    *
@@ -837,20 +890,36 @@ object LocalLog extends Logging {
    *
    * The sequence of operations is:
    *
+   *  · LogCleaner会创建一个或多个带有.cleaned后缀的”new segments“
+   *  · LogCleaner会调用replaceSegments()方法，来完成 新旧 segments的替换
+   *  · 如果在此过程中 broker down了，”clean-and-swap“操作将会终止掉
+   *  · .cleaned 文件将在 LogManager启动时 loadlog() 恢复时被删除
    * - Cleaner creates one or more new segments with suffix .cleaned and invokes replaceSegments() on
    *   the Log instance. If broker crashes at this point, the clean-and-swap operation is aborted and
    *   the .cleaned files are deleted on recovery in LogLoader.
+   *
+   *  ”new segments“会从”.cleaned“后缀，重命名为”.swap“后缀
+   *  文件按偏移量的降序重命名
+   *  在Log恢复过程中所有偏移量大于最小偏移量 .clean 文件的 .swap 文件都将被删除
    * - New segments are renamed .swap. If the broker crashes before all segments were renamed to .swap, the
    *   clean-and-swap operation is aborted - .cleaned as well as .swap files are deleted on recovery in
    *   in LogLoader. We detect this situation by maintaining a specific order in which files are renamed
    *   from .cleaned to .swap. Basically, files are renamed in descending order of offsets. On recovery,
    *   all .swap files whose offset is greater than the minimum-offset .clean file are deleted.
+   *
+   *  - 如果broker在所有新段重命名为 .swap 后崩溃，则操作完成，交换操作将在LogManager load时恢复
    * - If the broker crashes after all new segments were renamed to .swap, the operation is completed,
    *   the swap operation is resumed on recovery as described in the next step.
+   *
+   *  ”Old segment“被重命名为 .deleted，并被LogManager里的Schedule-delete周期性任务异步删除。
+   *  如果broker崩溃，则在 LogLoader 中lodlog时将删除任何遗留的 .deleted 文件
+   *  然后调用 replaceSegments() 来完成交换，newSegment 从.swap 文件重新创建
    * - Old segment files are renamed to .deleted and asynchronous delete is scheduled. If the broker
    *   crashes, any .deleted files left behind are deleted on recovery in LogLoader.
    *   replaceSegments() is then invoked to complete the swap with newSegment recreated from the
    *   .swap file and oldSegments containing segments which were not renamed before the crash.
+   *
+   *
    * - Swap segment(s) are renamed to replace the existing segments, completing this operation.
    *   If the broker crashes, any .deleted files which may be left behind are deleted
    *   on recovery in LogLoader.
@@ -876,7 +945,10 @@ object LocalLog extends Logging {
                                    logDirFailureChannel: LogDirFailureChannel,
                                    logPrefix: String,
                                    isRecoveredSwapFile: Boolean = false): Iterable[LogSegment] = {
+    // 1. 对newSegments按照baseOffset进行排序
     val sortedNewSegments = newSegments.sortBy(_.baseOffset)
+
+    // 2. 也对oldSegments按照baseOffset进行排序，不过要先判断一下是否维护在LogSegments的跳表结构中，可能执行这个操作前就已经被异步删除调了
     // Some old segments may have been removed from index and scheduled for async deletion after the caller reads segments
     // but before this method is executed. We want to filter out those segments to avoid calling deleteSegmentFiles()
     // multiple times for the same segment.
@@ -884,16 +956,32 @@ object LocalLog extends Logging {
 
     // need to do this in two phases to be crash safe AND do the delete asynchronously
     // if we crash in the middle of this we complete the swap in loadSegments()
-    if (!isRecoveredSwapFile)
+    if (!isRecoveredSwapFile) {
+      // 3. 把sortedNewSegments下所有.cleaned后缀，改为.swap后缀
       sortedNewSegments.reverse.foreach(_.changeFileSuffixes(CleanedFileSuffix, SwapFileSuffix))
+    }
+
+    // 4. "Add the given segment, or replace an existing entry"
+    // 将newSegments纳入LogSegments的跳表结构中管理
     sortedNewSegments.reverse.foreach(existingSegments.add)
+
+    // 5. 获取sortedNewSegments中每个Segment的BaseOffset
     val newSegmentBaseOffsets = sortedNewSegments.map(_.baseOffset).toSet
 
+    // 定义遍历处理OldSegments的方法
     // delete the old files
     val deletedNotReplaced = sortedOldSegments.map { seg =>
       // remove the index entry
+
+      // 8.1 将OldSegment移除LogSegments的跳表结构
       if (seg.baseOffset != sortedNewSegments.head.baseOffset)
         existingSegments.remove(seg.baseOffset)
+
+      // 删除场景：
+      // LogCleaner流程中，new的部分“加入了”，old的部分需要执行删除
+      // 使用的是scheduler.scheduleOnce-"delete-file"异步删除
+      // 使用的Files.deleteIfExists(....)删除
+      // 8.2 调用LocalLog的deleteSegmentFiles来实际删除OldSegment
       deleteSegmentFiles(
         List(seg),
         asyncDelete = true,
@@ -903,12 +991,18 @@ object LocalLog extends Logging {
         scheduler,
         logDirFailureChannel,
         logPrefix)
+
       if (newSegmentBaseOffsets.contains(seg.baseOffset)) Option.empty else Some(seg)
     }.filter(item => item.isDefined).map(item => item.get)
 
     // okay we are safe now, remove the swap suffix
+    // 6. 将newLogSegment的”.swap“后缀去掉
     sortedNewSegments.foreach(_.changeFileSuffixes(SwapFileSuffix, ""))
+
+    // 7. 将更新 flush 至磁盘
     Utils.flushDir(dir.toPath)
+
+    // 8. 遍历处理oldSegment
     deletedNotReplaced
   }
 
@@ -939,21 +1033,24 @@ object LocalLog extends Logging {
                                       scheduler: Scheduler,
                                       logDirFailureChannel: LogDirFailureChannel,
                                       logPrefix: String): Unit = {
+
+    // part1: 给logsegment中相关文件打上 .deleted后缀
     segmentsToDelete.foreach { segment =>
       if (!segment.hasSuffix(LogFileUtils.DELETED_FILE_SUFFIX))
         segment.changeFileSuffixes("", LogFileUtils.DELETED_FILE_SUFFIX)
     }
-
+    // part2: 定义删除方法
     def deleteSegments(): Unit = {
       info(s"${logPrefix}Deleting segment files ${segmentsToDelete.mkString(",")}")
       val parentDir = dir.getParent
       maybeHandleIOException(logDirFailureChannel, parentDir, s"Error while deleting segments for $topicPartition in dir $parentDir") {
         segmentsToDelete.foreach { segment =>
+          // 调用jdk里面的Files.deleteIfExists(file.toPath());
           segment.deleteIfExists()
         }
       }
     }
-
+    // part3: scheduler.scheduleOnce 删除LogSegment中相关文件
     if (asyncDelete)
       scheduler.scheduleOnce("delete-file", () => deleteSegments(), config.fileDeleteDelayMs)
     else

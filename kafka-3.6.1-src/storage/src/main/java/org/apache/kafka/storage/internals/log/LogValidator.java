@@ -215,7 +215,7 @@ public class LogValidator {
                     metricsRecorder);
                 recordError.ifPresent(e -> recordErrors.add(e));
                 // we fail the batch if any record fails, so we stop appending if any record fails
-                if (recordErrors.isEmpty())
+                if (recordErrors.isEmpty())// offset从上次的LEO开始++
                     builder.appendWithOffset(offsetCounter.value++, record);
                 ++batchIndex;
             }

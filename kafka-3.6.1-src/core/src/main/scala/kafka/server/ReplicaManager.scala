@@ -292,11 +292,13 @@ class ReplicaManager(val config: KafkaConfig,
   // - StopReplicaRequest -> stopReplicas(....)
   // - UpdateMetadataRequest -> maybeUpdateMetadataCache(...)
   // - ...
+  // controller的Epoch，用于拒绝旧 controller 发送的 request
   @volatile private[server] var controllerEpoch: Int = KafkaController.InitialControllerEpoch
 
   // local BrokerId
   protected val localBrokerId = config.brokerId
 
+  // 存储TP及其状态的Map
   // <TopicPartition, HostedPartition[None, Online, Offline]>
   // HostedPartition: represent the state of hosted partitions
   protected val allPartitions = new Pool[TopicPartition, HostedPartition](
@@ -304,12 +306,17 @@ class ReplicaManager(val config: KafkaConfig,
   )
   protected val replicaStateChangeLock = new Object
 
+  // 初始化出ReplicaFetcherThread线程
   // num.replica.fetchers
   // * thread to help Follower Replica to fetch data from Leader Replica
   val replicaFetcherManager = createReplicaFetcherManager(metrics, time, threadNamePrefix, quotaManagers.follower)
 
+  // 初始化ReplicaAlterLogDirsThread-线程
   private[server] val replicaAlterLogDirsManager = createReplicaAlterLogDirsManager(quotaManagers.alterLogDirs, brokerTopicStats)
+
+  // HW相关
   private val highWatermarkCheckPointThreadStarted = new AtomicBoolean(false)
+  // <存储目录/datax - replication-offset-checkpoint>
   @volatile private[server] var highWatermarkCheckpoints: Map[String, OffsetCheckpointFile] = logManager.liveLogDirs.map(dir =>
     (dir.getAbsolutePath, new OffsetCheckpointFile(new File(dir, ReplicaManager.HighWatermarkFilename), logDirFailureChannel))).toMap
 
@@ -318,8 +325,8 @@ class ReplicaManager(val config: KafkaConfig,
   this.logIdent = s"[ReplicaManager broker=$localBrokerId] "
   protected val stateChangeLogger = new StateChangeLogger(localBrokerId, inControllerContext = false, None)
 
+  // LogDirFailureHandler线程
   private var logDirFailureHandler: LogDirFailureHandler = _
-
   // LogDirFailureHandler
   private class LogDirFailureHandler(name: String, haltBrokerOnDirFailure: Boolean) extends ShutdownableThread(name) {
     // 定义logDirFailureHandler线程处理方法
@@ -336,6 +343,8 @@ class ReplicaManager(val config: KafkaConfig,
   }
 
   // Visible for testing
+  // "The fully qualified class name that implements ReplicaSelector. This is used by the broker to find the preferred read replica"
+  // rack相关，有一个实现类 RackAwareReplicaSelector
   private[server] val replicaSelectorOpt: Option[ReplicaSelector] = createReplicaSelector()
 
   metricsGroup.newGauge(LeaderCountMetricName, () => leaderPartitionsIterator.size)
@@ -364,6 +373,11 @@ class ReplicaManager(val config: KafkaConfig,
 
   def underReplicatedPartitionCount: Int = leaderPartitionsIterator.count(_.isUnderReplicated)
 
+  /**
+   * highwatermark-checkpoint 线程
+   * "The frequency with which the high watermark is saved out to disk"
+   * 多久将HW数据刷到磁盘上，5S
+   */
   def startHighWatermarkCheckPointThread(): Unit = {
     if (highWatermarkCheckPointThreadStarted.compareAndSet(false, true))
       scheduler.schedule("highwatermark-checkpoint", () => checkpointHighWatermarks(), 0L, config.replicaHighWatermarkCheckpointIntervalMs)
@@ -390,20 +404,31 @@ class ReplicaManager(val config: KafkaConfig,
     debug("Request key %s unblocked %d ElectLeader.".format(key.keyLabel, completed))
   }
 
+  /**
+   * broker启动时调用，ReplicaManager相关的线程的启动
+   */
   def startup(): Unit = {
     // ISR manage attach: scheduler task
     // start ISR expiration thread
-    // A follower can lag behind leader for up to config.replicaLagTimeMaxMs x 1.5 before it is removed from ISR
+    // A follower can lag behind leader for up to config.replicaLagTimeMaxMs(30s) x 1.5 before it is removed from ISR
+    // follower 只能落后leader 45s， 也就是说45S内还没能追上Leader的LEO就会被移除 ISR
+    // 45s怎么算出来的 config.replicaLagTimeMaxMs(30s) 加上 执行间隔 15S = 45S
+    // ReplicaManager中周期性任务1：15S 执行一次 maybeShrinkIsr()
     scheduler.schedule("isr-expiration", () => maybeShrinkIsr(), 0L, config.replicaLagTimeMaxMs / 2)
+
+    // ReplicaManager中周期性任务2：10S 执行一次 shutdownIdleReplicaAlterLogDirsThread()
     scheduler.schedule("shutdown-idle-replica-alter-log-dirs-thread", () => shutdownIdleReplicaAlterLogDirsThread(), 0L, 10000L)
 
     // If inter-broker protocol (IBP) < 1.0, the controller will send LeaderAndIsrRequest V0 which does not include isNew field.
     // In this case, the broker receiving the request cannot determine whether it is safe to create a partition if a log directory has failed.
     // Thus, we choose to halt the broker on any log directory failure if IBP < 1.0
     val haltBrokerOnFailure = metadataCache.metadataVersion().isLessThan(IBP_1_0_IV0)
+
     // 启动logDirFailureHandler线程
     logDirFailureHandler = new LogDirFailureHandler("LogDirFailureHandler", haltBrokerOnFailure)
     logDirFailureHandler.start()
+
+    // AddPartitionsToTxnSenderThread线程启动
     addPartitionsToTxnManager.foreach(_.start())
   }
 
@@ -709,6 +734,11 @@ class ReplicaManager(val config: KafkaConfig,
     }
   }
 
+  /**
+   * 从TopicPartition取出本地Partition对象，同时判断了状态
+   * @param topicPartition: Partition标志，无任何能力
+   * @return Partition对象
+   */
   def getPartitionOrError(topicPartition: TopicPartition): Either[Errors, Partition] = {
     getPartition(topicPartition) match {
       case HostedPartition.Online(partition) =>
@@ -751,6 +781,8 @@ class ReplicaManager(val config: KafkaConfig,
 
   /**
    * TODO: move this action queue to handle thread so we can simplify concurrency handling
+   * 这里居然还有一个成员变量.
+   * This queue is used to collect actions which need to be executed later.
    */
   private val actionQueue = new DelayedActionQueue
 
@@ -781,34 +813,40 @@ class ReplicaManager(val config: KafkaConfig,
   def appendRecords(timeout: Long,
                     requiredAcks: Short,
                     internalTopicsAllowed: Boolean, // [ common producer/consumer -> false ] | [ Coordinator -> true ]
-                    origin: AppendOrigin,
-                    entriesPerPartition: Map[TopicPartition, MemoryRecords],
-                    responseCallback: Map[TopicPartition, PartitionResponse] => Unit,
-                    delayedProduceLock: Option[Lock] = None,
-                    recordConversionStatsCallback: Map[TopicPartition, RecordConversionStats] => Unit = _ => (),
-                    requestLocal: RequestLocal = RequestLocal.NoCaching,
-                    transactionalId: String = null,
+                    origin: AppendOrigin, // 写入来源
+                    entriesPerPartition: Map[TopicPartition, MemoryRecords], // 待写Record
+                    responseCallback: Map[TopicPartition, PartitionResponse] => Unit, // 发送响应返回，用于给客户端回调
+                    delayedProduceLock: Option[Lock] = None, // 锁
+                    recordConversionStatsCallback: Map[TopicPartition, RecordConversionStats] => Unit = _ => (), // 统计分析用
+                    requestLocal: RequestLocal = RequestLocal.NoCaching, // 类ThreadLocal中存储的线程级数据
+                    transactionalId: String = null, // 事务相关
                     transactionStatePartition: Option[Int] = None,
-                    actionQueue: ActionQueue = this.actionQueue): Unit = {
+                    actionQueue: ActionQueue = this.actionQueue // 延迟任务队列
+                   ): Unit = {
     // judge ack first, if Illegal direct return
     if (isValidRequiredAcks(requiredAcks)) {
 
       // 1. Verify Partition and return the partition result set
       val verificationGuards: mutable.Map[TopicPartition, Object] = mutable.Map[TopicPartition, Object]()
-      val (verifiedEntriesPerPartition, notYetVerifiedEntriesPerPartition, errorsPerPartition) =
+      // 对入参entriesPerPartition: Map[TopicPartition, MemoryRecords]，进行校验，返回3个Map
+      val (verifiedEntriesPerPartition, notYetVerifiedEntriesPerPartition, errorsPerPartition) = {
+        // "非事务的“就不校验了，直接返回3个Map了
         if (transactionStatePartition.isEmpty || !config.transactionPartitionVerificationEnable)
           (entriesPerPartition, Map.empty[TopicPartition, MemoryRecords], Map.empty[TopicPartition, Errors])
         else {
+          // ”事务“相关校验
           val verifiedEntries = mutable.Map[TopicPartition, MemoryRecords]()
           val unverifiedEntries = mutable.Map[TopicPartition, MemoryRecords]()
           val errorEntries = mutable.Map[TopicPartition, Errors]()
           partitionEntriesForVerification(verificationGuards, entriesPerPartition, verifiedEntries, unverifiedEntries, errorEntries)
           (verifiedEntries.toMap, unverifiedEntries.toMap, errorEntries.toMap)
         }
+      }
 
       // 2. Process according to "partition result set"
       // 2.1 *** no TXN appendEntries directly
       if (notYetVerifiedEntriesPerPartition.isEmpty || addPartitionsToTxnManager.isEmpty) {
+        // 非事务写入
         appendEntries(verifiedEntriesPerPartition, internalTopicsAllowed, origin, requiredAcks, verificationGuards.toMap,
           errorsPerPartition, recordConversionStatsCallback, timeout, responseCallback, delayedProduceLock)(requestLocal, Map.empty)
       } else {
@@ -889,6 +927,7 @@ class ReplicaManager(val config: KafkaConfig,
                             delayedProduceLock: Option[Lock])
                            (requestLocal: RequestLocal, unverifiedEntries: Map[TopicPartition, Errors]): Unit = {
     val sTime = time.milliseconds
+    // 1. 获取完成校验的消息：Map[TopicPartition, MemoryRecords]
     val verifiedEntries =
       if (unverifiedEntries.isEmpty)
         allEntries
@@ -897,6 +936,7 @@ class ReplicaManager(val config: KafkaConfig,
           !unverifiedEntries.contains(tp)
         }
     // ** Append the messages to the local replica logs
+    // 尝试往本地Log写
     val localProduceResults = appendToLocalLog(internalTopicsAllowed = internalTopicsAllowed,
       origin, verifiedEntries, requiredAcks, requestLocal, verificationGuards.toMap)
     debug("Produce to local log in %d ms".format(time.milliseconds - sTime))
@@ -1118,6 +1158,7 @@ class ReplicaManager(val config: KafkaConfig,
 
             val initialFetchState = InitialFetchState(topicId, BrokerEndPoint(config.brokerId, "localhost", -1),
               partition.getLeaderEpoch, futureLog.highWatermark)
+            // 会启动ReplicaAlterLogDirsThread-线程
             replicaAlterLogDirsManager.addFetcherForPartitions(Map(topicPartition -> initialFetchState))
           }
 
@@ -1296,6 +1337,7 @@ class ReplicaManager(val config: KafkaConfig,
     if (traceEnabled)
       trace(s"Append [$entriesPerPartition] to local log")
 
+    // 迭代遍历Map[TopicPartition, MemoryRecords]
     entriesPerPartition.map { case (topicPartition, records) =>
       brokerTopicStats.topicStats(topicPartition.topic).totalProduceRequestRate.mark()
       brokerTopicStats.allTopicsStats.totalProduceRequestRate.mark()
@@ -1308,9 +1350,13 @@ class ReplicaManager(val config: KafkaConfig,
       } else {
         try {
           // *1 get Local Partition from TopicPartition
+          // 判断待写入的TP的状态，并返回Partition对象
           val partition = getPartitionOrException(topicPartition)
+
           // *2 will call "UnifiedLog" to append
+          // 调用Partition对象写入能力
           val info = partition.appendRecordsToLeader(records, origin, requiredAcks, requestLocal, verificationGuards.getOrElse(topicPartition, null))
+
           // *3 count the num of messages appended
           val numAppendedMessages = info.numMessages
 

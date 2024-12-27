@@ -35,6 +35,11 @@ import scala.jdk.CollectionConverters._
 class LogSegments(topicPartition: TopicPartition) {
 
   /* the segments of the log with key being LogSegment base offset and value being a LogSegment */
+  /**
+   * 跳表
+   * key：LogSegment base offset
+   * value：LogSegment
+   */
   private val segments: ConcurrentNavigableMap[Long, LogSegment] = new ConcurrentSkipListMap[Long, LogSegment]
 
   /**

@@ -1336,18 +1336,23 @@ class Partition(val topicPartition: TopicPartition,
                             requestLocal: RequestLocal, verificationGuard: Object = null): LogAppendInfo = {
     // ReadLock
     val (info, leaderHWIncremented) = inReadLock(leaderIsrUpdateLock) {
+      // 判断本地UnifiedLog是leader
       leaderLogIfLocal match {
         // only leader replica can write
         case Some(leaderLog) =>
           // *1 check ISR Size
+          // "min.insync.replicas"-Topic级别变量
           val minIsr = leaderLog.config.minInSyncReplicas
+          // 当前处于ISR中的数量
           val inSyncSize = partitionState.isr.size
+
+          // requiredAcks == -1
           // Avoid writing to leader if there are not enough insync replicas to make it safe
           if (inSyncSize < minIsr && requiredAcks == -1) {
             throw new NotEnoughReplicasException(s"The size of the current ISR ${partitionState.isr} " +
               s"is insufficient to satisfy the min.isr requirement of $minIsr for partition $topicPartition")
           }
-          // *2
+          // *2 ” Append this message set to the active segment of the local log, assigning offsets and Partition Leader Epochs“
           val info = leaderLog.appendAsLeader(records, leaderEpoch = this.leaderEpoch, origin,
             interBrokerProtocolVersion, requestLocal, verificationGuard)
 
@@ -1681,6 +1686,7 @@ class Partition(val topicPartition: TopicPartition,
     // The read lock is needed to prevent the follower replica from being truncated while ReplicaAlterDirThread
     // is executing maybeReplaceCurrentWithFutureReplica() to replace follower replica with the future replica.
     inReadLock(leaderIsrUpdateLock) {
+      // 如果强行对比的话，这里就像Partition(service层) -> 调用logManager(Dao层)的能力
       logManager.truncateTo(Map(topicPartition -> offset), isFuture = isFuture)
     }
   }

@@ -91,6 +91,7 @@ public class KafkaScheduler implements Scheduler {
     }
 
     public KafkaScheduler(int threads, boolean daemon) {
+        // daemon线程
         this(threads, daemon, "kafka-scheduler-");
     }
 
@@ -113,6 +114,7 @@ public class KafkaScheduler implements Scheduler {
         synchronized (this) {
             if (isStarted())
                 throw new IllegalStateException("This scheduler has already been started.");
+            // 定时任务使用的是jdk自带ScheduledThreadPoolExecutor
             ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(threads);
             executor.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
             executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);

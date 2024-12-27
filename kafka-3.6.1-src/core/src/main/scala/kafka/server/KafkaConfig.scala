@@ -119,6 +119,8 @@ object Defaults {
   val NumPartitions = 1
   val LogDir = "/tmp/kafka-logs"
   val LogCleanupIntervalMs = 5 * 60 * 1000L
+
+  /** ********* Log Cleaner Configuration ***********/
   val LogCleanerThreads = 1
   val LogCleanerIoMaxBytesPerSecond = Double.MaxValue
   val LogCleanerDedupeBufferSize = 128 * 1024 * 1024L
@@ -126,6 +128,7 @@ object Defaults {
   val LogCleanerDedupeBufferLoadFactor = 0.9d
   val LogCleanerBackoffMs = 15 * 1000
   val LogCleanerEnable = true
+  /** ********* Log Flush Checkpoint IntervalMs ***********/
   val LogFlushOffsetCheckpointIntervalMs = 60000
   val LogFlushStartOffsetCheckpointIntervalMs = 60000
   val NumRecoveryThreadsPerDataDir = 1
@@ -867,6 +870,7 @@ object KafkaConfig {
   val LogRetentionTimeMinsDoc = "The number of minutes to keep a log file before deleting it (in minutes), secondary to " + LogRetentionTimeMillisProp + " property. If not set, the value in " + LogRetentionTimeHoursProp + " is used"
   val LogRetentionTimeHoursDoc = "The number of hours to keep a log file before deleting it (in hours), tertiary to " + LogRetentionTimeMillisProp + " property"
 
+  /** ********* Log Cleaner Configuration DOC ↓***********/
   val LogRetentionBytesDoc = "The maximum size of the log before deleting it"
   val LogCleanupIntervalMsDoc = "The frequency in milliseconds that the log cleaner checks whether any log is eligible for deletion"
   val LogCleanupPolicyDoc = "The default cleanup policy for segments beyond the retention window. A comma separated list of valid policies. Valid policies are: \"delete\" and \"compact\""
@@ -889,6 +893,8 @@ object KafkaConfig {
     "tombstones messages may be collected before a consumer completes their scan).";
   val LogCleanerMinCompactionLagMsDoc = "The minimum time a message will remain uncompacted in the log. Only applicable for logs that are being compacted."
   val LogCleanerMaxCompactionLagMsDoc = "The maximum time a message will remain ineligible for compaction in the log. Only applicable for logs that are being compacted."
+  /** ********* Log Cleaner Configuration DOC ↑***********/
+
   val LogIndexSizeMaxBytesDoc = "The maximum size in bytes of the offset index"
   val LogIndexIntervalBytesDoc = "The interval with which we add an entry to the offset index."
   val LogFlushIntervalMessagesDoc = "The number of messages accumulated on a log partition before messages are flushed to disk."
@@ -944,6 +950,7 @@ object KafkaConfig {
   /** ********* Replication configuration ***********/
   val ControllerSocketTimeoutMsDoc = "The socket timeout for controller-to-broker channels."
   val DefaultReplicationFactorDoc = "The default replication factors for automatically created topics."
+  // follower副本 30秒没发Fetch Request或者还没能追上leader的LEO，就会被移除isr
   val ReplicaLagTimeMaxMsDoc = "If a follower hasn't sent any fetch requests or hasn't consumed up to the leaders log end offset for at least this time," +
   " the leader will remove the follower from isr"
   val ReplicaSocketTimeoutMsDoc = "The socket timeout for network requests. Its value should be at least replica.fetch.wait.max.ms"

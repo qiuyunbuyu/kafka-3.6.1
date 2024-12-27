@@ -298,6 +298,7 @@ class KafkaServer(
         config.dynamicConfig.initialize(Some(zkClient))
 
         // 2.6 start scheduler task
+        // 定时任务：config.backgroundThreads"background.threads" 默认10
         kafkaScheduler = new KafkaScheduler(config.backgroundThreads)
         kafkaScheduler.startup()
 
@@ -421,6 +422,7 @@ class KafkaServer(
         alterPartitionManager.start()
 
         // 2.19 Start replica manager
+        // broker启动时创建ReplicaManager
         _replicaManager = createReplicaManager(isShuttingDown)
         replicaManager.startup()
 
@@ -702,6 +704,7 @@ class KafkaServer(
   }
 
   protected def createReplicaManager(isShuttingDown: AtomicBoolean): ReplicaManager = {
+    // 这是干啥的？只能猜测与事务相关
     val addPartitionsLogContext = new LogContext(s"[AddPartitionsToTxnManager broker=${config.brokerId}]")
     val addPartitionsToTxnNetworkClient: NetworkClient = NetworkUtils.buildNetworkClient("AddPartitionsManager", config, metrics, time, addPartitionsLogContext)
     val addPartitionsToTxnManager: AddPartitionsToTxnManager = new AddPartitionsToTxnManager(config, addPartitionsToTxnNetworkClient, time)

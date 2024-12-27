@@ -232,16 +232,22 @@ public class ProduceRequest extends AbstractRequest {
                 if (!iterator.hasNext())
                     throw new InvalidRecordException("Produce requests with version " + version + " must have at least " +
                             "one record batch per partition");
-
+                // BaseRecords聚了一批RecordBatch
                 RecordBatch entry = iterator.next();
+
+                // 校验RecordBatch的MAGIC_VALUE [Newer versions] (magic versions 2 and above)
                 if (entry.magic() != RecordBatch.MAGIC_VALUE_V2)
                     throw new InvalidRecordException("Produce requests with version " + version + " are only allowed to " +
                             "contain record batches with magic version 2");
+
+                // 校验 压缩类型
                 if (version < 7 && entry.compressionType() == CompressionType.ZSTD) {
                     throw new UnsupportedCompressionTypeException("Produce requests with version " + version + " are not allowed to " +
                             "use ZStandard compression");
                 }
 
+                // 校验TopicPartition只能有一个对应的RecordBatch
+                // ** 一个Producer Request 可以有多个 TopicPartition， 单每个TopicPartition只能有一个RecordBatch
                 if (iterator.hasNext())
                     throw new InvalidRecordException("Produce requests with version " + version + " are only allowed to " +
                             "contain exactly one record batch per partition");

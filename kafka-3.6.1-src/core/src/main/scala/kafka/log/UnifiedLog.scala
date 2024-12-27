@@ -55,6 +55,7 @@ import scala.jdk.CollectionConverters._
 
 /**
  * A log which presents a unified view of local and tiered log segments.
+ * 能够维护管理（local logsegments） + （tiered logsegments）
  *
  * The log consists of tiered and local segments with the tiered portion of the log being optional. There could be an
  * overlap between the tiered and local segments. The active segment is always guaranteed to be local. If tiered segments
@@ -143,6 +144,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
    */
   @volatile private var highWatermarkMetadata: LogOffsetMetadata = new LogOffsetMetadata(logStartOffset)
 
+  // partition.metadata
   @volatile var partitionMetadataFile: Option[PartitionMetadataFile] = None
 
   @volatile private[kafka] var _localLogStartOffset: Long = logStartOffset
@@ -164,16 +166,22 @@ class UnifiedLog(@volatile var logStartOffset: Long,
         localLog.updateRecoveryPoint(offset)
       }
     }
+
     // UnifiedLog initialization related operations
     // partition.metadata
     initializePartitionMetadata()
+
     // logStartOffset
     updateLogStartOffset(logStartOffset)
+
+    // 更新LocalLogStartOffset
     updateLocalLogStartOffset(math.max(logStartOffset, localLog.segments.firstSegmentBaseOffset.getOrElse(0L)))
+    // 没开分层存储的情况下LocalLogStartOffset就UnifiedLog的LogStartOffset
     if (!remoteLogEnabled())
       logStartOffset = localLogStartOffset()
     // UnstableOffset
     maybeIncrementFirstUnstableOffset()
+
     // TopicId may in partition.metadata
     initializeTopicId()
 
@@ -422,6 +430,11 @@ class UnifiedLog(@volatile var logStartOffset: Long,
   }
 
   /**
+   * LSO的解释
+   * 1. no transactional messages in the log -> LSO = HW
+   * 2. have transactional messages in the log -> LSO = "corresponding COMMIT or ABORT marker is written"
+   * 3. LSO <= HW
+   *
    * The last stable offset (LSO) is defined as the first offset such that all lower offsets have been "decided."
    * Non-transactional messages are considered decided immediately, but transactional messages are only decided when
    * the corresponding COMMIT or ABORT marker is written. This implies that the last stable offset will be equal
@@ -472,6 +485,9 @@ class UnifiedLog(@volatile var logStartOffset: Long,
 
   }
 
+  /**
+   * 还会起一个removeExpiredProducers，schedule任务
+   */
   val producerExpireCheck = scheduler.schedule("PeriodicProducerExpirationCheck", () => removeExpiredProducers(time.milliseconds),
     producerIdExpirationCheckIntervalMs, producerIdExpirationCheckIntervalMs)
 
@@ -514,6 +530,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
           partitionMetadataFile match {
             case Some(partMetadataFile) =>
               if (!partMetadataFile.exists()) {
+                // partition.metadata文件记录topicId
                 partMetadataFile.record(topicId)
                 scheduler.scheduleOnce("flush-metadata-file", () => maybeFlushMetadataFile())
               }
@@ -774,9 +791,11 @@ class UnifiedLog(@volatile var logStartOffset: Long,
                      ignoreRecordSize: Boolean): LogAppendInfo = {
     // We want to ensure the partition metadata file is written to the log dir before any log data is written to disk.
     // This will ensure that any log data can be recovered with the correct topic ID in the case of failure.
+    // 1. partition.metadata文件处理
     maybeFlushMetadataFile()
 
     // analyze and get LogAppendInfo
+    // 2. 开始校验每个”each message“,返回一个LogAppendInfo对象
     val appendInfo = analyzeAndValidateRecords(records, origin, ignoreRecordSize, leaderEpoch)
 
     // return if we have no valid messages or if this is a duplicate of the last appended entry
@@ -792,7 +811,9 @@ class UnifiedLog(@volatile var logStartOffset: Long,
           localLog.checkIfMemoryMappedBufferClosed()
           if (validateAndAssignOffsets) {
             // assign offsets to the message set: get LEO
+            // 获取localLog本地的LEO
             val offset = PrimitiveRef.ofLong(localLog.logEndOffset)
+            // 以现在的LEO，作为下一批追加的Record的FirstOffset
             appendInfo.setFirstOffset(Optional.of(new LogOffsetMetadata(offset.value)))
             // use LogValidator to validate
             val validateAndOffsetAssignResult = try {
@@ -836,6 +857,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
             if (!ignoreRecordSize && validateAndOffsetAssignResult.messageSizeMaybeChanged) {
               // get batch from MemoryRecords to judge size
               validRecords.batches.forEach { batch =>
+                // RecordBatch的sizeInBytes 大于1M
                 if (batch.sizeInBytes > config.maxMessageSize) {
                   // we record the original message set size instead of the trimmed size
                   // to be consistent with pre-compression bytesRejectedRate recording
@@ -869,6 +891,8 @@ class UnifiedLog(@volatile var logStartOffset: Long,
             }
           }
 
+          // Leader Append的场景，更新leader-epoch-checkpoint：(leaderEpoch, startOffset)
+          // 发现新leaderEpoch会更新
           // update the epoch cache with the epoch stamped onto the message by the leader
           // leader-epoch-checkpoint
           validRecords.batches.forEach { batch =>
@@ -887,12 +911,15 @@ class UnifiedLog(@volatile var logStartOffset: Long,
           }
 
           // check messages set size may be exceed config.segmentSize
+          // config.segmentSize - 1G
           if (validRecords.sizeInBytes > config.segmentSize) {
             throw new RecordBatchTooLargeException(s"Message batch size is ${validRecords.sizeInBytes} bytes in append " +
               s"to partition $topicPartition, which exceeds the maximum configured segment size of ${config.segmentSize}.")
           }
 
+          // "Roll logsegment 场景2"
           // maybe roll the log if this segment is full
+          // 创建一个新的segment
           val segment = maybeRoll(validRecords.sizeInBytes, appendInfo)
 
           // construct log metadata
@@ -953,7 +980,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
                 s"first offset: ${appendInfo.firstOffset}, " +
                 s"next offset: ${localLog.logEndOffset}, " +
                 s"and messages: $validRecords")
-
+              // 默认也是Long.MAX_VALUE，也意味着不会主动执行
               if (localLog.unflushedMessages >= config.flushInterval) flush(false)
           }
           appendInfo
@@ -1450,6 +1477,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
    */
   private def deleteOldSegments(predicate: (LogSegment, Option[LogSegment]) => Boolean,
                                 reason: SegmentDeletionReason): Int = {
+    // high watermark校验 + diff是否超过一个logsegment校验
     def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]): Boolean = {
       val upperBoundOffset = nextSegmentOpt.map(_.baseOffset).getOrElse(localLog.logEndOffset)
 
@@ -1461,9 +1489,10 @@ class UnifiedLog(@volatile var logStartOffset: Long,
         predicate(segment, nextSegmentOpt)
     }
     lock synchronized {
+      // 获取可删除的Iterable[LogSegment]列表
       val deletable = localLog.deletableSegments(shouldDelete)
       if (deletable.nonEmpty) {
-        // do delete LogSegments
+        // do delete LogSegments，执行LogSegment的删除
         deleteSegments(deletable, reason)
       } else
         0
@@ -1478,10 +1507,15 @@ class UnifiedLog(@volatile var logStartOffset: Long,
   private def deleteSegments(deletable: Iterable[LogSegment], reason: SegmentDeletionReason): Int = {
     maybeHandleIOException(s"Error while deleting segments for $topicPartition in dir ${dir.getParent}") {
       val numToDelete = deletable.size
+      //  "Roll logsegment 场景1": 所有调用到deleteSegments的地方，都会判断是否需要Roll出一段 new logsegment
       if (numToDelete > 0) {
         // we must always have at least one segment, so if we are going to delete all the segments, create a new one first
         var segmentsToDelete = deletable
+
+        // localLog的中logsegments的数据 与 要删除的logsegments数量相等，意味着全部得删除了
         if (localLog.segments.numberOfSegments == numToDelete) {
+
+          // localLog至少得有一个logsegment
           val newSegment = roll()
           if (deletable.last.baseOffset == newSegment.baseOffset) {
             warn(s"Empty active segment at ${deletable.last.baseOffset} was deleted and recreated due to $reason")
@@ -1489,7 +1523,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
           }
         }
         localLog.checkIfMemoryMappedBufferClosed()
-        // remove the segments for lookups
+        // remove the segments for lookups， asyncDelete = true，默认都是异步删除的
         localLog.removeAndDeleteSegments(segmentsToDelete, asyncDelete = true, reason)
         deleteProducerSnapshots(deletable, asyncDelete = true)
         incrementStartOffset(localLog.segments.firstSegmentBaseOffset.get, LogStartOffsetIncrementReason.SegmentDeletion)
@@ -1506,19 +1540,25 @@ class UnifiedLog(@volatile var logStartOffset: Long,
    */
   def deleteOldSegments(): Int = {
     if (config.delete) {
+      // [3]
         deleteLogStartOffsetBreachedSegments() +
+      // [2]
         deleteRetentionSizeBreachedSegments() +
+      // [1]
         deleteRetentionMsBreachedSegments()
     } else {
+      // [3]
       deleteLogStartOffsetBreachedSegments()
     }
   }
 
+  // 基于策略[2]的删除
   private def deleteRetentionMsBreachedSegments(): Int = {
     val retentionMs = localRetentionMs(config, remoteLogEnabled())
     if (retentionMs < 0) return 0
     val startMs = time.milliseconds
 
+    // 当前时间 - 探测的logsegment的largest timestamp > 最大保留时间
     def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]): Boolean = {
       startMs - segment.largestTimestamp > retentionMs
     }
@@ -1526,10 +1566,16 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     deleteOldSegments(shouldDelete, RetentionMsBreach(this, remoteLogEnabled()))
   }
 
+  // 基于策略[1]的删除
   private def deleteRetentionSizeBreachedSegments(): Int = {
+    // 1. 获取retentionSize
     val retentionSize: Long = localRetentionSize(config, remoteLogEnabled())
+    // 2. size 当前所有的logsegments的大小
     if (retentionSize < 0 || size < retentionSize) return 0
+    // 3. 计算出多余的部分
     var diff = size - retentionSize
+
+    // 4. diff至少要超过一个LogSegment，才是能删除的
     def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]): Boolean = {
       if (diff - segment.size >= 0) {
         diff -= segment.size
@@ -1539,11 +1585,15 @@ class UnifiedLog(@volatile var logStartOffset: Long,
       }
     }
 
+    // 5. 先找出可以删除的LogSegments， 然后执行删除
     deleteOldSegments(shouldDelete, RetentionSizeBreach(this, remoteLogEnabled()))
   }
 
+  // 基于策略[3]的删除
   private def deleteLogStartOffsetBreachedSegments(): Int = {
     def shouldDelete(segment: LogSegment, nextSegmentOpt: Option[LogSegment]): Boolean = {
+      // 探测的logsegment的 下一个 logsegment 的 baseOffset(即自己的logsegment的“end offset”) < 整个UnifiedLog的logStartOffset
+      // 就代表探测的这个logsegment满足了 [3] Whether or not deletion is enabled, delete any local log segments that are [3. before the log start offset]
       nextSegmentOpt.exists(_.baseOffset <= (if (remoteLogEnabled()) localLogStartOffset() else logStartOffset))
     }
 
@@ -1592,6 +1642,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     val maxTimestampInMessages = appendInfo.maxTimestamp
     val maxOffsetInMessages = appendInfo.lastOffset
 
+    // 判断是否Roll出一个新 LogSegment
     if (segment.shouldRoll(new RollParams(config.maxSegmentMs, config.segmentSize, appendInfo.maxTimestamp, appendInfo.lastOffset, messagesSize, now))) {
       debug(s"Rolling new log segment (log_size = ${segment.size}/${config.segmentSize}}, " +
         s"offset_index_size = ${segment.offsetIndex.entries}/${segment.offsetIndex.maxEntries}, " +
@@ -1610,6 +1661,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
         Note that this is only required for pre-V2 message formats because these do not store the first message offset
         in the header.
       */
+      // 入参：待append 的 Records中 的firstOffset
       val rollOffset = appendInfo
         .firstOffset
         .map[Long](_.messageOffset)
@@ -1622,14 +1674,17 @@ class UnifiedLog(@volatile var logStartOffset: Long,
   }
 
   /**
-   * Roll the local log over to a new active segment starting with the expectedNextOffset (when provided),
+   * Roll the local log over to a new active segment “starting with the expectedNextOffset (when provided)”,
    * or localLog.logEndOffset otherwise. This will trim the index to the exact size of the number of entries
    * it currently contains.
    *
    * @return The newly rolled segment
    */
   def roll(expectedNextOffset: Option[Long] = None): LogSegment = lock synchronized {
+    // 1. roll出一个新LogSegment
     val newSegment = localLog.roll(expectedNextOffset)
+
+    // 2.
     // Take a snapshot of the producer state to facilitate recovery. It is useful to have the snapshot
     // offset align with the new segment offset since this ensures we can recover the segment by beginning
     // with the corresponding snapshot file and scanning the segment data. Because the segment base offset
@@ -1637,8 +1692,11 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     // we manually override the state offset here prior to taking the snapshot.
     producerStateManager.updateMapEndOffset(newSegment.baseOffset)
     producerStateManager.takeSnapshot()
+
+    // 3. 确保highWatermark < LEO
     updateHighWatermarkWithLogEndOffset()
-    // Schedule an asynchronous flush of the old segment
+
+    // 4. Schedule an asynchronous flush of the old segment
     scheduler.scheduleOnce("flush-log", () => flushUptoOffsetExclusive(newSegment.baseOffset))
     newSegment
   }
@@ -1679,6 +1737,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
           s"unflushed: ${localLog.unflushedMessages}")
         localLog.flush(flushOffset)
         lock synchronized {
+          // 更新RecoveryPoint, "The recovery point is set to offset."
           localLog.markFlushed(newRecoveryPoint)
         }
       }
@@ -1687,15 +1746,22 @@ class UnifiedLog(@volatile var logStartOffset: Long,
 
   /**
    * Completely delete the local log directory and all contents from the file system with no delay
+   * 只有一个地方调用，当UnifiedLog的目录带上了-delete后缀，会被纳入到logsToBeDeleted队列中
+   * LogManager中的Schedule任务执行删除时kafka-delete-logs，会调用到
    */
   private[log] def delete(): Unit = {
     maybeHandleIOException(s"Error while deleting log for $topicPartition in dir ${dir.getParent}") {
       lock synchronized {
         localLog.checkIfMemoryMappedBufferClosed()
+        // 关闭producerExpireCheck schedule任务
         producerExpireCheck.cancel(true)
+        // 清除：leaderEpochCache
         leaderEpochCache.foreach(_.clear())
+        // 清除：所有logsegment
         val deletedSegments = localLog.deleteAllSegments()
+        // 清除：producer snapshot
         deleteProducerSnapshots(deletedSegments, asyncDelete = false)
+        // 删除Topic-Partition文件夹
         localLog.deleteEmptyDir()
       }
     }
@@ -1732,6 +1798,8 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     maybeHandleIOException(s"Error while truncating log to offset $targetOffset for $topicPartition in dir ${dir.getParent}") {
       if (targetOffset < 0)
         throw new IllegalArgumentException(s"Cannot truncate partition $topicPartition to a negative offset (%d).".format(targetOffset))
+
+      // "truncate targetOffset" > LEO 大的场景
       if (targetOffset >= localLog.logEndOffset) {
         info(s"Truncating to $targetOffset has no effect as the largest offset in the log is ${localLog.logEndOffset - 1}")
 
@@ -1745,17 +1813,26 @@ class UnifiedLog(@volatile var logStartOffset: Long,
 
         false
       } else {
+        // 正常场景：0 < "truncate targetOffset" < LEO
         info(s"Truncating to offset $targetOffset")
         lock synchronized {
           localLog.checkIfMemoryMappedBufferClosed()
+          // targetOffset 比 firstSegment BaseOffset 还小 -> 全截场景
           if (localLog.segments.firstSegmentBaseOffset.get > targetOffset) {
+            // "Delete all data in the log and start at the new offset"
             truncateFullyAndStartAt(targetOffset)
           } else {
+            // 执行truncate，可能会删除多个logsegments
             val deletedSegments = localLog.truncateTo(targetOffset)
+            // 删除被删除的logsegments相对应的ProducerSnapshot
             deleteProducerSnapshots(deletedSegments, asyncDelete = true)
+            // 删除leader-epoch中大于等于targetOffset的相关Entry
             leaderEpochCache.foreach(_.truncateFromEnd(targetOffset))
+            // 可能会更新logStartOffset
             logStartOffset = math.min(targetOffset, logStartOffset)
+            // producer state相关
             rebuildProducerState(targetOffset, producerStateManager)
+            // 更新HW，因为truncate会更新LEO，要保证HW < LEO
             if (highWatermark >= localLog.logEndOffset)
               updateHighWatermark(localLog.logEndOffsetMetadata)
           }
@@ -1827,11 +1904,14 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     logString.toString
   }
 
+  // LogCleaner中需调用来用已【清理的newSegments】置换【oldSegments】
   private[log] def replaceSegments(newSegments: Seq[LogSegment], oldSegments: Seq[LogSegment]): Unit = {
     lock synchronized {
       localLog.checkIfMemoryMappedBufferClosed()
+      // 调用LocalLog的replaceSegments能力， 返回删除掉的Iterable[”old“ LogSegment]
       val deletedSegments = UnifiedLog.replaceSegments(localLog.segments, newSegments, oldSegments, dir, topicPartition,
         config, scheduler, logDirFailureChannel, logIdent)
+      // ”old“ LogSegment 被删除掉了，其对应的 ProducerSnapshot文件 也需要删除掉
       deleteProducerSnapshots(deletedSegments, asyncDelete = true)
     }
   }
@@ -1882,20 +1962,26 @@ class UnifiedLog(@volatile var logStartOffset: Long,
 }
 
 object UnifiedLog extends Logging {
+  // .log records文件
   val LogFileSuffix = LogFileUtils.LOG_FILE_SUFFIX
 
+  //  index 索引数据
   val IndexFileSuffix = LogFileUtils.INDEX_FILE_SUFFIX
 
   val TimeIndexFileSuffix = LogFileUtils.TIME_INDEX_FILE_SUFFIX
 
   val TxnIndexFileSuffix = LogFileUtils.TXN_INDEX_FILE_SUFFIX
 
+  // .cleaned
   val CleanedFileSuffix = LocalLog.CleanedFileSuffix
 
+  // .swap
   val SwapFileSuffix = LocalLog.SwapFileSuffix
 
+  // 标志 TopicPartition 待删除的 -delete 的后缀
   val DeleteDirSuffix = LocalLog.DeleteDirSuffix
 
+  // --stray后缀，流浪的partition？
   val StrayDirSuffix = LocalLog.StrayDirSuffix
 
   val FutureDirSuffix = LocalLog.FutureDirSuffix
@@ -1905,6 +1991,10 @@ object UnifiedLog extends Logging {
 
   val UnknownOffset = LocalLog.UnknownOffset
 
+  /**
+   *  判断此TopicPartition是否支持远程存储：
+   *  "remote.storage.enable"
+   */
   def isRemoteLogEnabled(remoteStorageSystemEnable: Boolean,
                          config: LogConfig,
                          topic: String): Boolean = {
@@ -1916,6 +2006,13 @@ object UnifiedLog extends Logging {
       config.remoteStorageEnable()
   }
 
+  /**
+   * LogManager中调用，如下2个方法中调用
+   * getOrCreateLog
+   * loadLog
+   *
+   * 目标：获得一个名为UnifiedLog的对象，来管理维护整个TopicPartition-x目录下的所有文件[local + remote logsegments + 其他元数据文件]
+   */
   def apply(dir: File,
             config: LogConfig,
             logStartOffset: Long,
@@ -1933,26 +2030,41 @@ object UnifiedLog extends Logging {
             numRemainingSegments: ConcurrentMap[String, Int] = new ConcurrentHashMap[String, Int],
             remoteStorageSystemEnable: Boolean = false,
             logOffsetsListener: LogOffsetsListener = LogOffsetsListener.NO_OP_OFFSETS_LISTENER): UnifiedLog = {
-    // create the log directory if it doesn't exist, On initial startup
+
+    // create the log directory(TopicPartition对应的文件夹) if it doesn't exist, On initial startup
     Files.createDirectories(dir.toPath)
+
     // check dirname
     val topicPartition = UnifiedLog.parseTopicPartitionName(dir)
+
     // construct LogSegments to help a "Log" to manage all LogSegments
+    // 跳表来存储TopicPartition磁盘目录下的所有LogSegment
     val segments = new LogSegments(topicPartition)
-    // LeaderEpoch File: leader-epoch-checkpoint init
+
+    // LeaderEpoch 相关，包括记录在磁盘文件和内存中的 都继承了LeaderEpochCheckpoint接口，区别是存在哪
+    // File: LeaderEpochCheckpointFile
+    // cache：InMemoryLeaderEpochCheckpoint
     val leaderEpochCache = UnifiedLog.maybeCreateLeaderEpochCache(
       dir,
       topicPartition,
       logDirFailureChannel,
       config.recordVersion,
       s"[UnifiedLog partition=$topicPartition, dir=${dir.getParent}] ")
+
     // Suffix of a producer snapshot file: xxxxxxx.snapshot
+    // producer state snapshot file, 管理生产者状态的与幂等性相关
+    // 此处我们只需要理解 一个UnifiedLog 是对应 一个ProducerStateManager的，再具体的一点说
+    // UnifiedLog对应的磁盘TopicPartition-x文件夹下，对应着xxxxxxx.snapshot文件来管理与此TopPartition-x相关的producer相关的状态(ProducerStateManager)
+    // Todo 至于ProducerStateManager可以后面再看...
     val producerStateManager = new ProducerStateManager(topicPartition, dir,
       maxTransactionTimeoutMs, producerStateManagerConfig, time)
+
     // remote.storage.enable
     val isRemoteLogEnabled = UnifiedLog.isRemoteLogEnabled(remoteStorageSystemEnable, config, topicPartition.topic)
 
     // Load the log segments from the log files on disk, and returns the components of the loaded log.
+    // **经典的loadsegment()步骤，加载此TopicPartition-x下面的所有logsegments
+    // 返回LoadedLogOffsets对象，包含下面的描述Log的信息 logStartOffset + recoveryPoint + nextOffsetMetadata
     val offsets = new LogLoader(
       dir,
       topicPartition,
@@ -1961,7 +2073,7 @@ object UnifiedLog extends Logging {
       time,
       logDirFailureChannel,
       lastShutdownClean,
-      segments,
+      segments, // 前面定义的跳表，”来存储TopicPartition磁盘目录下的所有LogSegment“
       logStartOffset,
       recoveryPoint,
       leaderEpochCache,
@@ -1969,10 +2081,23 @@ object UnifiedLog extends Logging {
       numRemainingSegments,
       isRemoteLogEnabled,
     ).load()
-    //
+
+    // 看这个类最上面的注释：
+    // * NOTE: this class handles state and behavior specific to tiered segments as well as any behavior combining both tiered
+    // * and local segments. The state and behavior specific to local segments are handled by the encapsulated LocalLog instance.
+
+    // UnifiedLog用于处理 [ tiered segments ] 以及 [ behavior combining both tiered and local segments ]
+    // LocalLog是特定用于处理"local" segments的
+    // 所以如果不开分层存储的话，LocalLog是最重要的
+    // 所以从这里就能看出来这里的设计，UnifiedLog提供统一操作LogSegment的接口，需要特定操作local segment的时候，调用localLog的能力
+    // localLog关心如下：
+    // offsets.recoveryPoint -> recoveryPoint
+    // offsets.nextOffsetMetadata -> 里面包含LEO
     val localLog = new LocalLog(dir, config, segments, offsets.recoveryPoint,
       offsets.nextOffsetMetadata, scheduler, time, topicPartition, logDirFailureChannel)
-    //
+
+    // UnifiedLog关心：offsets.logStartOffset
+    // UnifiedLog对象的初始化完成
     new UnifiedLog(offsets.logStartOffset,
       localLog,
       brokerTopicStats,

@@ -84,6 +84,8 @@ class LogManager(logDirs: Seq[File],
   val InitialTaskDelayMs = 30 * 1000
 
   private val logCreationOrDeletionLock = new Object
+  // key: TopicPartition 字符串组成的 TopicPartition标志
+  // value: UnifiedLog主管某个TopicPartition
   private val currentLogs = new Pool[TopicPartition, UnifiedLog]()
   // Future logs are put in the directory with "-future" suffix. Future log is created when user wants to move replica
   // from one log directory to another log directory on the same broker. The directory of the future log will be renamed
@@ -101,6 +103,8 @@ class LogManager(logDirs: Seq[File],
   // 获取所有的liveLogDirs(排除异常情况，剩余的就是liveLogDirs) : 入参initialOfflineDirs是所有没读到meta.properties的dir
   private val _liveLogDirs: ConcurrentLinkedQueue[File] = createAndValidateLogDirs(logDirs, initialOfflineDirs)
   @volatile private var _currentDefaultConfig = initialDefaultConfig
+
+  // num.recovery.threads.per.data.dir 为了完成loadlog的线程池中线程数量
   @volatile private var numRecoveryThreadsPerDataDir = recoveryThreadsPerDataDir
 
   // This map contains all partitions whose logs are getting loaded and initialized. If log configuration
@@ -116,6 +120,7 @@ class LogManager(logDirs: Seq[File],
 
   def currentDefaultConfig: LogConfig = _currentDefaultConfig
 
+  // Seq[File], /datax 存储目录下的所有文件 元数据(checkpoint系列)+文件夹(Topic-Partition-x)
   def liveLogDirs: Seq[File] = {
     if (_liveLogDirs.size == logDirs.size)
       logDirs
@@ -286,8 +291,16 @@ class LogManager(logDirs: Seq[File],
     }
   }
 
+  /**
+   * 加入logsToBeDeleted队列的方法
+   * 加入logsToBeDeleted队列场景1：LogManager启动时loadLog时发现存在.delete后缀的TopicPartition-x
+   * 加入logsToBeDeleted队列场景2：Alter Replica时，如果”future“已经就绪，那么就可以将”current“删除了
+   * 加入logsToBeDeleted队列场景3：接收到topic-delete请求时，删除TopicPartition-x
+   * @param log: 名字带-delete后缀的UnifiedLog
+   */
   private def addLogToBeDeleted(log: UnifiedLog): Unit = {
-    // thread | kafka-delete-logs
+    // 将UnifiedLog加入logsToBeDeleted中，由schedule thread | kafka-delete-logs来删除
+    // (要删除的log，加入到队列的时间点)
     this.logsToBeDeleted.add((log, time.milliseconds()))
   }
 
@@ -298,6 +311,13 @@ class LogManager(logDirs: Seq[File],
   // Only for testing
   private[log] def hasLogsToBeDeleted: Boolean = !logsToBeDeleted.isEmpty
 
+  /**
+   * 目标是啥？
+   * 1. 把磁盘上一个个的静态TopicPartition目录加载成LogManager可操作的UnifiedLog对象
+   * 2. -delete后缀处理：删除
+   * 3. --stray 流浪的partition处理？
+   * 4. --future后缀处理
+   */
   private[log] def loadLog(logDir: File,
                            hadCleanShutdown: Boolean,
                            recoveryPoints: Map[TopicPartition, Long],
@@ -307,9 +327,13 @@ class LogManager(logDirs: Seq[File],
                            numRemainingSegments: ConcurrentMap[String, Int]): UnifiedLog = {
     val topicPartition = UnifiedLog.parseTopicPartitionName(logDir)
     val config = topicConfigOverrides.getOrElse(topicPartition.topic, defaultConfig)
+
+    // 从 recoveryPoints 和 logStartOffsets中取出 logRecoveryPoint 和 logStartOffset
     val logRecoveryPoint = recoveryPoints.getOrElse(topicPartition, 0L)
     val logStartOffset = logStartOffsets.getOrElse(topicPartition, 0L)
 
+    // part1：初始化出UnifiedLog
+    // UnifiedLog掌管某个Topic-PartitionX下所有
     val log = UnifiedLog(
       dir = logDir,
       config = config,
@@ -328,12 +352,17 @@ class LogManager(logDirs: Seq[File],
       numRemainingSegments = numRemainingSegments,
       remoteStorageSystemEnable = remoteStorageSystemEnable)
 
+    // part2：--后缀处理
+    // -delete 待删除TopicPartition-x目录处理
     if (logDir.getName.endsWith(UnifiedLog.DeleteDirSuffix)) {
+      // 加入logsToBeDeleted队列场景1：LogManager启动时loadLog时发现存在.delete后缀的TopicPartition-x
       addLogToBeDeleted(log)
     } else if (logDir.getName.endsWith(UnifiedLog.StrayDirSuffix)) {
+      // --stray 流浪的partition？
       addStrayLog(topicPartition, log)
       warn(s"Loaded stray log: $logDir")
     } else {
+      // --future
       val previous = {
         if (log.isFuture)
           this.futureLogs.put(topicPartition, log)
@@ -350,7 +379,7 @@ class LogManager(logDirs: Seq[File],
             s"for this partition. It is recommended to delete the partition in the log directory that is known to have failed recently.")
       }
     }
-
+    // 返回
     log
   }
 
@@ -377,9 +406,11 @@ class LogManager(logDirs: Seq[File],
 
   /**
    * Recover and load all logs in the given data directories
+   * 目标是什么？
    */
   private[log] def loadLogs(defaultConfig: LogConfig, topicConfigOverrides: Map[String, LogConfig]): Unit = {
     info(s"Loading logs from log dirs $liveLogDirs")
+    // part1: 定义了一堆变量
     val startMs = time.hiResClockMs()
     val threadPools = ArrayBuffer.empty[ExecutorService]
     // loadLogs定义的offlineDirs
@@ -397,17 +428,22 @@ class LogManager(logDirs: Seq[File],
     }
 
     val uncleanLogDirs = mutable.Buffer.empty[String]
+    // part2:
+    // liveLogDirs -> Seq[File] | Seq[File], /datax 存储目录下的所有文件 元数据(checkpoint系列)+文件夹(Topic-Partition-x)
     for (dir <- liveLogDirs) {
       // get Path
       val logDirAbsolutePath = dir.getAbsolutePath
       // check Clean Shutdown
       var hadCleanShutdown: Boolean = false
       try {
-        // threadPools
+        // 2.1 构建为了完成“loadlog”工作的线程池
+        // threadPools: numRecoveryThreadsPerDataDir = num.recovery.threads.per.data.dir 默认4
         val pool = Executors.newFixedThreadPool(numRecoveryThreadsPerDataDir,
           new LogRecoveryThreadFactory(logDirAbsolutePath))
         threadPools.append(pool)
-        // check .kafka_cleanshutdown
+
+        // 2.2 check .kafka_cleanshutdown
+        // LogLoader的recoverLog()方法中将会对是否cleanshutdown进行判断，来决定是否需要执行recover segment的操作
         val cleanShutdownFile = new File(dir, LogLoader.CleanShutdownFile)
         if (cleanShutdownFile.exists) {
           // Cache the clean shutdown status and use that for rest of log loading workflow. Delete the CleanShutdownFile
@@ -417,7 +453,7 @@ class LogManager(logDirs: Seq[File],
         }
         hadCleanShutdownFlags.put(logDirAbsolutePath, hadCleanShutdown)
 
-        // recovery-point-offset-checkpoint
+        // 2.3 读取recovery-point-offset-checkpoint，将其信息转换成内存中的Map
         var recoveryPoints = Map[TopicPartition, Long]()
         try {
           recoveryPoints = this.recoveryPointCheckpoints(dir).read()
@@ -427,7 +463,7 @@ class LogManager(logDirs: Seq[File],
               s"$logDirAbsolutePath, resetting the recovery checkpoint to 0", e)
         }
 
-        // log-start-offset-checkpoint
+        // 2.4 读取log-start-offset-checkpoint，将其信息转换成内存中的Map
         var logStartOffsets = Map[TopicPartition, Long]()
         try {
           logStartOffsets = this.logStartOffsetCheckpoints(dir).read()
@@ -437,13 +473,14 @@ class LogManager(logDirs: Seq[File],
               s"$logDirAbsolutePath, resetting to the base offset of the first segment", e)
         }
 
+        // 2.5 确定哪些TopicPartition-x目录需要进行load
         // get num of  logs to Load and record it
         val logsToLoad = Option(dir.listFiles).getOrElse(Array.empty).filter(logDir =>
           logDir.isDirectory &&
             // Ignore remote-log-index-cache directory as that is index cache maintained by tiered storage subsystem
             // but not any topic-partition dir.
-            !logDir.getName.equals(RemoteIndexCache.DIR_NAME) &&
-            UnifiedLog.parseTopicPartitionName(logDir).topic != KafkaRaftServer.MetadataTopic)
+            !logDir.getName.equals(RemoteIndexCache.DIR_NAME) && // 排除remote-log-index-cache目录
+            UnifiedLog.parseTopicPartitionName(logDir).topic != KafkaRaftServer.MetadataTopic) // 排除__cluster_metadata目录
         numTotalLogs += logsToLoad.length
         numRemainingLogs.put(logDirAbsolutePath, logsToLoad.length)
         loadLogsCompletedFlags.put(logDirAbsolutePath, logsToLoad.isEmpty)
@@ -459,14 +496,17 @@ class LogManager(logDirs: Seq[File],
           uncleanLogDirs.append(logDirAbsolutePath)
         }
 
+        // 2.6 使用线程池来执行 loadLog 任务
         val jobsForDir = logsToLoad.map { logDir =>
-          // define runnable
+          // a. 定义任务 define runnable
           val runnable: Runnable = () => {
             debug(s"Loading log $logDir")
             var log = None: Option[UnifiedLog]
             val logLoadStartMs = time.hiResClockMs()
             try {
-              // loadLog
+              // **loadLog**
+              // 注意LogManager中定义的2个变量currentLogs和futureLogs定义的map结构
+              // loadLog之后会把load出来的UnifiedLog纳入管理其中
               log = Some(loadLog(logDir, hadCleanShutdown, recoveryPoints, logStartOffsets,
                 defaultConfig, topicConfigOverrides, numRemainingSegments))
             } catch {
@@ -495,7 +535,7 @@ class LogManager(logDirs: Seq[File],
           }
           runnable
         }
-        // submit job
+        // b. 提交任务 submit job
         jobs += jobsForDir.map(pool.submit)
       } catch {
         case e: IOException =>
@@ -503,9 +543,10 @@ class LogManager(logDirs: Seq[File],
       }
     }
 
+    // part3: 确保等待任务完成 + 线程关闭
     try {
       addLogRecoveryMetrics(numRemainingLogs, numRemainingSegments)
-      // future.get()
+      // future.get() 确保每个loadlog任务都执行完成
       for (dirJobs <- jobs) {
         dirJobs.foreach(_.get)
       }
@@ -519,6 +560,7 @@ class LogManager(logDirs: Seq[File],
         throw e.getCause
     } finally {
       removeLogRecoveryMetrics()
+      // 关闭每个线程
       threadPools.foreach(_.shutdown())
     }
 
@@ -596,6 +638,10 @@ class LogManager(logDirs: Seq[File],
   }
 
   // visible for testing
+  // broker启动时，LogManager完成的事情, 3件事情
+  // 1. loadlog
+  // 2. 5个schedule任务
+  // 3. logCleaner
   private[log] def startupWithConfigOverrides(defaultConfig: LogConfig, topicConfigOverrides: Map[String, LogConfig]): Unit = {
     // load Logs when broker starting ...
     // *this could take a while if shutdown was not clean
@@ -612,19 +658,21 @@ class LogManager(logDirs: Seq[File],
       scheduler.schedule("kafka-log-flusher",
                          () => flushDirtyLogs(),
                          InitialTaskDelayMs,
-                         flushCheckMs) // Long.MaxValue
+                         flushCheckMs) // 1000L
       scheduler.schedule("kafka-recovery-point-checkpoint",
                          () => checkpointLogRecoveryOffsets(),
                          InitialTaskDelayMs,
-                         flushRecoveryOffsetCheckpointMs) // 1min
+                         flushRecoveryOffsetCheckpointMs) // 10000L
       scheduler.schedule("kafka-log-start-offset-checkpoint",
                          () => checkpointLogStartOffsets(),
                          InitialTaskDelayMs,
-                         flushStartOffsetCheckpointMs) // 1min
+                         flushStartOffsetCheckpointMs) // 10000L
       scheduler.scheduleOnce("kafka-delete-logs", // will be rescheduled after each delete logs with a dynamic period
                          () => deleteLogs(),
-                         InitialTaskDelayMs)
+                         InitialTaskDelayMs) // 30S
     }
+
+    // LogCleaner线程入口
     if (cleanerConfig.enableCleaner) {
       _cleaner = new LogCleaner(cleanerConfig, liveLogDirs, currentLogs, logDirFailureChannel, time = time)
       _cleaner.startup()
@@ -633,6 +681,7 @@ class LogManager(logDirs: Seq[File],
 
   /**
    * Close all the logs
+   * kafka正常关闭时，LogManager所需做的关闭动作
    */
   def shutdown(): Unit = {
     info("Shutting down.")
@@ -664,6 +713,7 @@ class LogManager(logDirs: Seq[File],
 
       val jobsForDir = logs.map { log =>
         val runnable: Runnable = () => {
+          // kafka正常关闭情况下，会整体flush一把，其中更新了recovery point值
           // flush the log to ensure latest possible recovery point
           log.flush(true)
           log.close()
@@ -681,6 +731,7 @@ class LogManager(logDirs: Seq[File],
           val logs = logsInDir(localLogsByDir, dir)
 
           // update the last flush point
+          // 更新recovery point至磁盘上
           debug(s"Updating recovery points at $dir")
           checkpointRecoveryOffsetsInDir(dir, logs)
 
@@ -715,7 +766,10 @@ class LogManager(logDirs: Seq[File],
    */
   def truncateTo(partitionOffsets: Map[TopicPartition, Long], isFuture: Boolean): Unit = {
     val affectedLogs = ArrayBuffer.empty[UnifiedLog]
+
+    // 1. 遍历Map
     for ((topicPartition, truncateOffset) <- partitionOffsets) {
+      // 确定要操作的UnifiedLog
       val log = {
         if (isFuture)
           futureLogs.get(topicPartition)
@@ -725,21 +779,31 @@ class LogManager(logDirs: Seq[File],
       // If the log does not exist, skip it
       if (log != null) {
         // May need to abort and pause the cleaning of the log, and resume after truncation is done.
+        // logCleaner是不会清理activeSegment的，但是你想截取的【truncateOffset < log.activeSegment.baseOffset】
+        // 意味着 你想截取的部分，可能处于logCleaner正在Clean的地方，为了避免2者冲突，需要暂停此UnifiedLog的Clean动作
         val needToStopCleaner = truncateOffset < log.activeSegment.baseOffset
         if (needToStopCleaner && !isFuture)
           abortAndPauseCleaning(topicPartition)
+
         try {
+          // 执行truncate动作
           if (log.truncateTo(truncateOffset))
             affectedLogs += log
+
+          // 可能需要更新CleanerCheckpoint
           if (needToStopCleaner && !isFuture)
             maybeTruncateCleanerCheckpointToActiveSegmentBaseOffset(log, topicPartition)
         } finally {
+          // 恢复Cleaner
           if (needToStopCleaner && !isFuture)
             resumeCleaning(topicPartition)
         }
       }
     }
-
+    // 为啥要刷一把recovery checkpoint？
+    // 因为truncate会updateLogEndOffset(targetOffset)
+    // 调用updateLogEndOffset来更新LEO，其中会判断更新recovery checkpoint，来保证recovery checkpoint 低于 LEO
+    // 所以刷了一把recovery checkpoint
     for (dir <- affectedLogs.map(_.parentDirFile).distinct) {
       checkpointRecoveryOffsetsInDir(dir)
     }
@@ -821,6 +885,7 @@ class LogManager(logDirs: Seq[File],
    */
   private def checkpointRecoveryOffsetsInDir(logDir: File, logsToCheckpoint: Map[TopicPartition, UnifiedLog]): Unit = {
     try {
+      // 每个UnifiedLog都维护了recoveryPoint，所以要看recoveryPoint的更新
       recoveryPointCheckpoints.get(logDir).foreach { checkpoint =>
         val recoveryOffsets = logsToCheckpoint.map { case (tp, log) => tp -> log.recoveryPoint }
         // checkpoint.write calls Utils.atomicMoveWithFallback, which flushes the parent
@@ -1109,8 +1174,10 @@ class LogManager(logDirs: Seq[File],
    */
   private def deleteLogs(): Unit = {
     var nextDelayMs = 0L
+    // "The time to wait before deleting a file from the " + "filesystem", 默认60S
     val fileDeleteDelayMs = currentDefaultConfig.fileDeleteDelayMs
     try {
+      // 计算下次执行删除延迟多久
       def nextDeleteDelayMs: Long = {
         if (!logsToBeDeleted.isEmpty) {
           val (_, scheduleTimeMs) = logsToBeDeleted.peek()
@@ -1118,11 +1185,16 @@ class LogManager(logDirs: Seq[File],
         } else
           fileDeleteDelayMs
       }
-
+      // nextDelayMs <= 0 即还没有到达执行删除的时间
       while ({nextDelayMs = nextDeleteDelayMs; nextDelayMs <= 0}) {
+        // 删除场景：删除是UnifiedLog级别的，logsToBeDeleted队列中不为空场景
+        // 会根据其定义的“延迟”删除时间，来不断删除
+        // 那么问题来了？ -> 什么场景下log会被加入logsToBeDeleted呢？
+        // 取出待删除的UnifiedLog
         val (removedLog, _) = logsToBeDeleted.take()
         if (removedLog != null) {
           try {
+            // 调用UnifiedLog的删除能力
             removedLog.delete()
             info(s"Deleted log for partition ${removedLog.topicPartition} in ${removedLog.dir.getAbsolutePath}.")
           } catch {
@@ -1136,6 +1208,7 @@ class LogManager(logDirs: Seq[File],
         error(s"Exception in kafka-delete-logs thread.", e)
     } finally {
       try {
+        // 虽然是scheduleOnce的，但是递归掉的， 主要是为了计算出准确的nextDelayMs，而不是没有可删除的.delete的时候，也不停scheduler调用
         scheduler.scheduleOnce("kafka-delete-logs",
           () => deleteLogs(),
           nextDelayMs)
@@ -1180,6 +1253,7 @@ class LogManager(logDirs: Seq[File],
       }
 
       try {
+        // 加入logsToBeDeleted队列场景2：Alter Replica时，如果”future“已经就绪，那么就可以给本地的”current“带上-delete后缀了
         sourceLog.renameDir(UnifiedLog.logDeleteDirName(topicPartition), true)
         // Now that replica in source log directory has been successfully renamed for deletion.
         // Close the log, update checkpoint files, and enqueue this log to be deleted.
@@ -1190,6 +1264,7 @@ class LogManager(logDirs: Seq[File],
         checkpointLogStartOffsetsInDir(logDir, logsToCheckpoint)
         sourceLog.removeLogMetrics()
         destLog.newMetrics()
+        // 加入logsToBeDeleted队列
         addLogToBeDeleted(sourceLog)
       } catch {
         case e: KafkaStorageException =>
@@ -1243,7 +1318,10 @@ class LogManager(logDirs: Seq[File],
           removedLog.renameDir(UnifiedLog.logStrayDirName(topicPartition), false)
           warn(s"Log for partition ${removedLog.topicPartition} is marked as stray and renamed to ${removedLog.dir.getAbsolutePath}")
         } else {
+          // 加入logsToBeDeleted队列场景3：接收到topic-delete请求时，删除TopicPartition-x
+          // 先改名给Topic-Partition-x带上.delete
           removedLog.renameDir(UnifiedLog.logDeleteDirName(topicPartition), false)
+          // 将该TopicPartition加入logsToBeDeleted队列
           // * add removeLog to logsToBeDeleted, will be deleted asynchronously later
           addLogToBeDeleted(removedLog)
           info(s"Log for partition ${removedLog.topicPartition} is renamed to ${removedLog.dir.getAbsolutePath} and is scheduled for deletion")
@@ -1328,6 +1406,7 @@ class LogManager(logDirs: Seq[File],
   /**
    * Delete any eligible logs. Return the number of segments deleted.
    * Only consider logs that are not compacted.
+   * 针对非compact的UnifiedLog执行删除操作
    */
   def cleanupLogs(): Unit = {
     debug("Beginning log cleanup...")
@@ -1335,21 +1414,24 @@ class LogManager(logDirs: Seq[File],
     val startMs = time.milliseconds
 
     // clean current logs.
+    // 1. 排除compact的UnifiedLog
     val deletableLogs = {
       if (cleaner != null) {
         // prevent cleaner from working on same partitions when changing cleanup policy
         cleaner.pauseCleaningForNonCompactedPartitions()
       } else {
+        // "Only consider logs that are not compacted."
         currentLogs.filter {
           case (_, log) => !log.config.compact
         }
       }
     }
-
+    // 2. 遍历所有可删除的UnifiedLog
     try {
       deletableLogs.foreach {
         case (topicPartition, log) =>
           debug(s"Garbage collecting '${log.name}'")
+          // 执行删除OldSegments
           total += log.deleteOldSegments()
 
           val futureLog = futureLogs.get(topicPartition)
@@ -1422,9 +1504,12 @@ class LogManager(logDirs: Seq[File],
 
     for ((topicPartition, log) <- currentLogs.toList ++ futureLogs.toList) {
       try {
+        // 自上次刷新后过去了多久
         val timeSinceLastFlush = time.milliseconds - log.lastFlushTime
         debug(s"Checking if flush is needed on ${topicPartition.topic} flush interval ${log.config.flushMs}" +
               s" last flushed ${log.lastFlushTime} time since last flush: $timeSinceLastFlush")
+        // 是一个topic级别的变量TopicConfig.FLUSH_MS_CONFIG，默认是Long.MAX_VALUE
+        // 所以意味着不主动指定是不会走到下面的方法触发的，官方推荐的也是利用副本来实现高可用，将flush的时机交给操作系统
         if(timeSinceLastFlush >= log.config.flushMs)
           log.flush(false)
       } catch {
@@ -1485,6 +1570,7 @@ object LogManager {
     LogConfig.validateBrokerLogConfigValues(defaultProps, config.isRemoteLogStorageSystemEnabled)
     val defaultLogConfig = new LogConfig(defaultProps)
 
+    // cleanerConfig配置初始化的地方
     val cleanerConfig = LogCleaner.cleanerConfig(config)
 
     new LogManager(logDirs = config.logDirs.map(new File(_).getAbsoluteFile),

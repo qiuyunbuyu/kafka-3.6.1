@@ -28,6 +28,9 @@ class ReplicaAlterLogDirsManager(brokerConfig: KafkaConfig,
     name = s"ReplicaAlterLogDirsManager on broker ${brokerConfig.brokerId}",
     clientId = "ReplicaAlterLogDirs",
     numFetchers = brokerConfig.getNumReplicaAlterLogDirsThreads) {
+  // Option(getInt(KafkaConfig.NumReplicaAlterLogDirsThreadsProp)).getOrElse(logDirs.size)
+  // num.replica.alter.log.dirs.threads 没给默认值, 用户不填，就是log.dirs配置的磁盘的数量
+  // move replicas between log directories 用于在log.dirs存储目录间移动Replica
 
   override def createFetcherThread(fetcherId: Int, sourceBroker: BrokerEndPoint): ReplicaAlterLogDirsThread = {
     val threadName = s"ReplicaAlterLogDirsThread-$fetcherId"

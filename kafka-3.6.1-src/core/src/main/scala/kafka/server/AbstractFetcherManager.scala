@@ -135,6 +135,7 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
                                    brokerIdAndFetcherId: BrokerIdAndFetcherId): T = {
         val fetcherThread = createFetcherThread(brokerAndFetcherId.fetcherId, brokerAndFetcherId.broker)
         fetcherThreadMap.put(brokerIdAndFetcherId, fetcherThread)
+        // ReplicaFetcherThread- 启动
         fetcherThread.start()
         fetcherThread
       }

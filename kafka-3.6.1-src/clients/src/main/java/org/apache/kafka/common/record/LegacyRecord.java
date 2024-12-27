@@ -118,6 +118,7 @@ public final class LegacyRecord {
 
     /**
      * Returns true if the crc stored with the record matches the crc computed off the record contents
+     * Record中记录的checksum， 与 当前Record中计算的 computeChecksum 进行对比
      */
     public boolean isValid() {
         return sizeInBytes() >= RECORD_OVERHEAD_V0 && checksum() == computeChecksum();

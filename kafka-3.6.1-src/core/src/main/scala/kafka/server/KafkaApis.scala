@@ -188,7 +188,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
 
       request.header.apiKey match {
-        // producer: write request
+        // producer: write request : kafka中最基本的读写2类请求都是ReplicaManager来做的
         case ApiKeys.PRODUCE => handleProduceRequest(request, requestLocal)
         // consumer: fetch messages request
         case ApiKeys.FETCH => handleFetchRequest(request)
@@ -627,10 +627,10 @@ class KafkaApis(val requestChannel: RequestChannel,
    * Handle a produce request
    */
   def handleProduceRequest(request: RequestChannel.Request, requestLocal: RequestLocal): Unit = {
-    // 1. get request body
+    // 1. get request body： ProduceRequest
     val produceRequest = request.body[ProduceRequest]
 
-    // 2. transactional judge
+    // 2. transactional judge： 判断是否是事务消息
     if (RequestUtils.hasTransactionalRecords(produceRequest)) {
       val isAuthorizedTransactional = produceRequest.transactionalId != null &&
         authHelper.authorize(request.context, WRITE, TRANSACTIONAL_ID, produceRequest.transactionalId)
@@ -643,19 +643,26 @@ class KafkaApis(val requestChannel: RequestChannel,
     val unauthorizedTopicResponses = mutable.Map[TopicPartition, PartitionResponse]()
     val nonExistingTopicResponses = mutable.Map[TopicPartition, PartitionResponse]()
     val invalidRequestResponses = mutable.Map[TopicPartition, PartitionResponse]()
-    // *** [TopicPartition <-> MemoryRecords]
+
+    // *** [TopicPartition <-> MemoryRecords]：为啥是TopicPartition划分，联系producer发送时候的行为，是把发往同一个broker上的消息聚在同一个request中的
     val authorizedRequestInfo = mutable.Map[TopicPartition, MemoryRecords]()
+
+    // 用于权限校验，有无此topic的写权限
     // cache the result to avoid redundant authorization calls
     val authorizedTopics = authHelper.filterByAuthorized(request.context, WRITE, TOPIC,
       produceRequest.data().topicData().asScala)(_.name())
 
     // 3. Traverse each partition record, perform authorization and verification operations on it, and construct corresponding response information
     produceRequest.data.topicData.forEach(topic => topic.partitionData.forEach { partition =>
+      // 遍历request从中取得了 topic名字+分区号(partition.index)
       val topicPartition = new TopicPartition(topic.name, partition.index)
+
       // This caller assumes the type is MemoryRecords and that is true on current serialization
       // We cast the type to avoid causing big change to code base.
       // https://issues.apache.org/jira/browse/KAFKA-10698
+      // 获取BaseRecords
       val memoryRecords = partition.records.asInstanceOf[MemoryRecords]
+
       // 3.1 case1: unauthorizedTopicResponses
       if (!authorizedTopics.contains(topicPartition.topic))
         unauthorizedTopicResponses += topicPartition -> new PartitionResponse(Errors.TOPIC_AUTHORIZATION_FAILED)
@@ -666,7 +673,13 @@ class KafkaApis(val requestChannel: RequestChannel,
       // 3.3 case3: Send partition records to the corresponding broker
         try {
           // * validate Records version, Especially version >= 3
+          // 校验Producer Request， 3个校验
+          // 1. 校验RecordBatch的MAGIC_VALUE
+          // 2. 校验 压缩类型
+          // 3. 校验TopicPartition只能有一个对应的RecordBatch
           ProduceRequest.validateRecords(request.header.apiVersion, memoryRecords)
+
+          // 保存通过上述校验的 [TopicPartition <-> MemoryRecords]
           authorizedRequestInfo += (topicPartition -> memoryRecords)
         } catch {
           case e: ApiException =>
@@ -678,6 +691,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     // The construction of ProduceResponse is able to accept auto-generated protocol data so
     // KafkaApis#handleProduceRequest should apply auto-generated protocol to avoid extra conversion.
     // https://issues.apache.org/jira/browse/KAFKA-10730
+    // 构建response返回的方法
     @nowarn("cat=deprecation")
     def sendResponseCallback(responseStatus: Map[TopicPartition, PartitionResponse]): Unit = {
       val mergedResponseStatus = responseStatus ++ unauthorizedTopicResponses ++ nonExistingTopicResponses ++ invalidRequestResponses
@@ -748,26 +762,28 @@ class KafkaApis(val requestChannel: RequestChannel,
     if (authorizedRequestInfo.isEmpty)
       sendResponseCallback(Map.empty)
     else {
+      // 是否允许向内部主题写消息，判断方式也很直接”__admin_client“
       val internalTopicsAllowed = request.header.clientId == AdminUtils.ADMIN_CLIENT_ID
-
+      // 如果是事务消息，还要根据transactionalId来确定被__transaction_state哪个Partition管
       val transactionStatePartition =
         if (produceRequest.transactionalId() == null)
           None
         else
           Some(txnCoordinator.partitionFor(produceRequest.transactionalId()))
 
+      // ** replicaManager的调用
       // call the replica manager to append messages to the replicas
       replicaManager.appendRecords(
-        timeout = produceRequest.timeout.toLong,
-        requiredAcks = produceRequest.acks,
-        internalTopicsAllowed = internalTopicsAllowed,
-        origin = AppendOrigin.CLIENT,
-        entriesPerPartition = authorizedRequestInfo,
-        requestLocal = requestLocal,
-        responseCallback = sendResponseCallback,
+        timeout = produceRequest.timeout.toLong, // producer写入超时时间，对应就是 request.timeout.ms
+        requiredAcks = produceRequest.acks, // 根据ack判断何时返回写入响应
+        internalTopicsAllowed = internalTopicsAllowed, // 是否允许向内部主题写入消息
+        origin = AppendOrigin.CLIENT, // 写入来源
+        entriesPerPartition = authorizedRequestInfo, // 待写入数据，就是上面解析校验后的[TopicPartition, MemoryRecords]
+        requestLocal = requestLocal, // 该request处理的生命周期内保存的数据，request是被processor线程处理的，有点类似于threadlocal
+        responseCallback = sendResponseCallback, // 用于添加响应
         recordConversionStatsCallback = processingStatsCallback, // Message format conversion related indicators, quantity, time
-        transactionalId = produceRequest.transactionalId(),
-        transactionStatePartition = transactionStatePartition)
+        transactionalId = produceRequest.transactionalId(), // 事务ID
+        transactionStatePartition = transactionStatePartition) // 事务状态
 
       // if the request is put into the purgatory, it will have a held reference and hence cannot be garbage collected;
       // hence we clear its data here in order to let GC reclaim its memory since it is already appended to log
