@@ -155,7 +155,7 @@ public abstract class AbstractCoordinator implements Closeable {
     // last Rebalance EndMs
     private long lastRebalanceEndMs = -1L;
     private long lastTimeOfConnectionMs = -1L; // starting logging a warning only after unable to connect for a while
-
+    // 设定的初始状态
     protected MemberState state = MemberState.UNJOINED;
 
 
@@ -276,6 +276,7 @@ public abstract class AbstractCoordinator implements Closeable {
             // 1. construct FindCoordinatorRequest: ApiKeys.FIND_COORDINATOR
             final RequestFuture<Void> future = lookupCoordinator();
             // 2. do send FindCoordinatorRequest, attach SelectionKey.OP_WRITE for each request
+            // ”超时阻塞“，此处发了2个请求[MetdataRequest(前面有地方标记了更新) + FIND_COORDINATOR Request]
             client.poll(future, timer, disableWakeup);
             // 3. if isDone, break loop
             if (!future.isDone()) {
@@ -349,6 +350,7 @@ public abstract class AbstractCoordinator implements Closeable {
      * @throws RuntimeException for unexpected errors raised from the heartbeat thread
      */
     protected synchronized void pollHeartbeat(long now) {
+        // 在heartbeatThread != null情况下，才会做动作，在FindCoordinator
         if (heartbeatThread != null) {
             if (heartbeatThread.hasFailed()) {
                 // set the heartbeat thread to null and raise an exception. If the user catches it,
@@ -358,7 +360,9 @@ public abstract class AbstractCoordinator implements Closeable {
                 throw cause;
             }
             // Awake the heartbeat thread if needed
-            if (heartbeat.shouldHeartbeat(now)) {
+            if (heartbeat.shouldHeartbeat(now)) { // 推进时间 + 判断是否expire（即是否需要发送心跳?）
+                // heart也是一种事件循环，while里面!heartbeat.shouldHeartbeat(now)时会wait()
+                // 此时如果到达应该发送心跳的时间，把heartbeat给唤起，下次while过程中就会发心跳了
                 notify();
             }
             // true do heartbeat
@@ -401,6 +405,7 @@ public abstract class AbstractCoordinator implements Closeable {
             return false;
         }
         // 2. try to start Heartbeat connect with coordinator
+        // 只有知道了consumer端的Coordinator是哪个Node之后（FindCoordinator成功响应之后），才会启动heartbeat线程
         startHeartbeatThreadIfNeeded();
         // 3. consumer truly try to joinGroup | ApiKeys.JOIN_GROUP
         return joinGroupIfNeeded(timer);
@@ -408,6 +413,7 @@ public abstract class AbstractCoordinator implements Closeable {
 
     private synchronized void startHeartbeatThreadIfNeeded() {
         if (heartbeatThread == null) {
+            // 启动heartbeatThread线程
             heartbeatThread = new HeartbeatThread();
             heartbeatThread.start();
         }
@@ -929,6 +935,7 @@ public abstract class AbstractCoordinator implements Closeable {
                     int coordinatorConnectionId = Integer.MAX_VALUE - coordinatorData.nodeId();
 
                     // 2. construct coordinator information from response
+                    // FindCoordinator成功响应之后，会更新coordinator信息
                     AbstractCoordinator.this.coordinator = new Node(
                             coordinatorConnectionId,
                             coordinatorData.host(),
@@ -1510,11 +1517,13 @@ public abstract class AbstractCoordinator implements Closeable {
                             // backoff properly
                             AbstractCoordinator.this.wait(rebalanceConfig.retryBackoffMs);
                         } else if (heartbeat.sessionTimeoutExpired(now)) {
+                            // 一个session内consumer端的Coordinator没能和broker端的Coordinator完成心跳交互（正常完成心跳交互是会更新sessionTimeout的）
                             // the session timeout has expired without seeing a successful heartbeat, so we should
                             // probably make sure the coordinator is still healthy.
                             markCoordinatorUnknown("session timed out without receiving a "
                                     + "heartbeat response");
                         } else if (heartbeat.pollTimeoutExpired(now)) {
+                            // 拉取消息间隔超时：会主动发送LeaveGroupRequest
                             // the poll timeout has expired, which means that the foreground thread has stalled
                             // in between calls to poll().
                             log.warn("consumer poll timeout has expired. This means the time between subsequent calls to poll() " +
@@ -1527,11 +1536,14 @@ public abstract class AbstractCoordinator implements Closeable {
                         } else if (!heartbeat.shouldHeartbeat(now)) {
                             // poll again after waiting for the retry backoff in case the heartbeat failed or the
                             // coordinator disconnected
+                            // 这里wait，那哪边唤醒的？-》每次consumer.poll(...)时候会调用updateAssignmentMetadataIfNeeded，里面会判断是否notify
                             AbstractCoordinator.this.wait(rebalanceConfig.retryBackoffMs);
                         } else {
+                            // 现在发送heartbeat，更新一些时间标志
                             heartbeat.sentHeartbeat(now);
                             // sendHeartbeatRequest
                             final RequestFuture<Void> heartbeatFuture = sendHeartbeatRequest();
+                            // 收到heartresponse后的回调
                             heartbeatFuture.addListener(new RequestFutureListener<Void>() {
                                 @Override
                                 public void onSuccess(Void value) {

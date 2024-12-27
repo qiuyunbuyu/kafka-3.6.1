@@ -306,7 +306,8 @@ public class ConsumerConfig extends AbstractConfig {
      *
      * <p>
      * Note: this is an internal configuration and could be changed in the future in a backward incompatible way
-     *
+     * 消费者close的时候是否发送leavegroup请求，来触发group reblanace
+     * 如果设置为false，消费者退出时不会立即触发group reblanace，而是等待session.timeout.ms(心跳超时)来触发reblanace
      */
     static final String LEAVE_GROUP_ON_CLOSE_CONFIG = "internal.leave.group.on.close";
 

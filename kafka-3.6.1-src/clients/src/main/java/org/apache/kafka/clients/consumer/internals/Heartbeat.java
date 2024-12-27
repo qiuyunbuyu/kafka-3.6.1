@@ -72,6 +72,7 @@ public final class Heartbeat {
         lastHeartbeatSend = now;
         heartbeatInFlight = true;
         update(now);
+        // 发送心跳请求之后，更新heartbeatIntervalMs。标志下次发送的时间应该是更新heartbeatIntervalMs之后
         heartbeatTimer.reset(rebalanceConfig.heartbeatIntervalMs);
 
         if (log.isTraceEnabled()) {
@@ -82,6 +83,7 @@ public final class Heartbeat {
     void failHeartbeat() {
         update(time.milliseconds());
         heartbeatInFlight = false;
+        // 收到心跳响应->失败之后，下次发送的时间应该是retryBackoffMs之后
         heartbeatTimer.reset(rebalanceConfig.retryBackoffMs);
 
         log.trace("Heartbeat failed, reset the timer to {}ms remaining", heartbeatTimer.remainingMs());
@@ -90,12 +92,13 @@ public final class Heartbeat {
     void receiveHeartbeat() {
         update(time.milliseconds());
         heartbeatInFlight = false;
+        // 收到心跳响应->成功之后，更新sessionTimeoutMs，标志这个session内是正常的
         sessionTimer.reset(rebalanceConfig.sessionTimeoutMs);
     }
 
     boolean shouldHeartbeat(long now) {
-        update(now);
-        return heartbeatTimer.isExpired();
+        update(now); //更新相关时间为null，相当于推进时间
+        return heartbeatTimer.isExpired(); // 判断是否expire
     }
     
     long lastHeartbeatSend() {

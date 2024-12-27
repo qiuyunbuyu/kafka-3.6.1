@@ -36,29 +36,34 @@ public class GroupRebalanceConfig {
             return super.toString().toLowerCase(Locale.ROOT);
         }
     }
-
-    public final int sessionTimeoutMs; // How long does it take for the consumer and broker to have no heartbeat to trigger rebalance
-    public final int rebalanceTimeoutMs;
-    public final int heartbeatIntervalMs;
+    // 7个重要的属性
+    public final int sessionTimeoutMs; // session.timeout.ms: 45000 : How long does it take for the consumer and broker to have no heartbeat to trigger rebalance
+    public final int rebalanceTimeoutMs; // max.poll.interval.ms: 300000
+    public final int heartbeatIntervalMs; // heartbeat.interval.ms: 3000
     public final String groupId;
     public final Optional<String> groupInstanceId;
     public final long retryBackoffMs;
     public final boolean leaveGroupOnClose;
 
     public GroupRebalanceConfig(AbstractConfig config, ProtocolType protocolType) {
+        // 1. 心跳响应<->超时时间设置
         this.sessionTimeoutMs = config.getInt(CommonClientConfigs.SESSION_TIMEOUT_MS_CONFIG);
 
         // Consumer and Connect use different config names for defining rebalance timeout
+        // 2. 拉取间隔<->超时时间设置
         if (protocolType == ProtocolType.CONSUMER) {
             this.rebalanceTimeoutMs = config.getInt(CommonClientConfigs.MAX_POLL_INTERVAL_MS_CONFIG);
         } else {
             this.rebalanceTimeoutMs = config.getInt(CommonClientConfigs.REBALANCE_TIMEOUT_MS_CONFIG);
         }
-
+        // 3. 心跳发送<->时间间隔设置
         this.heartbeatIntervalMs = config.getInt(CommonClientConfigs.HEARTBEAT_INTERVAL_MS_CONFIG);
+
+        // 4. 消费者组groupID设置
         this.groupId = config.getString(CommonClientConfigs.GROUP_ID_CONFIG);
 
-        // Static membership is only introduced in consumer API.
+        // 5. Static membership is only introduced in consumer API.
+        // 静态消费者的标志：group.instance.id
         if (protocolType == ProtocolType.CONSUMER) {
             String groupInstanceId = config.getString(CommonClientConfigs.GROUP_INSTANCE_ID_CONFIG);
             if (groupInstanceId != null) {
@@ -70,10 +75,11 @@ public class GroupRebalanceConfig {
         } else {
             this.groupInstanceId = Optional.empty();
         }
-
+        // 6. 失败回退时间
         this.retryBackoffMs = config.getLong(CommonClientConfigs.RETRY_BACKOFF_MS_CONFIG);
 
         // Internal leave group config is only defined in Consumer.
+        // 7. consumer退出时的行为：默认是true
         if (protocolType == ProtocolType.CONSUMER) {
             this.leaveGroupOnClose = config.getBoolean("internal.leave.group.on.close");
         } else {
