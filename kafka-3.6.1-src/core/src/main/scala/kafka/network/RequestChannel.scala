@@ -105,6 +105,7 @@ object RequestChannel extends Logging {
 
     val session = Session(context.principal, context.clientAddress)
 
+    // 解析出RequestAndSize = RequestBody + size
     private val bodyAndSize: RequestAndSize = context.parseRequest(buffer)
 
     // This is constructed on creation of a Request so that the JSON representation is computed before the request is
@@ -358,8 +359,11 @@ class RequestChannel(val queueSize: Int,
   private val metricsGroup = new KafkaMetricsGroup(this.getClass)
 
   // the size of request Queue, default 500
+  // request 队列大小: 收纳的是BaseRequest类型
   private val requestQueue = new ArrayBlockingQueue[BaseRequest](queueSize)
+
   // processors in RequestChannel, default 3
+  // 处理线程
   private val processors = new ConcurrentHashMap[Int, Processor]()
   val requestQueueSizeMetricName = metricNamePrefix.concat(RequestQueueSizeMetric)
   val responseQueueSizeMetricName = metricNamePrefix.concat(ResponseQueueSizeMetric)
@@ -389,7 +393,9 @@ class RequestChannel(val queueSize: Int,
     metricsGroup.removeMetric(responseQueueSizeMetricName, Map(ProcessorMetricTag -> processorId.toString).asJava)
   }
 
-  /** Send a request to be handled, potentially blocking until there is room in the queue for the request */
+  /**
+   * 新增 Request
+   * Send a request to be handled, potentially blocking until there is room in the queue for the request */
   def sendRequest(request: RequestChannel.Request): Unit = {
     requestQueue.put(request)
   }
@@ -410,9 +416,11 @@ class RequestChannel(val queueSize: Int,
     onComplete: Option[Send => Unit] // onComplete method
   ): Unit = {
     updateErrorMetrics(request.header.apiKey, response.errorCounts.asScala)
+    //  1. 编码response
+    //  2. 将response交给processor的responseQueue
     sendResponse(new RequestChannel.SendResponse(
       request,
-      request.buildResponseSend(response),
+      request.buildResponseSend(response), // 此处完成了response的编码
       request.responseNode(response),
       onComplete
     ))
@@ -430,7 +438,9 @@ class RequestChannel(val queueSize: Int,
     sendResponse(new EndThrottlingResponse(request))
   }
 
-  /** Send a response back to the socket server to be sent over the network */
+  /** 给客户端发送请求
+   *  将response交给processor的responseQueue
+   * Send a response back to the socket server to be sent over the network */
   private[network] def sendResponse(response: RequestChannel.Response): Unit = {
     // 1. if need Traced
     if (isTraceEnabled) {
@@ -467,6 +477,7 @@ class RequestChannel(val queueSize: Int,
       case _: StartThrottlingResponse | _: EndThrottlingResponse => ()
     }
 
+    // 最后交给了Processor
     // 3. find the response correspond processor
     // The corresponding request and response need to be the same processor
     val processor = processors.get(response.processor)
@@ -486,6 +497,7 @@ class RequestChannel(val queueSize: Int,
     if (callbackRequest != null)
       callbackRequest
     else {
+      // 取出下一个Request
       val request = requestQueue.poll(timeout, TimeUnit.MILLISECONDS)
       request match {
         case WakeupRequest => callbackQueue.poll()
@@ -494,7 +506,9 @@ class RequestChannel(val queueSize: Int,
     }
   }
 
-  /** Get the next request or block until there is one */
+  /**
+   * 取请求
+   * Get the next request or block until there is one */
   def receiveRequest(): RequestChannel.BaseRequest =
     requestQueue.take()
 

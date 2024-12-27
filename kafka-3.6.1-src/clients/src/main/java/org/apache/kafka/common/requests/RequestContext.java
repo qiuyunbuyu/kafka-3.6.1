@@ -83,15 +83,19 @@ public class RequestContext implements AuthorizableRequestContext {
         this.principalSerde = principalSerde;
     }
 
+    // 根据RequestHeader + buffer， 解析出RequestAndSize = RequestBody + size
     public RequestAndSize parseRequest(ByteBuffer buffer) {
         if (isUnsupportedApiVersionsRequest()) {
             // Unsupported ApiVersion requests are treated as v0 requests and are not parsed
             ApiVersionsRequest apiVersionsRequest = new ApiVersionsRequest(new ApiVersionsRequestData(), (short) 0, header.apiVersion());
             return new RequestAndSize(apiVersionsRequest, 0);
         } else {
+            // 获取ApiKeys
             ApiKeys apiKey = header.apiKey();
             try {
+            // 获取apiVersion
                 short apiVersion = header.apiVersion();
+            // 结合ApiKeys + apiVersion 确定Request的类型，就能正确的将buffer转换成各类Request了
                 return AbstractRequest.parseRequest(apiKey, apiVersion, buffer);
             } catch (Throwable ex) {
                 throw new InvalidRequestException("Error getting request for apiKey: " + apiKey +

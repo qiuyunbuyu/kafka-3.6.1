@@ -168,6 +168,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   /**
    * Top-level method that handles all requests and multiplexes to the right api
+   * 走到这里，就像SpringBoot的Controller了
    */
   override def handle(request: RequestChannel.Request, requestLocal: RequestLocal): Unit = {
     def handleError(e: Throwable): Unit = {
@@ -1443,7 +1444,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case KRaftCachedControllerId(_) => metadataCache.getRandomAliveBrokerId
       }
     }
-
+    // 发送response给客户端， 基本每个Handle都有这个方法
     requestHelper.sendResponseMaybeThrottle(request, requestThrottleMs =>
        MetadataResponse.prepareResponse(
          requestVersion,

@@ -168,10 +168,19 @@ public abstract class AbstractRequest implements AbstractRequestResponse {
      * Factory method for getting a request object based on ApiKey ID and a version
      */
     public static RequestAndSize parseRequest(ApiKeys apiKey, short apiVersion, ByteBuffer buffer) {
+        // 前面读此Buffer的Header的时候，已经更新了位移，此时剩余的就是Body的大小了
         int bufferSize = buffer.remaining();
+        // 解析Request
         return new RequestAndSize(doParseRequest(apiKey, apiVersion, buffer), bufferSize);
     }
 
+    /**
+     * 每个Request都实现了一套相对从Byte到Request的解析
+     * @param apiKey: 确定是哪个Request
+     * @param apiVersion： 确定是Request的哪个版本
+     * @param buffer： Request对应的Byte
+     * @return 解析好的Request
+     */
     private static AbstractRequest doParseRequest(ApiKeys apiKey, short apiVersion, ByteBuffer buffer) {
         switch (apiKey) {
             case PRODUCE:

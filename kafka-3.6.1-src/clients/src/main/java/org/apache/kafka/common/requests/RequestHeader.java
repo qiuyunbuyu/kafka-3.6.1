@@ -112,23 +112,44 @@ public class RequestHeader implements AbstractRequestResponse {
         return new ResponseHeader(data.correlationId(), apiKey().responseHeaderVersion(apiVersion()));
     }
 
+    /**
+     * 从ByteBuffer解析出RequestHeader
+     * @param buffer
+     * @return RequestHeader
+     */
     public static RequestHeader parse(ByteBuffer buffer) {
         short apiKey = -1;
         try {
             // We derive the header version from the request api version, so we read that first.
             // The request api version is part of `RequestHeaderData`, so we reset the buffer position after the read.
             int bufferStartPositionForHeader = buffer.position();
+            // 获取requestApiKey
             apiKey = buffer.getShort();
+
+            // 获取requestApiVersion
             short apiVersion = buffer.getShort();
+
+            // 结合requestApiKey+requestApiVersion确定HeaderVersion
             short headerVersion = ApiKeys.forId(apiKey).requestHeaderVersion(apiVersion);
+
+            // 重置Buffer的Position，上面的读取已经更新了Position位置，为了下面的操作，需要重置
             buffer.position(bufferStartPositionForHeader);
+
+            // 结合ByteBuffer + headerVersion， 抽出RequestHeaderData如下所需
+            // short requestApiKey;
+            // short requestApiVersion;
+            // int correlationId;
+            // String clientId;
             final RequestHeaderData headerData = new RequestHeaderData(new ByteBufferAccessor(buffer), headerVersion);
             // Due to a quirk in the protocol, client ID is marked as nullable.
             // However, we treat a null client ID as equivalent to an empty client ID.
             if (headerData.clientId() == null) {
                 headerData.setClientId("");
             }
+
+            // *RequestHeader = RequestHeaderData + headerVersion
             final RequestHeader header = new RequestHeader(headerData, headerVersion);
+
             // Size of header is calculated by the shift in the position of buffer's start position during parsing.
             // Prior to parsing, the buffer's start position points to header data and after the parsing operation
             // the buffer's start position points to api message. For more information on how the buffer is
