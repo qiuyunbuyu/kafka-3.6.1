@@ -6,18 +6,20 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public class consumertest {
-	public static final String brokerList = "localhost:9092";
-	public static final String topic = "studytopic";
-	public static final String groupId = "group.fishyu080103";
+/**
+ * assign(1 TP) + commitSync
+ */
+public class consumer_assign_sync {
+	public static final String brokerList = "kafka9001.eniot.io:9092";
+	public static final String topic = "EOC_ALERT_MESSAGE_TOPIC";
+	public static final String groupId = "consumer.fishyu";
 	public static final AtomicBoolean isRunning = new AtomicBoolean(true);
 
 	public static Properties initConfig() {
-		// 必须指定的参数
 		Properties props = new Properties();
 		props.put("key.deserializer",
 				"org.apache.kafka.common.serialization.StringDeserializer");
@@ -28,15 +30,16 @@ public class consumertest {
 		props.put("group.id", groupId);
 		props.put("client.id", "consumer.client.id.fishyu080103");
 
-		props.put("isolation.level", "read_committed");
+		props.put("enable.auto.commit", "false");
 		return props;
 	}
 	public static void main(String[] args) {
 		Properties properties = initConfig();
 		KafkaConsumer<String, String> consumer = new KafkaConsumer<>(properties);
 		// 订阅topic
-		consumer.subscribe(Arrays.asList(topic));
+//		consumer.subscribe(Arrays.asList(topic));
 
+		consumer.assign(Collections.singleton(new TopicPartition("EOC_ALERT_MESSAGE_TOPIC", 0)));
 
 		try {
 			while(isRunning.get()){
@@ -47,6 +50,7 @@ public class consumertest {
 				for(ConsumerRecord<String, String> record : records){
 					System.out.println(record.toString());
 				}
+				consumer.commitSync();
 			}
 		} catch (Exception e) {
 			e.printStackTrace();
