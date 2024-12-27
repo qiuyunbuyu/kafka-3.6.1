@@ -108,6 +108,7 @@ public final class ConsumerUtils {
     }
 
     public static SubscriptionState createSubscriptionState(ConsumerConfig config, LogContext logContext) {
+        // 设置默认的Reset offset Strategy
         String s = config.getString(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG).toUpperCase(Locale.ROOT);
         OffsetResetStrategy strategy = OffsetResetStrategy.valueOf(s);
         return new SubscriptionState(logContext, strategy);
