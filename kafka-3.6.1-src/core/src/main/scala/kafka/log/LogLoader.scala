@@ -486,6 +486,7 @@ class LogLoader(
             // do recover
             recoverSegment(segment)
           } catch {
+            // [log-truncate场景]
             case _: InvalidOffsetException =>
               val startOffset = segment.baseOffset
               warn(s"Found invalid offset during recovery. Deleting the" +

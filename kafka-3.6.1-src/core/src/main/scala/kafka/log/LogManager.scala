@@ -766,7 +766,10 @@ class LogManager(logDirs: Seq[File],
    */
   def truncateTo(partitionOffsets: Map[TopicPartition, Long], isFuture: Boolean): Unit = {
     val affectedLogs = ArrayBuffer.empty[UnifiedLog]
+
+    // 1. 遍历Map
     for ((topicPartition, truncateOffset) <- partitionOffsets) {
+      // 确定要操作的UnifiedLog
       val log = {
         if (isFuture)
           futureLogs.get(topicPartition)
@@ -776,21 +779,31 @@ class LogManager(logDirs: Seq[File],
       // If the log does not exist, skip it
       if (log != null) {
         // May need to abort and pause the cleaning of the log, and resume after truncation is done.
+        // logCleaner是不会清理activeSegment的，但是你想截取的【truncateOffset < log.activeSegment.baseOffset】
+        // 意味着 你想截取的部分，可能处于logCleaner正在Clean的地方，为了避免2者冲突，需要暂停此UnifiedLog的Clean动作
         val needToStopCleaner = truncateOffset < log.activeSegment.baseOffset
         if (needToStopCleaner && !isFuture)
           abortAndPauseCleaning(topicPartition)
+
         try {
+          // 执行truncate动作
           if (log.truncateTo(truncateOffset))
             affectedLogs += log
+
+          // 可能需要更新CleanerCheckpoint
           if (needToStopCleaner && !isFuture)
             maybeTruncateCleanerCheckpointToActiveSegmentBaseOffset(log, topicPartition)
         } finally {
+          // 恢复Cleaner
           if (needToStopCleaner && !isFuture)
             resumeCleaning(topicPartition)
         }
       }
     }
-
+    // 为啥要刷一把recovery checkpoint？
+    // 因为truncate会updateLogEndOffset(targetOffset)
+    // 调用updateLogEndOffset来更新LEO，其中会判断更新recovery checkpoint，来保证recovery checkpoint 低于 LEO
+    // 所以刷了一把recovery checkpoint
     for (dir <- affectedLogs.map(_.parentDirFile).distinct) {
       checkpointRecoveryOffsetsInDir(dir)
     }

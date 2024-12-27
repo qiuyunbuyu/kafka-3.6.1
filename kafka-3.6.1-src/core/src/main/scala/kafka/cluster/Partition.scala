@@ -1686,6 +1686,7 @@ class Partition(val topicPartition: TopicPartition,
     // The read lock is needed to prevent the follower replica from being truncated while ReplicaAlterDirThread
     // is executing maybeReplaceCurrentWithFutureReplica() to replace follower replica with the future replica.
     inReadLock(leaderIsrUpdateLock) {
+      // 如果强行对比的话，这里就像Partition(service层) -> 调用logManager(Dao层)的能力
       logManager.truncateTo(Map(topicPartition -> offset), isFuture = isFuture)
     }
   }

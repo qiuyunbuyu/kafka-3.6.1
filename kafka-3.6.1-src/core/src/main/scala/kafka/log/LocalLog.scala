@@ -218,7 +218,9 @@ class LocalLog(@volatile private var _dir: File,
    * @param endOffset the new end offset of the log
    */
   private[log] def updateLogEndOffset(endOffset: Long): Unit = {
+    // 1. 更新 LEO
     nextOffsetMetadata = new LogOffsetMetadata(endOffset, segments.activeSegment.baseOffset, segments.activeSegment.size)
+    // 2. 更新 recoveryPoint
     if (recoveryPoint > endOffset) {
       updateRecoveryPoint(endOffset)
     }
@@ -624,10 +626,16 @@ class LocalLog(@volatile private var _dir: File,
    * @return the list of segments that were scheduled for deletion
    */
   private[log] def truncateTo(targetOffset: Long): Iterable[LogSegment] = {
+    // [ 0 ---- ] | [1000 ---- targetOffset(1050)] | [2000 ----- ] | [3000 ----- ] | [4000 ----- ]......
+    // 找出所有大于”target truncateTo Offset“的 LogSegments | [2000 ----- ] | [3000 ----- ] | [4000 ----- ]......
     val deletableSegments = List[LogSegment]() ++ segments.filter(segment => segment.baseOffset > targetOffset)
+    // 删除上述LogSegments |  [2000 ----- ] | [3000 ----- ] | [4000 ----- ]......
     removeAndDeleteSegments(deletableSegments, asyncDelete = true, LogTruncation(this))
+    // baseOffset低于targetOffset的第一个LogSegment，执行truncate | [1000 ---- targetOffset(1050)]
     segments.activeSegment.truncateTo(targetOffset)
+    // 更新 LEO/ recoveryPoint
     updateLogEndOffset(targetOffset)
+    // 返回所有被删除掉的 LogSegments
     deletableSegments
   }
 }

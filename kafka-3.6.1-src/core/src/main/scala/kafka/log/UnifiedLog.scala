@@ -1798,6 +1798,8 @@ class UnifiedLog(@volatile var logStartOffset: Long,
     maybeHandleIOException(s"Error while truncating log to offset $targetOffset for $topicPartition in dir ${dir.getParent}") {
       if (targetOffset < 0)
         throw new IllegalArgumentException(s"Cannot truncate partition $topicPartition to a negative offset (%d).".format(targetOffset))
+
+      // "truncate targetOffset" > LEO 大的场景
       if (targetOffset >= localLog.logEndOffset) {
         info(s"Truncating to $targetOffset has no effect as the largest offset in the log is ${localLog.logEndOffset - 1}")
 
@@ -1811,17 +1813,26 @@ class UnifiedLog(@volatile var logStartOffset: Long,
 
         false
       } else {
+        // 正常场景：0 < "truncate targetOffset" < LEO
         info(s"Truncating to offset $targetOffset")
         lock synchronized {
           localLog.checkIfMemoryMappedBufferClosed()
+          // targetOffset 比 firstSegment BaseOffset 还小 -> 全截场景
           if (localLog.segments.firstSegmentBaseOffset.get > targetOffset) {
+            // "Delete all data in the log and start at the new offset"
             truncateFullyAndStartAt(targetOffset)
           } else {
+            // 执行truncate，可能会删除多个logsegments
             val deletedSegments = localLog.truncateTo(targetOffset)
+            // 删除被删除的logsegments相对应的ProducerSnapshot
             deleteProducerSnapshots(deletedSegments, asyncDelete = true)
+            // 删除leader-epoch中大于等于targetOffset的相关Entry
             leaderEpochCache.foreach(_.truncateFromEnd(targetOffset))
+            // 可能会更新logStartOffset
             logStartOffset = math.min(targetOffset, logStartOffset)
+            // producer state相关
             rebuildProducerState(targetOffset, producerStateManager)
+            // 更新HW，因为truncate会更新LEO，要保证HW < LEO
             if (highWatermark >= localLog.logEndOffset)
               updateHighWatermark(localLog.logEndOffsetMetadata)
           }

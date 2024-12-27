@@ -442,6 +442,7 @@ class LogSegment private[log] (val log: FileRecords,
           .format(log.file.getAbsolutePath, validBytes, e.getMessage, e.getCause))
     }
 
+    // [log-truncate场景]
     // 遍历完了某个logsegment中所有RecordBatch之后的逻辑，截断逻辑
     val truncated = log.sizeInBytes - validBytes
     if (truncated > 0)
