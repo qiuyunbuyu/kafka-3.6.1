@@ -99,6 +99,7 @@ public class TimingWheel {
     private final long startMs;
     private final int wheelSize;
     private final AtomicInteger taskCounter; // the sum of tasks in this flow TimingWheel
+    //时间轮上每个格子对应的类为TimerTaskList
     private final DelayQueue<TimerTaskList> queue;
     private final long interval;
     private final TimerTaskList[] buckets;
@@ -109,8 +110,8 @@ public class TimingWheel {
     private volatile TimingWheel overflowWheel = null;
 
     TimingWheel(
-        long tickMs,
-        int wheelSize,
+        long tickMs, // 轮内一格的步长 1ms, 每一层级都是不一致的，此处仅是最低级的
+        int wheelSize, // 轮内的个数 20
         long startMs,
         AtomicInteger taskCounter,
         DelayQueue<TimerTaskList> queue

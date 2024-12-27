@@ -184,6 +184,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
   private[this] val estimatedTotalOperations = new AtomicInteger(0)
 
   /* background thread expiring operations that have timed out */
+  // 延时任务收割线程
   private val expirationReaper = new ExpiredOperationReaper()
 
   private val metricsTags = Map("delayedOperation" -> purgatoryName).asJava
@@ -450,12 +451,17 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
 
   /**
    * A background reaper to expire delayed operations that have timed out
+   * 业务线程只负责向时间轮中写入数据，那时间轮中的数据什么时候被清除呢？
+   * ExpiredOperationReaper线程会实时扫描那些已经过期的任务，并将其从时间轮中移除
+   *
+   * 它的作用只是去实时找出那些已经过期的任务，并将后续的回调逻辑扔给“回调线程池”，继而继续扫描，由此可见其任务并不繁重
    */
   private class ExpiredOperationReaper extends ShutdownableThread(
     "ExpirationReaper-%d-%s".format(brokerId, purgatoryName),
     false) {
     // Periodically advance the clock
     override def doWork(): Unit = {
+      // "Advance the internal clock, executing any tasks whose expiration has been"
       advanceClock(200L)
     }
   }

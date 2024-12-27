@@ -27,12 +27,14 @@ import java.util.function.Consumer;
 class TimerTaskList implements Delayed {
     private final Time time;
     private final AtomicInteger taskCounter;
+    // 还要多久会expire，还要多久会滑过
     private final AtomicLong expiration;
 
     // TimerTaskList forms a doubly linked cyclic list using a dummy root entry
     // root.next points to the head
     // root.prev points to the tail
     // o(1) to add and delete
+    // 每个格子中链表中的元素对应的类为:TimerTaskEntry
     private final TimerTaskEntry root;
 
     TimerTaskList(
@@ -49,6 +51,7 @@ class TimerTaskList implements Delayed {
         this.taskCounter = taskCounter;
         this.expiration = new AtomicLong(-1L);
         this.root = new TimerTaskEntry(null, -1L);
+        // 双向链表的初始化
         this.root.next = root;
         this.root.prev = root;
     }

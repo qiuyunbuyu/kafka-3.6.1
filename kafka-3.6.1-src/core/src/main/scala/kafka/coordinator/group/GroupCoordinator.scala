@@ -1475,6 +1475,11 @@ private[group] class GroupCoordinator(
       s"${group.generationId} (${Topic.GROUP_METADATA_TOPIC_NAME}-${partitionFor(group.groupId)}) (reason: $reason)")
 
     val groupKey = GroupJoinKey(group.groupId)
+
+//    首先尝试去完成调用，如果所有条件均已满足，那么当前任务直接成功，也就不需要与时间轮交互了
+//    如果条件不满足，则会将任务存储在时间轮
+//    如果用户设置了key，同时还会对同key的TimeTask进行监听
+//    其实就是对同key的任务做批量操作，比如一起取消，后文还会提及
     rebalancePurgatory.tryCompleteElseWatch(delayedRebalance, Seq(groupKey))
   }
 
