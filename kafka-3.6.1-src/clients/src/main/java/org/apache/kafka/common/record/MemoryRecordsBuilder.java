@@ -65,7 +65,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     private final byte magic;
     // bytebuffer initial Position
     private final int initialPosition;
-    // base offset
+    // base offset：这里的baseOffset是啥？producerbatch的baseOffset？这里的base维度是啥？=>维度是某个ProducerBatch的baseoffset，起始是0
     private final long baseOffset;
     // time to append log
     private final long logAppendTime;
@@ -135,7 +135,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             if (deleteHorizonMs != RecordBatch.NO_TIMESTAMP)
                 throw new IllegalArgumentException("Delete horizon timestamp is not supported for magic " + magic);
         }
-
+        // 下面大部分字段都作为ProducerBatch的head中属性存在
         this.magic = magic;
         this.timestampType = timestampType;
         this.compressionType = compressionType;
@@ -156,11 +156,14 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         // initial Position [ buffer.position() ]
         this.initialPosition = bufferStream.position();
         // calculate Header size based on different versions, Return the size of the record batch header.
+        // 这里会计算ProducerBatch的头部size，都能计算出size了，能精确确定procuerbatch有啥
         this.batchHeaderSizeInBytes = AbstractRecords.recordBatchHeaderSizeInBytes(magic, compressionType);
         // adjust position
+        // 根据头部大小，调整position
         bufferStream.position(initialPosition + batchHeaderSizeInBytes);
         this.bufferStream = bufferStream;
         // bufferStream -> DataOutputStream (add compress ability)
+        // 对最普通的ByteBuffer进行包装，增加”扩容“，”压缩“能力
         this.appendStream = new DataOutputStream(compressionType.wrapForOutput(this.bufferStream, magic));
 
         if (hasDeleteHorizonMs()) {
@@ -871,6 +874,8 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         }
         // [ Records that have been written + new Record ] cannot exceed the upper writeLimit
         // Be conservative and not take compression of the new record into consideration.
+        // "预估写入字节"+”已写入字节“ 是否小于 writeLimit
+        // 这里为啥是"预估写入字节"，因为可能存在压缩的情况，非压缩是能精确算出来的，压缩情况下只能是预估
         return this.writeLimit >= estimatedBytesWritten() + recordSize;
     }
 
@@ -898,8 +903,15 @@ public class MemoryRecordsBuilder implements AutoCloseable {
 
     private long nextSequentialOffset() {
         // lastOffset add for new Record write
+//        System.out.println("--------------------"+baseOffset+"---------------"+lastOffset);
         return lastOffset == null ? baseOffset : lastOffset + 1;
     }
+
+    public void showBaseAndOffset() {
+        // lastOffset add for new Record write
+        System.out.println("--------------------"+baseOffset+"---------------"+lastOffset);
+    }
+
 
     public static class RecordsInfo {
         public final long maxTimestamp;

@@ -31,6 +31,9 @@ import java.util.function.Function;
  */
 public class ProduceRequestResult {
     // use CountDownLatch(1) to indirectly implement the future function
+    // todo
+    // 猜测Sender线程和主线程间接的共享了ProduceRequestResult，也就间接共享了latch
+    // 然后主线程await()，sender线程done()
     private final CountDownLatch latch = new CountDownLatch(1);
     private final TopicPartition topicPartition;
     // baseOffset: Related to the offset on the broker side

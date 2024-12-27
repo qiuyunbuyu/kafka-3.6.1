@@ -55,7 +55,7 @@ import static org.apache.kafka.common.record.Records.LOG_OVERHEAD;
  *  MaxTimestamp => Int64
  *  ProducerId => Int64
  *  ProducerEpoch => Int16
- *  BaseSequence => Int32
+ *  BaseSequence => Int32 ”以上为v2版本ProducerBatch的‘头字段’，”以下为单条Record“
  *  Records => [Record]
  *
  * Note that when compression is enabled (see attributes below), the compressed record data is serialized

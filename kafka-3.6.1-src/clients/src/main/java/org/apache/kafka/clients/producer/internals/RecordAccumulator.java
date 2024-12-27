@@ -133,6 +133,7 @@ public class RecordAccumulator {
                              ApiVersions apiVersions,
                              TransactionManager transactionManager,
                              BufferPool bufferPool) {
+        // 这些初始化的参数是在Producer构造函数中传入的
         this.logContext = logContext;
         this.log = logContext.logger(RecordAccumulator.class);
         this.closed = false;
@@ -419,7 +420,7 @@ public class RecordAccumulator {
                 callbacks, nowMs));
         // add to dq
         dq.addLast(batch);
-        // add to incomplete
+        // add to incomplete： incomplete添加
         incomplete.add(batch);
 
         return new RecordAppendResult(future, dq.size() > 1 || batch.isFull(), true, false, batch.estimatedSizeInBytes());
@@ -551,6 +552,7 @@ public class RecordAccumulator {
         Deque<ProducerBatch> partitionDequeue = getOrCreateDeque(bigBatch.topicPartition);
         while (!dq.isEmpty()) {
             ProducerBatch batch = dq.pollLast();
+            // incomplete添加
             incomplete.add(batch);
             // We treat the newly split batches as if they are not even tried.
             synchronized (partitionDequeue) {
@@ -791,6 +793,7 @@ public class RecordAccumulator {
      *     <li>The accumulator has been closed</li>
      * </ul>
      * </ol>
+     * 先知道哪些Node能发送了，
      */
     public ReadyCheckResult ready(Metadata metadata, long nowMs) {
         // readyNodes: Node can be sent data
@@ -1063,9 +1066,11 @@ public class RecordAccumulator {
      * Deallocate the record batch
      */
     public void deallocate(ProducerBatch batch) {
+        // incomplete删除
         incomplete.remove(batch);
         // Only deallocate the batch if it is not a split batch because split batch are allocated outside the
         // buffer pool.
+        // "Return buffers to the pool", 把这块batch占的空间还回去
         if (!batch.isSplitBatch())
             free.deallocate(batch.buffer(), batch.initialCapacity());
     }
@@ -1281,8 +1286,11 @@ public class RecordAccumulator {
 
     /**
      * Per topic info.
+     * Important objects: ProducerBatch
      */
     private static class TopicInfo {
+        // 读多写少是基于这个Map整体而言的，Deque<ProducerBatch>是频繁读写的
+        // 对于Deque<ProducerBatch>处理是，从batches这个Map取出来之后deque，都加了synchronized (deque)来保证线程安全的
         public final ConcurrentMap<Integer /*partition*/, Deque<ProducerBatch>> batches = new CopyOnWriteMap<>();
         public final BuiltInPartitioner builtInPartitioner;
 

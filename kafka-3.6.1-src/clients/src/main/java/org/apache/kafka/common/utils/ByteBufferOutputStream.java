@@ -121,6 +121,7 @@ public class ByteBufferOutputStream extends OutputStream {
 
     /**
      * do expand Buffer
+     * 给ByteBuffer扩容：方式是将旧ByteBuffer移到新申请的ByteBuffer
      * @param remainingRequired
      */
     private void expandBuffer(int remainingRequired) {

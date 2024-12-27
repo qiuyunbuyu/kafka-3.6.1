@@ -59,6 +59,8 @@ import static org.apache.kafka.common.record.RecordBatch.MAGIC_VALUE_V2;
  *
  * The offset and timestamp deltas compute the difference relative to the base offset and
  * base timestamp of the batch that this record is contained in.
+ *
+ * v2版本单条Record的定义，组织在producer端：ProducerBatch中，server写入日志时的DefaultRecordBatch中
  */
 public class DefaultRecord implements Record {
 
@@ -158,6 +160,10 @@ public class DefaultRecord implements Record {
 
     /**
      * Write the record to `out` and return its size.
+     * 用户传入的是Key + value + header， Key + value由自身定义的序列化方式序列化成了byte
+     * 此方法，在用户提供的Key， value基础上附着上其他”元数据“信息，并最终都转成了Byte，维护在DataOutputStream包装的ByteBuffer中
+     *
+     * -------不定长数据压缩的经典操作----
      */
     public static int writeTo(DataOutputStream out,
                               int offsetDelta,
