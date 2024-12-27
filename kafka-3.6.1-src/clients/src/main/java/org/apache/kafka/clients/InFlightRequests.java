@@ -47,6 +47,7 @@ final class InFlightRequests {
     public void add(NetworkClient.InFlightRequest request) {
         String destination = request.destination;
         Deque<NetworkClient.InFlightRequest> reqs = this.requests.get(destination);
+        // 不用考虑并发吗？ -> 仅Sender线程使用到
         if (reqs == null) {
             reqs = new ArrayDeque<>();
             this.requests.put(destination, reqs);
@@ -69,6 +70,7 @@ final class InFlightRequests {
      * Get the oldest request (the one that will be completed next) for the given node
      */
     public NetworkClient.InFlightRequest completeNext(String node) {
+        // add的时候每次都是addFirst(request)，所以pollLast()的是oldest的request
         NetworkClient.InFlightRequest inFlightRequest = requestQueue(node).pollLast();
         inFlightRequestCount.decrementAndGet();
         return inFlightRequest;
@@ -88,6 +90,7 @@ final class InFlightRequests {
      * @return The request
      */
     public NetworkClient.InFlightRequest completeLastSent(String node) {
+        // 和completeNext(String node)相对的，把“最新”的给干掉了
         NetworkClient.InFlightRequest inFlightRequest = requestQueue(node).pollFirst();
         inFlightRequestCount.decrementAndGet();
         return inFlightRequest;
@@ -161,7 +164,7 @@ final class InFlightRequests {
     private Boolean hasExpiredRequest(long now, Deque<NetworkClient.InFlightRequest> deque) {
         for (NetworkClient.InFlightRequest request : deque) {
             // If there is a timed-out request, the connection to the broker is considered to have timed out.
-            if (request.timeElapsedSinceSendMs(now) > request.requestTimeoutMs)
+            if (request.timeElapsedSinceSendMs(now) > request.requestTimeoutMs) // request.requestTimeoutMs -> 默认30s
                 return true;
         }
         return false;
@@ -174,6 +177,7 @@ final class InFlightRequests {
      * @return list of nodes
      */
     public List<String> nodesWithTimedOutRequests(long now) {
+        // 获取有“超时Request”的node
         List<String> nodeIds = new ArrayList<>();
         for (Map.Entry<String, Deque<NetworkClient.InFlightRequest>> requestEntry : requests.entrySet()) {
             String nodeId = requestEntry.getKey();

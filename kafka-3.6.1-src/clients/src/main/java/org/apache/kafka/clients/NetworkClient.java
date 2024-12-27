@@ -324,6 +324,7 @@ public class NetworkClient implements KafkaClient {
         log.info("Client requested disconnect from node {}", nodeId);
         selector.close(nodeId);
         long now = time.milliseconds();
+        // 与某一node断开连接时，会清空与此node维护的Inflight Request
         cancelInFlightRequests(nodeId, now, abortedSends, false);
         connectionStates.disconnected(nodeId, now);
     }
@@ -548,7 +549,7 @@ public class NetworkClient implements KafkaClient {
                 send,
                 now);
         // add inFlightRequest for send later...
-        this.inFlightRequests.add(inFlightRequest);
+        this.inFlightRequests.add(inFlightRequest); // 放到inFlightRequests里面，都会跟一个selector.send(...), 预发送
         // call Selector to send data asynchronously
         selector.send(new NetworkSend(clientRequest.destination(), send));
     }
@@ -848,7 +849,7 @@ public class NetworkClient implements KafkaClient {
             default:
                 break; // Disconnections in other states are logged at debug level in Selector
         }
-
+        // 与某一node断开连接时，会清空与此node维护的Inflight Request
         cancelInFlightRequests(nodeId, now, responses, timedOut);
         metadataUpdater.handleServerDisconnect(now, nodeId, Optional.ofNullable(disconnectState.exception()));
     }
@@ -863,6 +864,8 @@ public class NetworkClient implements KafkaClient {
     private void handleTimedOutRequests(List<ClientResponse> responses, long now) {
         // Returns a list of nodes with pending in-flight request, that need to be timed out
         List<String> nodeIds = this.inFlightRequests.nodesWithTimedOutRequests(now);
+        // 发现与某一节点存在”pending in-flight request“， 就会主动process Disconnection，
+        // 并调用cancelInFlightRequests(....)，清空”InFlightRequests queue"
         for (String nodeId : nodeIds) {
             // close connection to the node
             this.selector.close(nodeId);
@@ -909,6 +912,7 @@ public class NetworkClient implements KafkaClient {
         for (NetworkSend send : this.selector.completedSends()) {
             InFlightRequest request = this.inFlightRequests.lastSent(send.destinationId());
         // Determine whether a response is required
+            // 不需要响应的request，直接从inFlightRequests中删除掉就好了
             if (!request.expectResponse) {
                 this.inFlightRequests.completeLastSent(send.destinationId());
                 // if no need response, construct "null" callback
@@ -945,6 +949,8 @@ public class NetworkClient implements KafkaClient {
         // attach Selector->attemptRead(...)->addToCompletedReceives(...)->"this.completedReceives.put(channel.id(), networkReceive);"
         for (NetworkReceive receive : this.selector.completedReceives()) {
             String source = receive.source();
+            // 需要response的request的场景下：已经收到request了，就从inFlightRequests删除掉
+            // 你别管这个response对于这个resquest是不是合理的，Inflight只管一个”网络请求/响应“的生命周期维护，到达此处证明”网络层面的一个请求已经完成了“
             InFlightRequest req = inFlightRequests.completeNext(source);
             // parse Response
             AbstractResponse response = parseResponse(receive.payload(), req.header);
