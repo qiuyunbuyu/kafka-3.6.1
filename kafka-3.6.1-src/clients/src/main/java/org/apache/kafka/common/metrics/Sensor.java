@@ -39,6 +39,8 @@ import static java.util.Collections.unmodifiableList;
  * A sensor applies a continuous sequence of numerical values to a set of associated metrics. For example a sensor on
  * message size would record a sequence of message sizes using the {@link #record(double)} api and would maintain a set
  * of metrics about request sizes such as the average or max.
+ *
+ * 一个指标可能有多个度量的角度， 比如平均值和最大值， 这个类就是把多个度量角度聚合一起
  */
 public final class Sensor {
 
@@ -231,7 +233,7 @@ public final class Sensor {
         this.lastRecordTime = timeMs;
         synchronized (this) {
             synchronized (metricLock()) {
-                // increment all the stats
+                // increment all the stats, like Avg, Max
                 for (StatAndConfig statAndConfig : this.stats) {
                     statAndConfig.stat.record(statAndConfig.config(), value, timeMs);
                 }

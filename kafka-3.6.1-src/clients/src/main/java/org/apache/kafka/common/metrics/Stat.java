@@ -22,6 +22,7 @@ package org.apache.kafka.common.metrics;
 public interface Stat {
 
     /**
+     * 经过统计计算的度量类型，例如平均值、最大值、最小值等
      * Record the given value
      * @param config The configuration to use for this metric
      * @param value The value to record

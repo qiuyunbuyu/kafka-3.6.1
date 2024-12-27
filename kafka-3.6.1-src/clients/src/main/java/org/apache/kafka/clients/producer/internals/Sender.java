@@ -987,6 +987,7 @@ public class Sender implements Runnable {
     }
 
     public static Sensor throttleTimeSensor(SenderMetricsRegistry metrics) {
+        // 初始化Sensor并绑定metrics
         Sensor produceThrottleTimeSensor = metrics.sensor("produce-throttle-time");
         produceThrottleTimeSensor.add(metrics.produceThrottleTimeAvg, new Avg());
         produceThrottleTimeSensor.add(metrics.produceThrottleTimeMax, new Max());
