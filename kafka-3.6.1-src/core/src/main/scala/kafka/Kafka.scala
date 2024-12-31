@@ -84,6 +84,8 @@ object Kafka extends Logging {
 
   /**
    * build kafka-server from Properties
+   * zk模式 -> KafkaServer
+   * raft模式 -> KafkaRaftServer
    * @param props
    * @return
    */
@@ -113,7 +115,7 @@ object Kafka extends Logging {
       // 1. get props
       val serverProps = getPropsFromArgs(args)
 
-      // 2. build server from props
+      // 2. build server from props：会确定以什么模式启动： zk/raft
       val server = buildServer(serverProps)
 
       // 3. LoggingSignalHandler
@@ -129,6 +131,9 @@ object Kafka extends Logging {
       // 4. attach shutdown handler to catch terminating signals as well as normal termination
       //    will call server.shutdown() before shutdown
       Exit.addShutdownHook("kafka-shutdown-hook", {
+        // 正常关闭时(接收到TERM信号)，触发关闭前的相关”清理“工作
+        // [PENDING_CONTROLLED_SHUTDOWN -> SHUTTING_DOWN -> NOT_RUNNING]
+        // Shutdown: shutdownLatch - 1
         try server.shutdown()
         catch {
           case _: Throwable =>
@@ -138,7 +143,9 @@ object Kafka extends Logging {
         }
       })
 
-      // 5. start server
+      // 5. start server: [NOT_RUNNING -> STARTING -> RECOVERY -> RUNNING]
+      // 如果是zk模式，专注于KafkaServer即可
+      // start: shutdownLatch = 1
       try server.startup()
       catch {
         case e: Throwable =>
@@ -148,6 +155,7 @@ object Kafka extends Logging {
       }
 
       // 6. wait server shutdown
+      // shutdownLatch = 0 -> exit!
       server.awaitShutdown()
     }
     catch {

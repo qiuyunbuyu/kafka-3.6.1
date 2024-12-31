@@ -113,7 +113,7 @@ class KafkaServer(
   // mark isStartingUp
   private val isStartingUp = new AtomicBoolean(false)
 
-  // broker state
+  // broker state: 刚new出KafkaServer对象时是NOT_RUNNING状态
   @volatile private var _brokerState: BrokerState = BrokerState.NOT_RUNNING
   // block the main thread and wait for kafka-server to shut down
   private var shutdownLatch = new CountDownLatch(1)
@@ -252,14 +252,16 @@ class KafkaServer(
       val canStartup = isStartingUp.compareAndSet(false, true)
       if (canStartup) {
 
-        /* 2.1 update BrokerState */
+        /* ========================= 2.1 update BrokerState -> 更新状态 -> STARTING =================================*/
         _brokerState = BrokerState.STARTING
 
         /* 2.2 setup zookeeper, 1. connect to zk Server and try to create root node in zk*/
+        // 创建zkClient + zk中基本节点
         initZkClient(time)
         configRepository = new ZkConfigRepository(new AdminZkClient(zkClient))
 
         /* 2.3 Get or create cluster_id */
+        // 在zk上创建或获取clusterId
         _clusterId = getOrGenerateClusterId(zkClient)
         info(s"Cluster ID = $clusterId")
 
@@ -277,6 +279,7 @@ class KafkaServer(
           BrokerMetadataCheckpoint.getBrokerMetadataAndOfflineDirs(config.logDirs, ignoreMissing = true, kraftMode = false)
 
         //  2.4.2: check version in meta.properties
+        // version校验
         if (preloadedBrokerMetadataCheckpoint.version != 0) {
           throw new RuntimeException(s"Found unexpected version in loaded `meta.properties`: " +
             s"$preloadedBrokerMetadataCheckpoint. Zk-based brokers only support version 0 " +
@@ -284,12 +287,14 @@ class KafkaServer(
         }
 
         // 2.4.3 check clusterId in meta.properties
+        // meta.properties中的clusterId对比zk中的clusterId
         if (preloadedBrokerMetadataCheckpoint.clusterId.isDefined && preloadedBrokerMetadataCheckpoint.clusterId.get != clusterId)
           throw new InconsistentClusterIdException(
             s"The Cluster ID $clusterId doesn't match stored clusterId ${preloadedBrokerMetadataCheckpoint.clusterId} in meta.properties. " +
             s"The broker is trying to join the wrong cluster. Configured zookeeper.connect may be wrong.")
 
         // 2.4.4 Generates new brokerId if enabled or reads from meta.properties based on following conditions
+        // broker.id生成或校验
         config.brokerId = getOrGenerateBrokerId(preloadedBrokerMetadataCheckpoint)
         logContext = new LogContext(s"[KafkaServer id=${config.brokerId}] ")
         this.logIdent = logContext.logPrefix
@@ -299,6 +304,7 @@ class KafkaServer(
 
         // 2.6 start scheduler task
         // 定时任务：config.backgroundThreads"background.threads" 默认10
+        // Scheduler任务线程池创建/配置
         kafkaScheduler = new KafkaScheduler(config.backgroundThreads)
         kafkaScheduler.startup()
 
@@ -320,15 +326,18 @@ class KafkaServer(
 
         /* 2.9.2 initialize LogManager, and start log manager */
         /* the entry of LogManager */
+        // 重量级：但这里只是初始化了LogManager，还没有开始”loadlog“
         _logManager = LogManager(
           config,
-          initialOfflineDirs,
+          initialOfflineDirs, // 这里已经传入了initial OfflineDirs
           configRepository,
           kafkaScheduler,
           time,
           brokerTopicStats,
           logDirFailureChannel,
           config.usesTopicId)
+
+        /* ========================= update BrokerState -> 更新状态 -> RECOVERY =================================*/
         _brokerState = BrokerState.RECOVERY
         // start clean, flush, check, recovery... threads
         logManager.startup(zkClient.getAllTopicsInCluster())
@@ -366,6 +375,7 @@ class KafkaServer(
         credentialProvider = new CredentialProvider(ScramMechanism.mechanismNames, tokenCache)
 
         // 2.14 BrokerToControllerChannelManager
+        // broker -> controller之间的channel
         clientToControllerChannelManager = BrokerToControllerChannelManager(
           controllerNodeProvider = controllerNodeProvider,
           time = time,
@@ -375,6 +385,7 @@ class KafkaServer(
           s"zk-broker-${config.nodeId}-",
           retryTimeoutMs = config.requestTimeoutMs.longValue
         )
+        // BrokerToControllerRequestThread启动
         clientToControllerChannelManager.start()
 
         /* 2.15 start forwarding manager */
@@ -428,7 +439,7 @@ class KafkaServer(
 
         // 2.20 register brokerInfo to zk and check
         val brokerInfo = createBrokerInfo
-        // register
+        // register: 往zk上注册/broker/id的broker信息
         val brokerEpoch = zkClient.registerBroker(brokerInfo)
         // Now that the broker is successfully registered, checkpoint its metadata
         val zkMetaProperties = ZkMetaProperties(clusterId, config.brokerId)
@@ -443,6 +454,7 @@ class KafkaServer(
         kafkaController.startup()
 
         /* 2.23 if ZK to KRaft Migration configs: zookeeper.metadata.migration.enable = true*/
+        // ZK to KRaft Migration configs迁移相关
         if (config.migrationEnabled) {
           logger.info("Starting up additional components for ZooKeeper migration")
           lifecycleManager = new BrokerLifecycleManager(config,
@@ -511,6 +523,7 @@ class KafkaServer(
         // from BrokerLifecycleManager rather than ZK (via KafkaController)
         brokerEpochManager = new ZkBrokerEpochManager(metadataCache, kafkaController, Option(lifecycleManager))
 
+        // ZkAdminManager
         adminManager = new ZkAdminManager(config, metrics, metadataCache, zkClient)
 
         /* 2.24 start group coordinator */
@@ -667,7 +680,9 @@ class KafkaServer(
         }
 
         // 2.35 update broker state and mark
+        /* ========================= update BrokerState -> 更新状态 -> RUNNING =================================*/
         _brokerState = BrokerState.RUNNING
+        // shutdownLatch -> 1
         shutdownLatch = new CountDownLatch(1)
         startupComplete.set(true)
         isStartingUp.set(false)
@@ -729,6 +744,10 @@ class KafkaServer(
       addPartitionsToTxnManager = Some(addPartitionsToTxnManager))
   }
 
+  /**
+   * 1. 创建zk_Client
+   * 2. 创建基本的zk节点
+   */
   private def initZkClient(time: Time): Unit = {
     info(s"Connecting to zookeeper on ${config.zkConnect}")
     // 1. create zkClient by configs
@@ -737,6 +756,9 @@ class KafkaServer(
     _zkClient.createTopLevelPaths()
   }
 
+  /**
+   * /cluster/id
+   */
   private def getOrGenerateClusterId(zkClient: KafkaZkClient): String = {
     zkClient.getClusterId.getOrElse(zkClient.createOrGetClusterId(CoreUtils.generateUuidAsBase64()))
   }
@@ -966,7 +988,9 @@ class KafkaServer(
       // last in the `if` block. If the order is reversed, we could shutdown twice or leave `isShuttingDown` set to
       // `true` at the end of this method.
       if (shutdownLatch.getCount > 0 && isShuttingDown.compareAndSet(false, true)) {
+        /* ========================= update BrokerState -> 更新状态 -> PENDING_CONTROLLED_SHUTDOWN =================================*/
         CoreUtils.swallow(controlledShutdown(), this)
+        /* ========================= update BrokerState -> 更新状态 -> SHUTTING_DOWN =================================*/
         _brokerState = BrokerState.SHUTTING_DOWN
 
         if (dynamicConfigManager != null)
@@ -1055,11 +1079,14 @@ class KafkaServer(
         if (lifecycleManager != null) {
           lifecycleManager.close()
         }
+
+        /* ========================= update BrokerState -> 更新状态 -> NOT_RUNNING =================================*/
         _brokerState = BrokerState.NOT_RUNNING
 
         startupComplete.set(false)
         isShuttingDown.set(false)
         CoreUtils.swallow(AppInfoParser.unregisterAppInfo(Server.MetricsPrefix, config.brokerId.toString, metrics), this)
+        // shutdownLatch - 1
         shutdownLatch.countDown()
         info("shut down completed")
       }
@@ -1074,6 +1101,11 @@ class KafkaServer(
 
   /**
    * After calling shutdown(), use this API to wait until the shutdown is complete
+   * start: shutdownLatch = 1
+   *  ↓
+   * Shutdown: shutdownLatch - 1
+   *  ↓
+   * awaitShutdown: shutdownLatch = 0 -> exit!
    */
   override def awaitShutdown(): Unit = shutdownLatch.await()
 
@@ -1107,6 +1139,7 @@ class KafkaServer(
   }
 
   /**
+   * broker.id生成和校验的3种情况，说的很清楚
    * Generates new brokerId if enabled or reads from meta.properties based on following conditions
    * <ol>
    * <li> config has no broker.id provided and broker id generation is enabled, generates a broker.id based on Zookeeper's sequence

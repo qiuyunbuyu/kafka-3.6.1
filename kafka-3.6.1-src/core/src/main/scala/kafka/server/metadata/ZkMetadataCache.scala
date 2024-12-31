@@ -111,8 +111,10 @@ object ZkMetadataCache {
 }
 
 /**
- *  A cache for the state (e.g., current leader) of each partition. This cache is updated through
- *  UpdateMetadataRequest from the controller. Every broker maintains the same cache, asynchronously.
+ *  1. A cache for the state (e.g., current leader) of each partition.  (cache内容)
+ *  This cache is updated through
+ *  2. UpdateMetadataRequest from the controller. (cache更新方式)
+ *  3. Every broker maintains the same cache, asynchronously. (cache一致性)
  */
 class ZkMetadataCache(
   brokerId: Int,

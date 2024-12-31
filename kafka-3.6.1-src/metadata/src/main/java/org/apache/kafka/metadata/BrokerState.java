@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
+ * broker的状态，还是很清晰的~
  * The broker state.
  *
  * The numeric values used here are part of Kafka's public API.  They appear in metrics,

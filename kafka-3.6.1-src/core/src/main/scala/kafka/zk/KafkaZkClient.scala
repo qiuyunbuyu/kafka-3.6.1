@@ -1771,6 +1771,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
   }
 
   /**
+   * 基本的zk节点
     * Pre-create top level paths in ZK if needed.
     ConsumerPathZNode.path, "old consumer path" /consumers
     BrokerIdsZNode.path, /brokers/ids
