@@ -322,10 +322,12 @@ class SocketServer(val config: KafkaConfig,
     if (!stopped) {
       stopped = true
       info("Stopping socket server request processors")
+      // Acceptors线程处理
       dataPlaneAcceptors.asScala.values.foreach(_.beginShutdown())
       controlPlaneAcceptorOpt.foreach(_.beginShutdown())
       dataPlaneAcceptors.asScala.values.foreach(_.close())
       controlPlaneAcceptorOpt.foreach(_.close())
+      // RequestChannel处理
       dataPlaneRequestChannel.clear()
       controlPlaneRequestChannelOpt.foreach(_.clear())
       info("Stopped socket server request processors")

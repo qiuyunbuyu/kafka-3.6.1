@@ -1003,11 +1003,14 @@ class KafkaServer(
         CoreUtils.swallow(controlledShutdown(), this)
 
         /* ========================= update BrokerState -> 更新状态 -> SHUTTING_DOWN =================================*/
+        // 经历了上面的 ”tell controller shutdown", broker就只管停自己就好了
         _brokerState = BrokerState.SHUTTING_DOWN
 
+        // 动态配置相关：$seqNodeRoot-event-process-thread
         if (dynamicConfigManager != null)
           CoreUtils.swallow(dynamicConfigManager.shutdown(), this)
 
+        // 网络相关
         // Stop socket server to stop accepting any more connections and requests.
         // Socket server will be shutdown towards the end of the sequence.
         if (socketServer != null)
@@ -1018,6 +1021,7 @@ class KafkaServer(
           CoreUtils.swallow(controlPlaneRequestHandlerPool.shutdown(), this)
 
         /**
+         * 定时任务线程池
          * We must shutdown the scheduler early because otherwise, the scheduler could touch other
          * resources that might have been shutdown and cause exceptions.
          * For example, if we didn't shutdown the scheduler first, when LogManager was closing
@@ -1030,48 +1034,64 @@ class KafkaServer(
         if (kafkaScheduler != null)
           CoreUtils.swallow(kafkaScheduler.shutdown(), this)
 
+        // 网络相关，为啥Processor线程要放在Scheduler后面关闭
         if (dataPlaneRequestProcessor != null)
           CoreUtils.swallow(dataPlaneRequestProcessor.close(), this)
         if (controlPlaneRequestProcessor != null)
           CoreUtils.swallow(controlPlaneRequestProcessor.close(), this)
+
+        // 权限校验相关
         CoreUtils.swallow(authorizer.foreach(_.close()), this)
+
+        // ZkAdminManager专管topic相关的创建/删除，调整配置
         if (adminManager != null)
           CoreUtils.swallow(adminManager.shutdown(), this)
 
+        // 2个Coordinator相关
         if (transactionCoordinator != null)
           CoreUtils.swallow(transactionCoordinator.shutdown(), this)
         if (groupCoordinator != null)
           CoreUtils.swallow(groupCoordinator.shutdown(), this)
 
+        // Delegation Token相关
         if (tokenManager != null)
           CoreUtils.swallow(tokenManager.shutdown(), this)
 
+        // ReplicaManager
         if (replicaManager != null)
           CoreUtils.swallow(replicaManager.shutdown(), this)
 
+        // AlterPartitionManager
         if (alterPartitionManager != null)
           CoreUtils.swallow(alterPartitionManager.shutdown(), this)
 
+        // ClientToControllerChannelManager
         if (clientToControllerChannelManager != null)
           CoreUtils.swallow(clientToControllerChannelManager.shutdown(), this)
 
+        // LogManager
         if (logManager != null)
           CoreUtils.swallow(logManager.shutdown(), this)
 
+        // kafkaController
         if (kafkaController != null)
           CoreUtils.swallow(kafkaController.shutdown(), this)
 
+        // RemoteLogManager
         // Close remote log manager before stopping processing requests, to give a chance to any
         // of its underlying clients (especially in RemoteStorageManager and RemoteLogMetadataManager)
         // to close gracefully.
         CoreUtils.swallow(remoteLogManagerOpt.foreach(_.close()), this)
 
+        // FeatureChangeListener
         if (featureChangeListener != null)
           CoreUtils.swallow(featureChangeListener.close(), this)
 
+        // KafkaZkClient
         if (zkClient != null)
           CoreUtils.swallow(zkClient.close(), this)
 
+        // QuotaManagers
         if (quotaManagers != null)
           CoreUtils.swallow(quotaManagers.shutdown(), this)
 
@@ -1080,6 +1100,8 @@ class KafkaServer(
         // avoid any failures (e.g. when metrics are recorded)
         if (socketServer != null)
           CoreUtils.swallow(socketServer.shutdown(), this)
+
+        // Metrics & BrokerTopicStats
         if (metrics != null)
           CoreUtils.swallow(metrics.close(), this)
         if (brokerTopicStats != null)
@@ -1088,6 +1110,7 @@ class KafkaServer(
         // Clear all reconfigurable instances stored in DynamicBrokerConfig
         config.dynamicConfig.clear()
 
+        // BrokerLifecycleManager
         if (lifecycleManager != null) {
           lifecycleManager.close()
         }
