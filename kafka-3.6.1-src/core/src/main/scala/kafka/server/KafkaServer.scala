@@ -795,6 +795,9 @@ class KafkaServer(
 
   /**
    * Performs controlled shutdown
+   * 受控关闭是由即将关闭的broker向controller发送ControlledShutdownRequest
+   * 当发送完请求后，broker处于阻塞状态，controller会进行leader重选举和ISR收缩调整后，会给broker发送ControlledShutdownResoponse，
+   * [ControlledShutdownResoponse无异常] 且 [shutdownSucceeded]表示broker可以关闭。
    */
   private def controlledShutdown(): Unit = {
     val socketTimeoutMs = config.controllerSocketTimeoutMs
@@ -895,7 +898,7 @@ class KafkaServer(
                 else if (config.interBrokerProtocolVersion.isLessThan(IBP_2_2_IV0)) 1
                 else if (config.interBrokerProtocolVersion.isLessThan(IBP_2_4_IV1)) 2
                 else 3
-
+              // 构建ControlledShutdownRequest
               val controlledShutdownRequest = new ControlledShutdownRequest.Builder(
                   new ControlledShutdownRequestData()
                     .setBrokerId(config.brokerId)
@@ -903,17 +906,20 @@ class KafkaServer(
                     controlledShutdownApiVersion)
               val request = networkClient.newClientRequest(prevController.idString, controlledShutdownRequest,
                 time.milliseconds(), true)
+
+              // 发送Request并接收到Response
               val clientResponse = NetworkClientUtils.sendAndReceive(networkClient, request, time)
 
               val shutdownResponse = clientResponse.responseBody.asInstanceOf[ControlledShutdownResponse]
-              if (shutdownResponse.error != Errors.NONE) {
+
+              if (shutdownResponse.error != Errors.NONE) { // case1：异常
                 info(s"Controlled shutdown request returned after ${clientResponse.requestLatencyMs}ms " +
                   s"with error ${shutdownResponse.error}")
-              } else if (shutdownResponse.data.remainingPartitions.isEmpty) {
+              } else if (shutdownResponse.data.remainingPartitions.isEmpty) { // case2：remainingPartitions已经处理完了
                 shutdownSucceeded = true
                 info("Controlled shutdown request returned successfully " +
                   s"after ${clientResponse.requestLatencyMs}ms")
-              } else {
+              } else { // case3：remainingPartitions还有处理完，继续循环
                 info(s"Controlled shutdown request returned after ${clientResponse.requestLatencyMs}ms " +
                   s"with ${shutdownResponse.data.remainingPartitions.size} partitions remaining to move")
 
@@ -966,6 +972,10 @@ class KafkaServer(
         }
       }
 
+      /** ********* 执行Controlled shutdown，相关configuration ***********/
+      // ControlledShutdownMaxRetries = 3
+      // ControlledShutdownRetryBackoffMs = 5000
+      // ControlledShutdownEnable = true
       val shutdownSucceeded = doControlledShutdown(config.controlledShutdownMaxRetries.intValue)
 
       if (!shutdownSucceeded)
@@ -989,7 +999,9 @@ class KafkaServer(
       // `true` at the end of this method.
       if (shutdownLatch.getCount > 0 && isShuttingDown.compareAndSet(false, true)) {
         /* ========================= update BrokerState -> 更新状态 -> PENDING_CONTROLLED_SHUTDOWN =================================*/
+        // 阻塞：[ControlledShutdownRequest <-> ControlledShutdownResponse]
         CoreUtils.swallow(controlledShutdown(), this)
+
         /* ========================= update BrokerState -> 更新状态 -> SHUTTING_DOWN =================================*/
         _brokerState = BrokerState.SHUTTING_DOWN
 
