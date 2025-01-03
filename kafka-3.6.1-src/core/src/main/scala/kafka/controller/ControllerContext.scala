@@ -77,12 +77,10 @@ case class ReplicaAssignment private (replicas: Seq[Int],
  * Controller中维护的核心元数据/上下文信息
  */
 class ControllerContext extends ControllerChannelContext {
-  // controller state
+  // controller stats，相关监控数据
   val stats = new ControllerStats
-  // offline Partition Count
-  var offlinePartitionCount = 0
-  // preferred Replica Imbalance Count
-  var preferredReplicaImbalanceCount = 0
+
+  // ----------------- 集群broker信息
   // shutting Down BrokerIds
   val shuttingDownBrokerIds = mutable.Set.empty[Int]
   // liveBrokers
@@ -90,27 +88,32 @@ class ControllerContext extends ControllerChannelContext {
   // the epoch of liveBrokers
   private val liveBrokerEpochs = mutable.Map.empty[Int, Long]
 
+  // ---------------- Controller自身元数据
   // "/controller_epoch" node in zk
   // epoch: controller epoch, data save in zk node
   // epochZkVersion: zk node self dataVersion
   var epoch: Int = KafkaController.InitialControllerEpoch
   var epochZkVersion: Int = KafkaController.InitialControllerEpochZkVersion
 
-  // topic related information: will be updated when the topic increases or decreases.
-  val allTopics = mutable.Set.empty[String]
-  var topicIds = mutable.Map.empty[String, Uuid]
-  var topicNames = mutable.Map.empty[Uuid, String]
-
+  // ---------------- 集群Partition信息
   // partition related information
+  var offlinePartitionCount = 0
   val partitionAssignments = mutable.Map.empty[String, mutable.Map[Int, ReplicaAssignment]]
   private val partitionLeadershipInfo = mutable.Map.empty[TopicPartition, LeaderIsrAndControllerEpoch]
   val partitionsBeingReassigned = mutable.Set.empty[TopicPartition]
   val partitionStates = mutable.Map.empty[TopicPartition, PartitionState]
 
+  // ---------------- 集群Replica信息
   // replica related information
+  var preferredReplicaImbalanceCount = 0
   val replicaStates = mutable.Map.empty[PartitionAndReplica, ReplicaState]
   val replicasOnOfflineDirs = mutable.Map.empty[Int, Set[TopicPartition]]
 
+  // ---------------- 集群Topic信息
+  // topic related information: will be updated when the topic increases or decreases.
+  val allTopics = mutable.Set.empty[String]
+  var topicIds = mutable.Map.empty[String, Uuid]
+  var topicNames = mutable.Map.empty[Uuid, String]
   // topics to be deleted
   val topicsToBeDeleted = mutable.Set.empty[String]
 

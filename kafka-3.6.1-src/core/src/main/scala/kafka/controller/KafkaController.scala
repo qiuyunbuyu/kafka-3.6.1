@@ -369,6 +369,7 @@ class KafkaController(val config: KafkaConfig,
     zkClient.deleteIsrChangeNotifications(controllerContext.epochZkVersion)
 
     // 4.Initializing controller context
+    // 刷一把ControllerContext元数据的信息
     info("Initializing controller context")
     initializeControllerContext()
 
@@ -1103,15 +1104,19 @@ class KafkaController(val config: KafkaConfig,
       warn("Ignoring registration of new brokers due to incompatibilities with finalized features: " +
         incompatibleBrokerAndEpochs.map { case (broker, _) => broker.id }.toSeq.sorted.mkString(","))
     }
+    // 更新Brokers信息
     controllerContext.setLiveBrokers(compatibleBrokerAndEpochs)
     info(s"Initialized broker epochs cache: ${controllerContext.liveBrokerIdAndEpochs}")
+    // 更新Topics信息
     controllerContext.setAllTopics(zkClient.getAllTopicsInCluster(true))
+
     registerPartitionModificationsHandlers(controllerContext.allTopics.toSeq)
     val replicaAssignmentAndTopicIds = zkClient.getReplicaAssignmentAndTopicIdForTopics(controllerContext.allTopics.toSet)
     processTopicIds(replicaAssignmentAndTopicIds)
 
     replicaAssignmentAndTopicIds.foreach { case TopicIdReplicaAssignment(_, _, assignments) =>
       assignments.foreach { case (topicPartition, replicaAssignment) =>
+        // 更新partition相关信息
         controllerContext.updatePartitionFullReplicaAssignment(topicPartition, replicaAssignment)
         if (replicaAssignment.isBeingReassigned)
           controllerContext.partitionsBeingReassigned.add(topicPartition)
@@ -1123,6 +1128,7 @@ class KafkaController(val config: KafkaConfig,
     registerBrokerModificationsHandler(controllerContext.liveOrShuttingDownBrokerIds)
     // update the leader and isr cache for all existing partitions from Zookeeper
     updateLeaderAndIsrCache()
+
     // start the channel manager
     controllerChannelManager.startup(controllerContext.liveOrShuttingDownBrokers)
     info(s"Currently active brokers in the cluster: ${controllerContext.liveBrokerIds}")
