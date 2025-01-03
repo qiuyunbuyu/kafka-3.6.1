@@ -129,14 +129,21 @@ class KafkaController(val config: KafkaConfig,
   private val metricsGroup = new KafkaMetricsGroup(this.getClass)
   // log record, contain the brokerId
   this.logIdent = s"[Controller id=${config.brokerId}] "
+
   // broker metadata
   @volatile private var brokerInfo = initialBrokerInfo
   @volatile private var _brokerEpoch = initialBrokerEpoch
-  //
+
+  // KIP-497相关的：KIP-500下的一个子KIP，AlterIsrRequest相关，具体可以查看对应KIP
   private val isAlterPartitionEnabled = config.interBrokerProtocolVersion.isAlterPartitionSupported
+
   // help for record state change
   private val stateChangeLogger = new StateChangeLogger(config.brokerId, inControllerContext = true, None)
+
+  // controller上下文信息
   val controllerContext = new ControllerContext
+
+  // ** 与Broker通信的能力
   // Used to create and maintain network connections
   var controllerChannelManager = new ControllerChannelManager(
     () => controllerContext.epoch,
@@ -152,6 +159,8 @@ class KafkaController(val config: KafkaConfig,
   // visible for testing
   private[controller] val kafkaScheduler = new KafkaScheduler(1)
 
+  // 监听->处理事件的能力
+  // controller-event-thread | 用于处理controller相关event的
   // Event Manager, Event like "add/delete.." topic
   // ** Processing flow
   // 1. KafkaController will watch the change of zk node
@@ -163,9 +172,11 @@ class KafkaController(val config: KafkaConfig,
     controllerContext.stats.rateAndTimeMetrics)
 
   // Batch processing of requests from brokers
+  // 包了 controllerChannelManager 与 eventManager
   private val brokerRequestBatch = new ControllerBrokerRequestBatch(config, controllerChannelManager,
     eventManager, controllerContext, stateChangeLogger)
 
+  // 抽象/管理-分布式数据的能力: Topic - Partition - Replica
   // replica State Machine: used for replica state transitions, like handle the change of ISR set
   val replicaStateMachine: ReplicaStateMachine = new ZkReplicaStateMachine(config, stateChangeLogger, controllerContext, zkClient,
     new ControllerBrokerRequestBatch(config, controllerChannelManager, eventManager, controllerContext, stateChangeLogger))
@@ -179,6 +190,8 @@ class KafkaController(val config: KafkaConfig,
     partitionStateMachine, new ControllerDeletionClient(this, zkClient))
 
   // ========================= handlers: will watch the different zk node event, different zk node will binding different handler ============
+  // Controller关心哪些”Change“
+  // zk节点 - 变更类型 - 对应待处理事件
   // 1. controller Change
   private val controllerChangeHandler = new ControllerChangeHandler(eventManager)
   // 2. broker Change
@@ -2985,6 +2998,7 @@ class BrokerModificationsHandler(eventManager: ControllerEventManager, brokerId:
   }
 }
 
+// /brokers/topics
 class TopicChangeHandler(eventManager: ControllerEventManager) extends ZNodeChildChangeHandler {
   override val path: String = TopicsZNode.path
 
@@ -2992,6 +3006,7 @@ class TopicChangeHandler(eventManager: ControllerEventManager) extends ZNodeChil
 }
 
 class LogDirEventNotificationHandler(eventManager: ControllerEventManager) extends ZNodeChildChangeHandler {
+  // /log_dir_event_notification
   override val path: String = LogDirEventNotificationZNode.path
 
   override def handleChildChange(): Unit = eventManager.put(LogDirEventNotification)
@@ -3002,18 +3017,21 @@ object LogDirEventNotificationHandler {
 }
 
 class PartitionModificationsHandler(eventManager: ControllerEventManager, topic: String) extends ZNodeChangeHandler {
+  // /brokers/topics/$topic
   override val path: String = TopicZNode.path(topic)
 
   override def handleDataChange(): Unit = eventManager.put(PartitionModifications(topic))
 }
 
 class TopicDeletionHandler(eventManager: ControllerEventManager) extends ZNodeChildChangeHandler {
+  // /admin/delete_topics
   override val path: String = DeleteTopicsZNode.path
 
   override def handleChildChange(): Unit = eventManager.put(TopicDeletion)
 }
 
 class PartitionReassignmentHandler(eventManager: ControllerEventManager) extends ZNodeChangeHandler {
+  // /admin/reassign_partitions
   override val path: String = ReassignPartitionsZNode.path
 
   // Note that the event is also enqueued when the znode is deleted, but we do it explicitly instead of relying on
@@ -3029,6 +3047,7 @@ class PartitionReassignmentIsrChangeHandler(eventManager: ControllerEventManager
 }
 
 class IsrChangeNotificationHandler(eventManager: ControllerEventManager) extends ZNodeChildChangeHandler {
+  // /isr_change_notification
   override val path: String = IsrChangeNotificationZNode.path
 
   override def handleChildChange(): Unit = eventManager.put(IsrChangeNotification)
@@ -3039,6 +3058,7 @@ object IsrChangeNotificationHandler {
 }
 
 class PreferredReplicaElectionHandler(eventManager: ControllerEventManager) extends ZNodeChangeHandler {
+  // /admin/preferred_replica_election
   override val path: String = PreferredReplicaElectionZNode.path
 
   override def handleCreation(): Unit = eventManager.put(ReplicaLeaderElection(None, ElectionType.PREFERRED, ZkTriggered))

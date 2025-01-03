@@ -302,6 +302,7 @@ object TopicZNode {
   case class TopicIdReplicaAssignment(topic: String,
                                       topicId: Option[Uuid],
                                       assignment: Map[TopicPartition, ReplicaAssignment])
+  // /brokers/topics/$topic
   def path(topic: String) = s"${TopicsZNode.path}/$topic"
   def encode(topicId: Option[Uuid],
              assignment: collection.Map[TopicPartition, ReplicaAssignment]): Array[Byte] = {

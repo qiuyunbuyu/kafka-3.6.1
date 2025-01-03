@@ -73,6 +73,9 @@ case class ReplicaAssignment private (replicas: Seq[Int],
     s"removingReplicas=${removingReplicas.mkString(",")})"
 }
 
+/**
+ * Controller中维护的核心元数据/上下文信息
+ */
 class ControllerContext extends ControllerChannelContext {
   // controller state
   val stats = new ControllerStats
