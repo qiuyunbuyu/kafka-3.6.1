@@ -145,6 +145,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
         if (epoch == newControllerEpoch)
           return (newControllerEpoch, stat.getVersion)
       }
+      // 不满足上面2个校验时，会被认为controller被别人抢去了，会抛出ControllerMovedException，外层会捕获后 -> maybeResign()
       throw new ControllerMovedException("Controller moved to another broker. Aborting controller startup procedure")
     }
 

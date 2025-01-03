@@ -275,7 +275,7 @@ class KafkaController(val config: KafkaConfig,
       }
     })
     // 2. kafkaController call process() method to handle "Startup" event
-    // 放入Startup事件
+    // 每个broker启动都会放入Startup事件 放入Startup事件
     eventManager.put(Startup)
     eventManager.start()
   }
@@ -596,6 +596,8 @@ class KafkaController(val config: KafkaConfig,
   /**
    * This callback is invoked by the zookeeper leader elector when the current broker resigns as the controller. This is
    * required to clean up internal controller data structures
+   * controller卸任操作
+   * 调用的地方还比较多，ctrl + alt + h 看吧-.-
    */
   private def onControllerResignation(): Unit = {
     debug("Resigning")
@@ -1651,8 +1653,10 @@ class KafkaController(val config: KafkaConfig,
    */
   private def processStartup(): Unit = {
     // 1. register "/controller" watch and check is exist?
+    // 注册 controllerChangeHandler -> 时刻准备抢 controller 位置
     zkClient.registerZNodeChangeHandlerAndCheckExistence(controllerChangeHandler)
     // 2. handel elect
+    // 不管怎么样，先看一眼，试一把
     // case1: "/controller" exist -> get controller information from zk node
     // case2: "/controller" not exist -> do controller elect
     elect()
@@ -1710,6 +1714,7 @@ class KafkaController(val config: KafkaConfig,
     try {
       val expectedControllerEpochZkVersion = controllerContext.epochZkVersion
       activeControllerId = -1
+      // controller卸任
       onControllerResignation()
       zkClient.deleteController(expectedControllerEpochZkVersion)
     } catch {
@@ -1756,7 +1761,7 @@ class KafkaController(val config: KafkaConfig,
       // 3. try to create /controller
       // if create fail -> will throw ControllerMovedException, so Will not perform step 4
       // if create success -> will do step 4, Perform subsequent actions after election
-      // 这步走完会创建/controller
+      // 这步走完会创建/controller, 或者往外抛异常
       val (epoch, epochZkVersion) = zkClient.registerControllerAndIncrementControllerEpoch(config.brokerId)
       controllerContext.epoch = epoch
       controllerContext.epochZkVersion = epochZkVersion
@@ -1771,6 +1776,10 @@ class KafkaController(val config: KafkaConfig,
     } catch {
       case e: ControllerMovedException =>
         // ** this Exception means other broker become the Controller, so Resign may be required
+        // 这个异常表明抢Controller没成功，其他broker成为了Controller， 此时需要执行maybeResign
+        // 为啥是maybe呢？
+        // 因为只有之前是Controller，才需要Resign来清空之前作为Controller维护的状态，信息等
+        // 如果之前就不是Controller，那之前就没维护过什么信息，失败就失败，啥也不用干
         maybeResign()
         if (activeControllerId != -1)
           debug(s"Broker $activeControllerId was elected as controller instead of broker ${config.brokerId}", e)
