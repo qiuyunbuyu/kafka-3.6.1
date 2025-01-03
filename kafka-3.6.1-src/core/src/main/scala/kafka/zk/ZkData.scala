@@ -1093,6 +1093,7 @@ object ZkData {
     FeatureZNode.path) ++ ZkAclStore.securePaths
 
   // These are persistent ZK paths that should exist on kafka broker startup.
+  // 定义的zk上的TopLevelPath
   val PersistentZkPaths = Seq(
     ConsumerPathZNode.path, // old consumer path
     BrokerIdsZNode.path,

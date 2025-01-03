@@ -55,8 +55,9 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
   }
 
   /**
-   * This API invokes the OnlinePartition state change on all partitions in either the NewPartition or OfflinePartition
-   * state. *This is called on a successful controller election and on broker changes*
+   * This API invokes the OnlinePartition state change on all partitions in either the NewPartition or OfflinePartition state.
+   *
+   * *This is called on a successful controller election and on broker changes*
    */
   def triggerOnlinePartitionStateChange(): Map[TopicPartition, Either[Throwable, LeaderAndIsr]] = {
     // 1. get OfflinePartition and NewPartition sets from controllerContext

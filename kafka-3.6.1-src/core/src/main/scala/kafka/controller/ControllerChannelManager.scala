@@ -116,6 +116,7 @@ class ControllerChannelManager(controllerEpoch: () => Int,
     brokerLock synchronized {
       if (!brokerStateInfo.contains(broker.id)) {
         // 1. step 1: Prepare network and thread settings
+        // "Controller-${config.brokerId}-to-broker-${broker.id}-send-thread"
         addNewBroker(broker)
         // 2. step 2: start RequestSendThread for this broker
         startRequestSendThread(broker.id)
@@ -201,7 +202,7 @@ class ControllerChannelManager(controllerEpoch: () => Int,
     }
 
     // 5. Build RequestSendThread
-    // 5.1 RequestSendThread name
+    // 5.1 RequestSendThread name：线程名
     val threadName = threadNamePrefix match {
       case None => s"Controller-${config.brokerId}-to-broker-${broker.id}-send-thread"
       case Some(name) => s"$name:Controller-${config.brokerId}-to-broker-${broker.id}-send-thread"
