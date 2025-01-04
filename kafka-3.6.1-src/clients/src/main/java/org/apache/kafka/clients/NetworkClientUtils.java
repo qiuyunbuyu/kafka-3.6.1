@@ -79,6 +79,7 @@ public final class NetworkClientUtils {
     }
 
     /**
+     * 阻塞直到 “收到Response” 或 “ disconnection”
      * Invokes `client.send` followed by 1 or more `client.poll` invocations until a response is received or a
      * disconnection happens (which can happen for a number of reasons including a request timeout).
      *

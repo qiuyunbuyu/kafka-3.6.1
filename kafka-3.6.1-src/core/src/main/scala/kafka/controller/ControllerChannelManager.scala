@@ -59,8 +59,17 @@ class ControllerChannelManager(controllerEpoch: () => Int,
 
   private val metricsGroup = new KafkaMetricsGroup(this.getClass)
   // * ControllerBrokerStateInfo contain the RequestSendThread
+  // 最重要的对象，不要被名字所迷惑，可不仅仅是State信息，Map结构：
+  // key-目标连接的成员brokerID，
+  // value-对应目标Broker的相关信息的封装
+  // - 发给谁：brokerNode - 目标broker的连接地址等信息
+  // - 发什么：messageQueue - 准备发给目标的“Controller” request
+  // - 谁来发：requestSendThread - 提供了发送的能力
   protected val brokerStateInfo = new mutable.HashMap[Int, ControllerBrokerStateInfo]
+
+  // 对象锁，下面大部分方法都加了锁
   private val brokerLock = new Object
+
   this.logIdent = "[Channel manager on controller " + config.brokerId + "]: "
 
   metricsGroup.newGauge("TotalQueueSize",
@@ -71,8 +80,10 @@ class ControllerChannelManager(controllerEpoch: () => Int,
 
   def startup(initialBrokers: Set[Broker]):Unit = {
     // 1. add each broker to brokerStateInfo
+    // 把每个broker加入到 brokerStateInfo这一Map结构
     initialBrokers.foreach(addNewBroker)
     // 2. start RequestSendThread for each broker
+    // 对应的RequestSendThread开始循环doWork
     brokerLock synchronized {
       brokerStateInfo.foreach(brokerState => startRequestSendThread(brokerState._1))
     }
@@ -86,6 +97,7 @@ class ControllerChannelManager(controllerEpoch: () => Int,
 
   /**
    * send Request to specific broker BlockingQueue[QueueItem]
+   * 将Controller Request 放入 BlockingQueue
    * @param brokerId
    * @param request
    * @param callback
@@ -220,12 +232,17 @@ class ControllerChannelManager(controllerEpoch: () => Int,
     val queueSizeGauge = metricsGroup.newGauge(QueueSizeMetricName, () => messageQueue.size, brokerMetricTags(broker.id))
 
     // 7. add the "new" broker info to brokerStateInfo
+    // 更新brokerStateInfo中的Map结构：由这里就可以看出[ messageQueue ]和 [requestThread]都是每个目标broker独立的
     brokerStateInfo.put(broker.id, ControllerBrokerStateInfo(networkClient, brokerNode, messageQueue,
       requestThread, queueSizeGauge, requestRateAndQueueTimeMetrics, reconfigurableChannelBuilder))
   }
 
   private def brokerMetricTags(brokerId: Int) = Map("broker-id" -> brokerId.toString).asJava
 
+  /**
+   * 清除维护的相关“信息”
+   * @param brokerState
+   */
   private def removeExistingBroker(brokerState: ControllerBrokerStateInfo): Unit = {
     try {
       // Shutdown the RequestSendThread before closing the NetworkClient to avoid the concurrent use of the
@@ -269,7 +286,10 @@ class ControllerChannelManager(controllerEpoch: () => Int,
 }
 
 /**
- * define the request(controller request) Format to put to the queue
+ * 定义了往“网络请求阻塞”队列中写入什么样的Request， 必须是继承AbstractControlRequest的Request
+ * - UpdateMetadataRequest
+ * - LeaderAndIsrRequest
+ * - StopReplicaRequest
  * @param apiKey: Kafka APIs
  * @param request: request must extends AbstractControlRequest
  * @param callback
@@ -281,7 +301,7 @@ case class QueueItem(apiKey: ApiKeys, request: AbstractControlRequest.Builder[_ 
 class RequestSendThread(val controllerId: Int, // the broker ID of current controller
                         controllerEpoch: () => Int, // current controller Epoch
                         val queue: BlockingQueue[QueueItem], // BlockingQueue to save (controller) request
-                        val networkClient: NetworkClient,
+                        val networkClient: NetworkClient, // kafka自己封装的网络客户端
                         val brokerNode: Node, // target broker
                         val config: KafkaConfig,
                         val time: Time,
@@ -295,6 +315,13 @@ class RequestSendThread(val controllerId: Int, // the broker ID of current contr
 
   private val socketTimeoutMs = config.controllerSocketTimeoutMs
 
+  /**
+   * RequestSendThread: 循环处理调用的方法
+   * 核心流程：
+   * 1. 从queue中取出Request
+   * 2. 发送Request -> 阻塞 -> 直到收到Response 或 发现断联
+   * 3. 收到Response -> 执行callback
+   */
   override def doWork(): Unit = {
 
     def backoff(): Unit = pause(100, TimeUnit.MILLISECONDS)
@@ -323,6 +350,7 @@ class RequestSendThread(val controllerId: Int, // the broker ID of current contr
             val clientRequest = networkClient.newClientRequest(brokerNode.idString, requestBuilder,
               time.milliseconds(), true)
             // send Request and wait Response
+            // 发送-阻塞-直到收到响应 或 发现断联
             clientResponse = NetworkClientUtils.sendAndReceive(networkClient, clientRequest, time)
             isSendSuccessful = true
           }

@@ -1132,6 +1132,7 @@ class KafkaController(val config: KafkaConfig,
     updateLeaderAndIsrCache()
 
     // start the channel manager
+    // 当上了Controller，别忘了还要开始与其下的broker建立通信体系
     controllerChannelManager.startup(controllerContext.liveOrShuttingDownBrokers)
     info(s"Currently active brokers in the cluster: ${controllerContext.liveBrokerIds}")
     info(s"Currently shutting brokers in the cluster: ${controllerContext.shuttingDownBrokerIds}")
