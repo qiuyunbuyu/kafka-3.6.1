@@ -277,6 +277,7 @@ class KafkaController(val config: KafkaConfig,
     // 2. kafkaController call process() method to handle "Startup" event
     // 每个broker启动都会放入Startup事件 放入Startup事件
     eventManager.put(Startup)
+    // 启动：controller-event-thread线程
     eventManager.start()
   }
 
@@ -3135,7 +3136,7 @@ private[controller] class ControllerStats {
     metricsGroup.removeMetric(name)
   }
 }
-
+// 定义的Controller要管理的事件
 sealed trait ControllerEvent {
   // state
   def state: ControllerState

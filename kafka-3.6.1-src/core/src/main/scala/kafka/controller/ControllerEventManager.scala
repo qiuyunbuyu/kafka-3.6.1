@@ -120,9 +120,11 @@ class ControllerEventManager(controllerId: Int,
   private val putLock = new ReentrantLock()
 
   // queue use to save ControllerEvent
+  // 存储 ControllerEvent 的地方
   private val queue = new LinkedBlockingQueue[QueuedEvent]
 
   // Visible for test
+  // 处理 ControllerEvent 的人
   // ** ControllerEventThread to handle event in LinkedBlockingQueue
   private[controller] var thread = new ControllerEventThread(ControllerEventThreadName)
 
@@ -140,6 +142,7 @@ class ControllerEventManager(controllerId: Int,
       // 1.
       thread.initiateShutdown()
       // 2. Used for high-priority preemptive ControllerEvent processing
+      // 放入ShutdownEventThread，抢占式处理掉此事件
       clearAndPut(ShutdownEventThread)
       // 3. use this API to wait until the shutdown is complete.
       thread.awaitShutdown()
@@ -165,6 +168,11 @@ class ControllerEventManager(controllerId: Int,
 
   /**
    * Used for high-priority preemptive ControllerEvent processing
+   * 最搞优先级的抢占式的处理的事件
+   * 只有2类Event会用到：ShutDownEventThread和Expire
+   * 核心流程是：
+   * 1. 先取出现行Queue中的Event，并调用其定义的 ”被抢占时要执行的动作”
+   * 2. 处理 ShutDownEventThread 或 Expire
    * @param event
    * @return
    */
@@ -180,6 +188,9 @@ class ControllerEventManager(controllerId: Int,
 
   def isEmpty: Boolean = queue.isEmpty
 
+  /**
+   * 处理Controller Event的 线程
+   */
   class ControllerEventThread(name: String)
     extends ShutdownableThread(
       name, false, s"[ControllerEventThread controllerId=$controllerId] ")
@@ -187,6 +198,12 @@ class ControllerEventManager(controllerId: Int,
 
     logIdent = logPrefix
 
+    /**
+     * 也是继承自ShutdownableThread，所以doWork就是其不断循环调用的方法
+     * 核心流程：
+     * 1. 取出Event
+     * 2. 调用ControllerEventProcessor来处理对应事件
+     */
     override def doWork(): Unit = {
       // 1. get event from queue
       val dequeued = pollFromEventQueue()
@@ -202,6 +219,7 @@ class ControllerEventManager(controllerId: Int,
 
           try {
             // call ControllerEventProcessor to process event
+            // 处理Event
             def process(): Unit = dequeued.process(processor)
 
             // Calculate processing rate
