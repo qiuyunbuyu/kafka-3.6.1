@@ -1585,6 +1585,11 @@ class KafkaController(val config: KafkaConfig,
     }
   }
 
+  /**
+   * controller实际处理leaderAndIsrResponse的地方
+   * @param leaderAndIsrResponse：成员broker返回的 leaderAndIsrResponse
+   * @param brokerId： 成员broker的ID
+   */
   private def processLeaderAndIsrResponseReceived(leaderAndIsrResponse: LeaderAndIsrResponse, brokerId: Int): Unit = {
     if (!isActive) return
 
@@ -1597,20 +1602,25 @@ class KafkaController(val config: KafkaConfig,
     val offlineReplicas = new ArrayBuffer[TopicPartition]()
     val onlineReplicas = new ArrayBuffer[TopicPartition]()
 
+    // 根据leaderAndIsrResponse来划分出 offlineReplicas 和 onlineReplicas
     leaderAndIsrResponse.partitionErrors(controllerContext.topicNames.asJava).forEach{ case (tp, error) =>
+      // error.code 会被认为是 offline的
       if (error.code() == Errors.KAFKA_STORAGE_ERROR.code)
         offlineReplicas += tp
       else if (error.code() == Errors.NONE.code)
         onlineReplicas += tp
     }
 
+    // offline 情况下的处理
     val previousOfflineReplicas = controllerContext.replicasOnOfflineDirs.getOrElse(brokerId, Set.empty[TopicPartition])
     val currentOfflineReplicas = mutable.Set() ++= previousOfflineReplicas --= onlineReplicas ++= offlineReplicas
     controllerContext.replicasOnOfflineDirs.put(brokerId, currentOfflineReplicas)
     val newOfflineReplicas = currentOfflineReplicas.diff(previousOfflineReplicas)
 
     if (newOfflineReplicas.nonEmpty) {
+      // 成员Broker-x的leaderAndIsrResponse中某TopicPartition响应非0， 所以controller会认为此broker上的此Topic-Partition-x是offline的
       stateChangeLogger.info(s"Mark replicas ${newOfflineReplicas.mkString(",")} on broker $brokerId as offline")
+      // 调用partitionStateMachine和replicaStateMachine，往 OfflinePartition 状态推进
       onReplicasBecomeOffline(newOfflineReplicas.map(PartitionAndReplica(_, brokerId)))
     }
   }
@@ -2906,7 +2916,7 @@ class KafkaController(val config: KafkaConfig,
         // event7: Controller Shutdown
         case ControlledShutdown(id, brokerEpoch, callback) =>
           processControlledShutdown(id, brokerEpoch, callback)
-        // event8: Receive Leader and Isr Response
+        // event8: Receive Leader and Isr Response， 处理LeaderAndIsrResponseReceived事件
         case LeaderAndIsrResponseReceived(response, brokerId) =>
           processLeaderAndIsrResponseReceived(response, brokerId)
         // event9: Receive Update Metadata Response

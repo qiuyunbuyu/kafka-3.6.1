@@ -675,10 +675,19 @@ class Partition(val topicPartition: TopicPartition,
    * Make the local replica the leader by resetting LogEndOffset for remote replicas (there could be old LogEndOffset
    * from the time when this broker was the leader last time) and setting the new leader and ISR.
    * If the leader replica id does not change, return false to indicate the replica manager.
+   * 核心流程如下：
+   * 核心流程1： 保存更新相关核心变量
+   * 核心流程2：(可能)创建本地Log，调用logManager能力
+   * 核心流程3：NewLeaderEpoch-表示partition的Replica的Leader发生了切换(epoch 提升)
+   *        3.1: 更新leaderEpochCache:[leaderEpoch, leaderEpochStartOffset]
+   *        3.2: 重设remoteReplicas的ReplicaState(本质是 Leader副本 必须 掌握到 slave副本的状态)
+   * 核心流程4： (可能)会更新high watermark
+   * 核心流程5：如果HW更新了，该TopicPartition对应的"Fetch","Produce","deleteRecords"延迟请求尝试“complete”掉
    */
   def makeLeader(partitionState: LeaderAndIsrPartitionState,
                  highWatermarkCheckpoints: OffsetCheckpoints,
                  topicId: Option[Uuid]): Boolean = {
+    // (HW是否更新，是否是新 Leader)
     val (leaderHWIncremented, isNewLeader) = inWriteLock(leaderIsrUpdateLock) {
       // Partition state changes are expected to have an partition epoch larger or equal
       // to the current partition epoch. The latter is allowed because the partition epoch
@@ -711,6 +720,7 @@ class Partition(val topicPartition: TopicPartition,
           "Marking the topic partition as RECOVERED.")
       }
 
+      // 核心流程1： 保存更新相关核心变量
       // Updating the assignment and ISR state is safe if the partition epoch is
       // larger or equal to the current partition epoch.
       updateAssignmentAndIsr(
@@ -722,6 +732,7 @@ class Partition(val topicPartition: TopicPartition,
         LeaderRecoveryState.RECOVERED
       )
 
+      // 核心流程2：(可能)创建本地Log，调用logManager能力
       // may create Log
       try {
         createLogIfNotExists(partitionState.isNew, isFutureReplica = false, highWatermarkCheckpoints, topicId)
@@ -732,13 +743,17 @@ class Partition(val topicPartition: TopicPartition,
           return false
       }
 
+      // 获取该Partition对应的本地UnifiedLog对象
       val leaderLog = localLogOrException
 
       // [update] Leader Epoch Checkpoint when become leader
       // We update the epoch start offset and the replicas' state only if the leader epoch has changed.
       // isNewLeaderEpoch: LeaderAndIsrRequest leaderEpoch > memory leaderEpoch
+
+      // 核心流程3：NewLeaderEpoch-表示partition的Replica的Leader发生了切换(epoch 提升)
       if (isNewLeaderEpoch) {
         // 1. get local log leo
+        // *** 很重要的一个变量
         val leaderEpochStartOffset = leaderLog.logEndOffset
 
         // 2. important log: Leader switching
@@ -749,7 +764,8 @@ class Partition(val topicPartition: TopicPartition,
           s"removing replicas ${removingReplicas.mkString("[", ",", "]")} ${if (isUnderMinIsr) "(under-min-isr)" else ""}. " +
           s"Previous leader $leaderReplicaIdOpt and previous leader epoch was $leaderEpoch.")
 
-        // 3. leaderEpochCache:[leaderEpoch, leaderEpochStartOffset]
+        // 3.
+        // 核心流程：更新leaderEpochCache:[leaderEpoch, leaderEpochStartOffset]
         // In the case of successive leader elections in a short time period, a follower may have
         // entries in its log from a later epoch than any entry in the new leader's log. In order
         // to ensure that these followers can truncate to the right offset, we must cache the new
@@ -757,7 +773,8 @@ class Partition(val topicPartition: TopicPartition,
         // would try to query.
         leaderLog.maybeAssignEpochStartOffset(partitionState.leaderEpoch, leaderEpochStartOffset)
 
-        // 4.
+        // 4. 核心流程：重设remoteReplicas的ReplicaState
+        // 本质是 Leader副本 必须 掌握到 slave副本的状态
         // in "updateAssignmentAndIsr", We determined the composition of remoteReplicas
         // Initialize lastCaughtUpTime of replicas as well as their lastFetchTimeMs and
         // lastFetchLeaderLogEndOffset.
@@ -787,10 +804,12 @@ class Partition(val topicPartition: TopicPartition,
       // define the leader
       leaderReplicaIdOpt = Some(localBrokerId)
 
+      // 核心流程4： (可能)会更新high watermark
       // We may need to increment high watermark since ISR could be down to 1.
       (maybeIncrementLeaderHW(leaderLog, currentTimeMs = currentTimeMs), isNewLeader)
     }
 
+    // 核心流程5：如果HW更新了，该TopicPartition对应的"Fetch","Produce","deleteRecords"延迟请求尝试“complete”掉
     // Some delayed operations may be unblocked after HW changed.
     if (leaderHWIncremented)
       tryCompleteDelayedRequests()
@@ -804,6 +823,9 @@ class Partition(val topicPartition: TopicPartition,
    * greater (that is, no updates have been missed), return false to indicate to the
    * replica manager that state is already correct and the become-follower steps can
    * be skipped.
+   * 核心流程
+   * 核心流程1：更新核心变量，follow身份会把remoteReplicasMap给清空掉
+   * 核心流程2：（可能）会调用logManager来创建本地UnifiedLog
    */
   def makeFollower(partitionState: LeaderAndIsrPartitionState,
                    highWatermarkCheckpoints: OffsetCheckpoints,
@@ -827,7 +849,7 @@ class Partition(val topicPartition: TopicPartition,
       leaderEpoch = partitionState.leaderEpoch
       leaderEpochStartOffsetOpt = None
       partitionEpoch = partitionState.partitionEpoch
-
+      // 核心流程1：更新核心变量，follow身份会把remoteReplicasMap给清空掉
       updateAssignmentAndIsr(
         replicas = partitionState.replicas.asScala.iterator.map(_.toInt).toSeq,
         isLeader = false,
@@ -838,6 +860,7 @@ class Partition(val topicPartition: TopicPartition,
       )
 
       try {
+        // 核心流程2：（可能）会调用logManager来创建本地UnifiedLog
         // may call logManager to create "local log"
         createLogIfNotExists(partitionState.isNew, isFutureReplica = false, highWatermarkCheckpoints, topicId)
       } catch {
@@ -945,6 +968,7 @@ class Partition(val topicPartition: TopicPartition,
     removingReplicas: Seq[Int],
     leaderRecoveryState: LeaderRecoveryState
   ): Unit = {
+    // 基于自身身份 更新 remoteReplicasMap
     if (isLeader) {
       // I am the leader, everyone else is a follower
       val followers = replicas.filter(_ != localBrokerId)
@@ -959,12 +983,13 @@ class Partition(val topicPartition: TopicPartition,
       // only leader save "remoteReplicas" info , if local replica is follower, clear "remoteReplicas" info
       remoteReplicasMap.clear()
     }
-
+    // 更新 assignmentState
     assignmentState = if (addingReplicas.nonEmpty || removingReplicas.nonEmpty)
       OngoingReassignmentState(addingReplicas, removingReplicas, replicas)
     else
       SimpleAssignmentState(replicas)
 
+    // 更新 partitionState
     partitionState = CommittedPartitionState(isr, leaderRecoveryState)
   }
 
@@ -1107,6 +1132,7 @@ class Partition(val topicPartition: TopicPartition,
   }
 
   /**
+   * Partition对应的 HW 变更的地方，面试题常客 /(ㄒoㄒ)/~~
    * Check and maybe increment the high watermark of the partition;
    * this function can be triggered when
    *
@@ -1136,6 +1162,7 @@ class Partition(val topicPartition: TopicPartition,
     var newHighWatermark = leaderLogEndOffset
 
     // Traversal remote Replicas to update hw
+    // 核心流程1： 遍历所有的slave Replica
     remoteReplicasMap.values.foreach { replica =>
       // get remote replica state
       val replicaState = replica.stateSnapshot
@@ -1149,10 +1176,12 @@ class Partition(val topicPartition: TopicPartition,
       if (replicaState.logEndOffsetMetadata.messageOffset < newHighWatermark.messageOffset &&
           (partitionState.maximalIsr.contains(replica.brokerId) || shouldWaitForReplicaToJoinIsr)
       ) {
+        // foreach迭代过程中，newHighWatermark被更新成所有副本中 "smallest log end offset"
         // make sure hw is " smallest log end offset"
         newHighWatermark = replicaState.logEndOffsetMetadata
       }
     }
+    // 核心流程2：oldHighWatermark 低于 newHighWatermark 则更新
     // maybe Increment HighWatermark
     leaderLog.maybeIncrementHighWatermark(newHighWatermark) match {
       case Some(oldHighWatermark) =>

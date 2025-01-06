@@ -351,6 +351,7 @@ class RequestSendThread(val controllerId: Int, // the broker ID of current contr
               time.milliseconds(), true)
             // send Request and wait Response
             // 发送-阻塞-直到收到响应 或 发现断联
+            // controller 接收到response的地方
             clientResponse = NetworkClientUtils.sendAndReceive(networkClient, clientRequest, time)
             isSendSuccessful = true
           }
@@ -382,6 +383,7 @@ class RequestSendThread(val controllerId: Int, // the broker ID of current contr
           s"$response for request $api with correlation id " +
           s"${requestHeader.correlationId} sent to broker $brokerNode")
         // 4.4 handle callback
+        // controller 利用response 来执行回调的地方
         if (callback != null) {
           callback(response)
         }
@@ -442,7 +444,7 @@ class ControllerBrokerRequestBatch(
                   callback: AbstractResponse => Unit = null): Unit = {
     controllerChannelManager.sendRequest(brokerId, request, callback)
   }
-
+  // LeaderAndIsrResponse 执行的回调函数，居然也放入一个Event | LeaderAndIsrResponseReceived
   override def handleLeaderAndIsrResponse(response: LeaderAndIsrResponse, broker: Int): Unit = {
     sendEvent(LeaderAndIsrResponseReceived(response, broker))
   }

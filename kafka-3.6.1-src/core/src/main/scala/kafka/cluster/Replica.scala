@@ -142,7 +142,7 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
       // is done to ensure that the high watermark is not hold back unnecessarily for
       // a follower which is not in the ISR anymore.
       val lastCaughtUpTimeMs = if (isFollowerInSync) currentTimeMs else 0L
-
+      // 确实是新leader，也就意味着 其不清楚 slave副本的状态，初始化为“空”状态
       if (isNewLeader) {
         ReplicaState(
           logStartOffset = UnifiedLog.UnknownOffset,
@@ -153,6 +153,7 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
           brokerEpoch = Option.empty
         )
       } else {
+        // 之前就是Leader，slave 副本的状态还维持之前的即可
         ReplicaState(
           logStartOffset = currentReplicaState.logStartOffset,
           logEndOffsetMetadata = currentReplicaState.logEndOffsetMetadata,

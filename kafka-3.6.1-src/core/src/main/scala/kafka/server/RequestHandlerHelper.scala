@@ -31,7 +31,8 @@ import org.apache.kafka.coordinator.group.GroupCoordinator
 import java.util.OptionalInt
 
 object RequestHandlerHelper {
-
+  // 处理LeaderAndIsrRequest时涉及的2个内部topic时的回调
+  // GroupCoordinator 和 TransactionCoordinator 都是 [kafka.cor.main] 里面的
   def onLeadershipChange(groupCoordinator: GroupCoordinator,
                          txnCoordinator: TransactionCoordinator,
                          updatedLeaders: Iterable[Partition],
