@@ -67,9 +67,9 @@ abstract class ReplicaStateMachine(controllerContext: ControllerContext) extends
    * Invoked on startup of the replica's state machine to "set the initial state for replicas" of all existing partitions in zookeeper
    */
   private def initializeReplicaState(): Unit = {
-    // 1. traverse all Partitions
+    // 1. traverse all Partitions: 所有的TopicPartition-x
     controllerContext.allPartitions.foreach { partition =>
-      // 2. get all replicas of Partition
+      // 2. get all replicas of Partition： 每个TopicPartition-x下的所有TopicPartition-x-Replica-x的Replica ID
       val replicas = controllerContext.partitionReplicaAssignment(partition)
       // 3. traverse all replicas
       replicas.foreach { replicaId =>
@@ -144,6 +144,7 @@ class ZkReplicaStateMachine(config: KafkaConfig,
   }
 
   /**
+   * 最核心的副本状态转换时调用的方法，说明了副本状态转换的触发场景
    * This API exercises the replica's state machine. It ensures that every state transition happens from a legal
    * previous state to the target state. Valid state transitions are:
    * NonExistentReplica --> NewReplica
@@ -186,6 +187,7 @@ class ZkReplicaStateMachine(config: KafkaConfig,
     replicas.foreach(replica => controllerContext.putReplicaStateIfNotExists(replica, NonExistentReplica))
 
     // 2. get validReplicas and invalidReplicas(need log invalid Transition)
+    // 判断前置状态是否合法，即“该副本能否往targetState转换”
     val (validReplicas, invalidReplicas) = controllerContext.checkValidReplicaStateChange(replicas, targetState)
     invalidReplicas.foreach(replica => logInvalidTransition(replica, targetState))
 
@@ -227,7 +229,7 @@ class ZkReplicaStateMachine(config: KafkaConfig,
               controllerContext.putReplicaState(replica, NewReplica)
           }
         }
-      // case2: target to OnlineReplica
+      // case2: ==================== target to OnlineReplica ============================
       case OnlineReplica =>
         validReplicas.foreach { replica =>
           // a. get partition info(<topic Name, partition ID>) from replica
@@ -251,7 +253,7 @@ class ZkReplicaStateMachine(config: KafkaConfig,
               }
             // d. if currentState is other state, try to get LeaderAndIsr info from controllerContext
             case _ =>
-              // send LeaderAndIsrRequest to corresponding broker and send UpdateMetadataRequest to all Brokers
+              // send [LeaderAndIsrRequest] to corresponding broker and send [UpdateMetadataRequest] to all Brokers
               controllerContext.partitionLeadershipInfo(partition) match {
                 case Some(leaderIsrAndControllerEpoch) =>
                   controllerBrokerRequestBatch.addLeaderAndIsrRequestForBrokers(Seq(replicaId),

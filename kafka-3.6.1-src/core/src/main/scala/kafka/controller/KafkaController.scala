@@ -177,6 +177,7 @@ class KafkaController(val config: KafkaConfig,
     eventManager, controllerContext, stateChangeLogger)
 
   // 抽象/管理-分布式数据的能力: Topic - Partition - Replica
+  // replicaStateMachine-初始化
   // replica State Machine: used for replica state transitions, like handle the change of ISR set
   val replicaStateMachine: ReplicaStateMachine = new ZkReplicaStateMachine(config, stateChangeLogger, controllerContext, zkClient,
     new ControllerBrokerRequestBatch(config, controllerChannelManager, eventManager, controllerContext, stateChangeLogger))
@@ -392,8 +393,10 @@ class KafkaController(val config: KafkaConfig,
 
     // 8. you are leader now, so manage the replica +  partition
     // only leader can handle replica/partition state
+    // broker成为Controller之后：replicaStateMachine - startup
     // 8.1 start up replicaStateMachine
     replicaStateMachine.startup()
+
     // 8.2 start up partitionStateMachine
     partitionStateMachine.startup()
 

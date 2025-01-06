@@ -257,16 +257,18 @@ class ControllerContext extends ControllerChannelContext {
     }.toSet
   }
   // =============================== broker metadata manage
-
+  // 调用方： controllerContext.isReplicaOnline(replicaId, partition)
+  // replicaId = brokerId
   def isReplicaOnline(brokerId: Int, topicPartition: TopicPartition): Boolean = {
     isReplicaOnline(brokerId, topicPartition, includeShuttingDownBrokers = false)
   }
 
   def isReplicaOnline(brokerId: Int, topicPartition: TopicPartition, includeShuttingDownBrokers: Boolean): Boolean = {
-    val brokerOnline = {
+    val brokerOnline = { // 1. 判断 replica 所在 broker的状态
       if (includeShuttingDownBrokers) liveOrShuttingDownBrokerIds.contains(brokerId)
       else liveBrokerIds.contains(brokerId)
     }
+    // 2. 判断 replica 所在 broker 上的 replicasOnOfflineDirs 是否包含此 topicPartition
     brokerOnline && !replicasOnOfflineDirs.getOrElse(brokerId, Set.empty).contains(topicPartition)
   }
 
