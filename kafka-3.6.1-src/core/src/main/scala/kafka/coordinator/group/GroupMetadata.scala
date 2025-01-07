@@ -798,6 +798,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
       pendingTransactionalOffsetCommits.forKeyValue { (_, pendingOffsets) =>
         pendingOffsets.remove(topicPartition)
       }
+      // 移除对应的topicPartition的“CommitRecordMetadataAndOffset”
       val removedOffset = offsets.remove(topicPartition)
       removedOffset.map(topicPartition -> _.offsetAndMetadata)
     }.toMap

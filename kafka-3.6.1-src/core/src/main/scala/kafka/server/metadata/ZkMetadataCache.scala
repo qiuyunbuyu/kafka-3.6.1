@@ -436,6 +436,7 @@ class ZkMetadataCache(
   // This method returns the deleted TopicPartitions received from UpdateMetadataRequest
   def updateMetadata(correlationId: Int, updateMetadataRequest: UpdateMetadataRequest): Seq[TopicPartition] = {
     inWriteLock(partitionMetadataLock) {
+
       // zk, raft related adaptations
       if (
         updateMetadataRequest.isKRaftController &&
@@ -520,9 +521,12 @@ class ZkMetadataCache(
         val controllerId = updateMetadataRequest.controllerId
         val controllerEpoch = updateMetadataRequest.controllerEpoch
         val newStates = updateMetadataRequest.partitionStates.asScala
+
+        // 处理 partitionStates
         newStates.foreach { state =>
           // per-partition logging here can be very expensive due going through all partitions in the cluster
           val tp = new TopicPartition(state.topicName, state.partitionIndex)
+          // 场景1：removePartitionInfo
           if (state.leader == LeaderAndIsr.LeaderDuringDelete) {
             removePartitionInfo(partitionStates, topicIds, tp.topic, tp.partition)
             if (traceEnabled)
@@ -530,12 +534,14 @@ class ZkMetadataCache(
                 s"request sent by controller $controllerId epoch $controllerEpoch with correlation id $correlationId")
             deletedPartitions += tp
           } else {
+          // 场景2：addOrUpdatePartitionInfo
             addOrUpdatePartitionInfo(partitionStates, tp.topic, tp.partition, state)
             if (traceEnabled)
               stateChangeLogger.trace(s"Cached leader info $state for partition $tp in response to " +
                 s"UpdateMetadata request sent by controller $controllerId epoch $controllerEpoch with correlation id $correlationId")
           }
         }
+
         val cachedPartitionsCount = newStates.size - deletedPartitions.size
         stateChangeLogger.info(s"Add $cachedPartitionsCount partitions and deleted ${deletedPartitions.size} partitions from metadata cache " +
           s"in response to UpdateMetadata request sent by controller $controllerId epoch $controllerEpoch with correlation id $correlationId")

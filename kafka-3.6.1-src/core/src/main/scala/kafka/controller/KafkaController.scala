@@ -1576,9 +1576,14 @@ class KafkaController(val config: KafkaConfig,
     controllerContext.partitionLeadersOnBroker(id)
   }
 
+  /**
+   * controller实际回调处理UpdateMetadataResponse的地方
+   * @param updateMetadataResponse
+   * @param brokerId
+   */
   private def processUpdateMetadataResponseReceived(updateMetadataResponse: UpdateMetadataResponse, brokerId: Int): Unit = {
     if (!isActive) return
-
+    // 没做啥事情，只是有错误响应的情况下，打了个日志
     if (updateMetadataResponse.error != Errors.NONE) {
       stateChangeLogger.error(s"Received error ${updateMetadataResponse.error} in UpdateMetadata " +
         s"response $updateMetadataResponse from broker $brokerId")
@@ -2919,7 +2924,7 @@ class KafkaController(val config: KafkaConfig,
         // event8: Receive Leader and Isr Response， 处理LeaderAndIsrResponseReceived事件
         case LeaderAndIsrResponseReceived(response, brokerId) =>
           processLeaderAndIsrResponseReceived(response, brokerId)
-        // event9: Receive Update Metadata Response
+        // event9: Receive Update Metadata Response，处理UpdateMetadataResponseReceived事件
         case UpdateMetadataResponseReceived(response, brokerId) =>
           processUpdateMetadataResponseReceived(response, brokerId)
         // event10: Receive topic delete stop replica Response

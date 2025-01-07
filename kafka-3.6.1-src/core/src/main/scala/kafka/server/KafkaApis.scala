@@ -412,6 +412,13 @@ class KafkaApis(val requestChannel: RequestChannel,
     CoreUtils.swallow(replicaManager.replicaFetcherManager.shutdownIdleFetcherThreads(), this)
   }
 
+  /**
+   * 核心流程
+   * 核心流程1：找出deletedPartitions + 更新 MetadataSnapshot
+   * 核心流程2：groupCoordinator没必要保存deletedPartitions相关的offset了
+   * 核心流程3：topicPurgatory处理
+   * 核心流程4：delayedElectLeaderPurgatory处理
+   */
   def handleUpdateMetadataRequest(request: RequestChannel.Request, requestLocal: RequestLocal): Unit = {
     val zkSupport = metadataSupport.requireZkOrThrow(KafkaApis.shouldNeverReceive(request))
     val correlationId = request.header.correlationId
@@ -427,11 +434,16 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestHelper.sendResponseExemptThrottle(request,
         new UpdateMetadataResponse(new UpdateMetadataResponseData().setErrorCode(Errors.STALE_BROKER_EPOCH.code)))
     } else {
+      // 正常处理流程
+      // 核心流程1：找出deletedPartitions + 更新 MetadataSnapshot
       val deletedPartitions = replicaManager.maybeUpdateMetadataCache(correlationId, updateMetadataRequest)
+
+      // 核心流程2：groupCoordinator没必要保存deletedPartitions相关的offset了
       if (deletedPartitions.nonEmpty) {
         groupCoordinator.onPartitionsDeleted(deletedPartitions.asJava, requestLocal.bufferSupplier)
       }
 
+      // 核心流程3：topicPurgatory
       if (zkSupport.adminManager.hasDelayedTopicOperations) {
         updateMetadataRequest.partitionStates.forEach { partitionState =>
           zkSupport.adminManager.tryCompleteDelayedTopicOperations(partitionState.topicName)
@@ -446,6 +458,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           quotas.controllerMutation.updateQuotaMetricConfigs()
         }
       }
+      //  核心流程4：delayedElectLeaderPurgatory
       if (replicaManager.hasDelayedElectionOperations) {
         updateMetadataRequest.partitionStates.forEach { partitionState =>
           val tp = new TopicPartition(partitionState.topicName, partitionState.partitionIndex)

@@ -449,6 +449,7 @@ class ControllerBrokerRequestBatch(
     sendEvent(LeaderAndIsrResponseReceived(response, broker))
   }
 
+  // UpdateMetadataResponse 执行的回调函数, 都是 Event机制
   override def handleUpdateMetadataResponse(response: UpdateMetadataResponse, broker: Int): Unit = {
     sendEvent(UpdateMetadataResponseReceived(response, broker))
   }
@@ -553,6 +554,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
       result.put(topicPartition, partitionState)
     }
     // 2. send UpdateMetadataRequest to all Brokers
+    // UpdateMetadataRequest场景示例
     addUpdateMetadataRequestForBrokers(metadataInstance.liveOrShuttingDownBrokerIds.toSeq, Set(topicPartition))
   }
 
@@ -573,11 +575,14 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
     }
   }
 
-  /** Send UpdateMetadataRequest to the given brokers for the given partitions and partitions that are being deleted */
+  /**
+   * Controller 往 成员 Broker 发送 UpdateMetadataRequest， 构造 Request 的地方
+   * Send UpdateMetadataRequest to the given brokers for the given partitions and partitions that are being deleted */
   def addUpdateMetadataRequestForBrokers(brokerIds: Seq[Int],
                                          partitions: collection.Set[TopicPartition]): Unit = {
     updateMetadataRequestBrokerSet ++= brokerIds.filter(_ >= 0)
     partitions.foreach { partition =>
+      // 从 metadataInstance: ControllerChannelContext 中获取信息
       val beingDeleted = metadataInstance.isTopicQueuedUpForDeletion(partition.topic())
       metadataInstance.partitionLeadershipInfo(partition) match {
         case Some(LeaderIsrAndControllerEpoch(leaderAndIsr, controllerEpoch)) =>
@@ -586,6 +591,8 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
           val updatedLeaderAndIsr =
             if (beingDeleted) LeaderAndIsr.duringDelete(leaderAndIsr.isr)
             else leaderAndIsr
+
+         // 利用 从 metadataInstance 中获取的信息，填充构造 UpdateMetadataRequest
           addUpdateMetadataRequestForBrokers(brokerIds, controllerEpoch, partition,
             updatedLeaderAndIsr.leader, updatedLeaderAndIsr.leaderEpoch, updatedLeaderAndIsr.partitionEpoch,
             updatedLeaderAndIsr.isr, replicas, offlineReplicas)
@@ -753,6 +760,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
   }
 
   def handleUpdateMetadataResponse(response: UpdateMetadataResponse, broker: Int): Unit
+
   // send StopReplicaRequest to related brokers
   private def sendStopReplicaRequests(controllerEpoch: Int, stateChangeLog: StateChangeLogger): Unit = {
     val traceEnabled = stateChangeLog.isTraceEnabled
