@@ -272,6 +272,7 @@ class ZkReplicaStateMachine(config: KafkaConfig,
       case OfflineReplica =>
         // StopReplicaRequest | deletePartition = false
         validReplicas.foreach { replica =>
+          // 发送StopReplicaRequest的场景，注意这里的 deletePartition = false
           controllerBrokerRequestBatch.addStopReplicaRequestForBrokers(Seq(replicaId), replica.topicPartition, deletePartition = false)
         }
         val (replicasWithLeadershipInfo, replicasWithoutLeadershipInfo) = validReplicas.partition { replica =>

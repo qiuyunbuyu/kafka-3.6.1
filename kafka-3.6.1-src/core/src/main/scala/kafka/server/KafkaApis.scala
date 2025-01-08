@@ -367,7 +367,8 @@ class KafkaApis(val requestChannel: RequestChannel,
         new StopReplicaResponseData().setErrorCode(Errors.STALE_BROKER_EPOCH.code)))
     } else {
       val partitionStates = stopReplicaRequest.partitionStates().asScala
-      // * Processing of offline Replicas
+
+      // * 核心流程：Processing of offline Replicas
       val (result, error) = replicaManager.stopReplicas(
         request.context.correlationId,
         stopReplicaRequest.controllerId,

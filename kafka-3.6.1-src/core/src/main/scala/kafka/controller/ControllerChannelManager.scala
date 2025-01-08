@@ -453,12 +453,12 @@ class ControllerBrokerRequestBatch(
   override def handleUpdateMetadataResponse(response: UpdateMetadataResponse, broker: Int): Unit = {
     sendEvent(UpdateMetadataResponseReceived(response, broker))
   }
-
+  // StopReplicaResponse 执行的回调函数
   override def handleStopReplicaResponse(stopReplicaResponse: StopReplicaResponse, brokerId: Int,
                                          partitionErrorsForDeletingTopics: Map[TopicPartition, Errors]): Unit = {
     if (partitionErrorsForDeletingTopics.nonEmpty) {
       // StopReplica Response callback : put event to controllerEventManager
-      // 会走到
+      // 会走到 TopicDeletionStopReplicaResponseReceived 事件的处理
       sendEvent(TopicDeletionStopReplicaResponseReceived(brokerId, stopReplicaResponse.error, partitionErrorsForDeletingTopics))
     }
   }
@@ -771,6 +771,8 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
       else if (metadataVersion.isAtLeast(IBP_2_4_IV1)) 2
       else if (metadataVersion.isAtLeast(IBP_2_2_IV0)) 1
       else 0
+
+    // 定义回调函数
     // The callback function that needs to be executed after StopReplicaRequest is executed successfully
     def responseCallback(brokerId: Int, isPartitionDeleted: TopicPartition => Boolean)
                         (response: AbstractResponse): Unit = {
@@ -847,6 +849,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
             val stopReplicaRequestBuilder = new StopReplicaRequest.Builder(
               stopReplicaRequestVersion, controllerId, controllerEpoch, brokerEpoch,
               false, topicStatesWithoutDelete.values.toBuffer.asJava, kraftController)
+            // 将“Controller Request”放入 BlockingQueue
             sendRequest(brokerId, stopReplicaRequestBuilder)
           }
         }

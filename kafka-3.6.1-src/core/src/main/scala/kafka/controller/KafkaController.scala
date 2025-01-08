@@ -1653,6 +1653,7 @@ class KafkaController(val config: KafkaConfig,
     // 3. Get replicas with errors of above corresponding partition
     val replicasInError = partitionsInError.map(PartitionAndReplica(_, replicaId))
 
+    // Controller根据response结果回调处理，来让topicDeletionManager继续推进
     // step 4 & 5 will do "resumeDeletions() | restarting the topic deletion action"
     // 4. Replicas deletion failure handling
     // move all the failed replicas to ReplicaDeletionIneligible
@@ -2927,7 +2928,7 @@ class KafkaController(val config: KafkaConfig,
         // event9: Receive Update Metadata Response，处理UpdateMetadataResponseReceived事件
         case UpdateMetadataResponseReceived(response, brokerId) =>
           processUpdateMetadataResponseReceived(response, brokerId)
-        // event10: Receive topic delete stop replica Response
+        // event10: Receive topic delete stop replica Response，处理
         case TopicDeletionStopReplicaResponseReceived(replicaId, requestError, partitionErrors) =>
           processTopicDeletionStopReplicaResponseReceived(replicaId, requestError, partitionErrors)
         // event11: Broker Change

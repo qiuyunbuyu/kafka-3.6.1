@@ -656,6 +656,9 @@ class Partition(val topicPartition: TopicPartition,
     }
   }
 
+  /**
+   * 此Partition中相关元数据的清空
+   */
   private def clear(): Unit = {
     remoteReplicasMap.clear()
     assignmentState = SimpleAssignmentState(Seq.empty)

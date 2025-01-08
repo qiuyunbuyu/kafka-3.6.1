@@ -547,18 +547,21 @@ class ReplicaManager(val config: KafkaConfig,
       } else {
         this.controllerEpoch = controllerEpoch
 
+        // 核心流程1：迭代处理，填充stoppedPartitions，排除offline状态的Partition
         val stoppedPartitions = mutable.Buffer.empty[StopPartition]
         partitionStates.forKeyValue { (topicPartition, partitionState) =>
+          // deletePartition字段是true还是false
           val deletePartition = partitionState.deletePartition()
 
           getPartition(topicPartition) match {
+            // case1：controller想stop的Partition，在此成员broker上是Offline的
             case HostedPartition.Offline =>
               stateChangeLogger.warn(s"Ignoring StopReplica request (delete=$deletePartition) from " +
                 s"controller $controllerId with correlation id $correlationId " +
                 s"epoch $controllerEpoch for partition $topicPartition as the local replica for the " +
                 "partition is in an offline log directory")
               responseMap.put(topicPartition, Errors.KAFKA_STORAGE_ERROR)
-
+            // case2：controller想stop的Partition，在此成员broker上是Online的
             case HostedPartition.Online(partition) =>
               val currentLeaderEpoch = partition.getLeaderEpoch
               val requestLeaderEpoch = partitionState.leaderEpoch
@@ -587,7 +590,7 @@ class ReplicaManager(val config: KafkaConfig,
                   s"leader epoch $requestLeaderEpoch matches the current leader epoch")
                 responseMap.put(topicPartition, Errors.FENCED_LEADER_EPOCH)
               }
-
+            // case2：controller想stop的Partition，在此成员broker上是None的
             case HostedPartition.None =>
               // Delete log and corresponding folders in case replica manager doesn't hold them anymore.
               // This could happen when topic is being deleted while broker is down and recovers.
@@ -595,6 +598,7 @@ class ReplicaManager(val config: KafkaConfig,
               responseMap.put(topicPartition, Errors.NONE)
           }
         }
+        // 核心流程2：处理上面填充的 stoppedPartitions
         // * Processing of offline partitions
         stopPartitions(stoppedPartitions.toSet).foreach { case (topicPartition, e) =>
           if (e.isInstanceOf[KafkaStorageException]) {
@@ -639,21 +643,26 @@ class ReplicaManager(val config: KafkaConfig,
    *                         If no errors occurred, the map will be empty.
    */
   private def stopPartitions(partitionsToStop: Set[StopPartition]): Map[TopicPartition, Throwable] = {
+    // 核心流程1：停止Fetcher
     // First stop fetchers for all partitions.
     val partitions = partitionsToStop.map(_.topicPartition)
     replicaFetcherManager.removeFetcherForPartitions(partitions)
     replicaAlterLogDirsManager.removeFetcherForPartitions(partitions)
 
+    // 核心流程2 if (stopPartition.deleteLocalLog) 的处理
     // Second remove deleted partitions from the partition map. Fetchers rely on the
     // ReplicaManager to get Partition's information so they must be stopped first.
     val partitionsToDelete = mutable.Set.empty[TopicPartition]
     partitionsToStop.foreach { stopPartition =>
       val topicPartition = stopPartition.topicPartition
+      // 需要删除本地Log
       if (stopPartition.deleteLocalLog) {
         getPartition(topicPartition) match {
           case hostedPartition: HostedPartition.Online =>
+            // 核心流程2.1 allPartitions中移除此 topicPartition
             if (allPartitions.remove(topicPartition, hostedPartition)) {
               maybeRemoveTopicMetrics(topicPartition.topic)
+              // 核心流程2.2 清空关于此Partition相关的元数据，这一步并没有清除对应Log文件
               // Logs are not deleted here. They are deleted in a single batch later on.
               // This is done to avoid having to checkpoint for every deletions.
               hostedPartition.partition.delete()
@@ -661,19 +670,23 @@ class ReplicaManager(val config: KafkaConfig,
 
           case _ =>
         }
+        // 只有需要删除本地Log的会被添加至partitionsToDelete中
         partitionsToDelete += topicPartition
       }
+      // 核心流程2.3
       // If we were the leader, we may have some operations still waiting for completion.
       // We force completion to prevent them from timing out.
       completeDelayedFetchOrProduceRequests(topicPartition)
     }
 
+    // 核心流程3：调用logManager能力来异步删除partitionsToDelete中的Log
     // Third delete the logs and checkpoint.
     val errorMap = new mutable.HashMap[TopicPartition, Throwable]()
     if (partitionsToDelete.nonEmpty) {
       // * Delete Topic -> Delete the logs and checkpoint.
       logManager.asyncDelete(partitionsToDelete, isStray = false, (tp, e) => errorMap.put(tp, e))
     }
+    // 核心流程4：remoteLogManager对此TopicPartition的处理
     remoteLogManager.foreach { rlm =>
       // exclude the partitions with offline/error state
       val partitions = partitionsToStop.filterNot(sp => errorMap.contains(sp.topicPartition)).toSet.asJava
