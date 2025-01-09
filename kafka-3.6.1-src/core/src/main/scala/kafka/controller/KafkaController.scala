@@ -398,6 +398,7 @@ class KafkaController(val config: KafkaConfig,
     replicaStateMachine.startup()
 
     // 8.2 start up partitionStateMachine
+    // broker成为Controller之后：replicaStateMachine - startup
     partitionStateMachine.startup()
 
     // ** important log can mark controller change
@@ -837,6 +838,7 @@ class KafkaController(val config: KafkaConfig,
    * It does the following -
    * 1. Move the newly created partitions to the NewPartition state
    * 2. Move the newly created partitions from NewPartition->OnlinePartition state
+   * 往“Newxxxx”状态推进的场景
    */
   private def onNewPartitionCreation(newPartitions: Set[TopicPartition]): Unit = {
     info(s"New partition creation callback for ${newPartitions.mkString(",")}")
@@ -1117,12 +1119,13 @@ class KafkaController(val config: KafkaConfig,
     controllerContext.setAllTopics(zkClient.getAllTopicsInCluster(true))
 
     registerPartitionModificationsHandlers(controllerContext.allTopics.toSeq)
+    // 入参：topic名字字符串，返回：对应topic上zk数据转成的java对象形式
     val replicaAssignmentAndTopicIds = zkClient.getReplicaAssignmentAndTopicIdForTopics(controllerContext.allTopics.toSet)
     processTopicIds(replicaAssignmentAndTopicIds)
 
     replicaAssignmentAndTopicIds.foreach { case TopicIdReplicaAssignment(_, _, assignments) =>
       assignments.foreach { case (topicPartition, replicaAssignment) =>
-        // 更新partition相关信息
+        // 更新partition相关信息：会更新很多Partition相关的核心变量，比如partitionAssignments
         controllerContext.updatePartitionFullReplicaAssignment(topicPartition, replicaAssignment)
         if (replicaAssignment.isBeingReassigned)
           controllerContext.partitionsBeingReassigned.add(topicPartition)
@@ -1970,6 +1973,7 @@ class KafkaController(val config: KafkaConfig,
     // 8. update new topic Partition Replica
     processTopicIds(addedPartitionReplicaAssignment)
 
+    // 更新元数据中TopicPartition的Assignments
     addedPartitionReplicaAssignment.foreach { case TopicIdReplicaAssignment(_, _, newAssignments) =>
       newAssignments.foreach { case (topicAndPartition, newReplicaAssignment) =>
         controllerContext.updatePartitionFullReplicaAssignment(topicAndPartition, newReplicaAssignment)
@@ -1980,6 +1984,7 @@ class KafkaController(val config: KafkaConfig,
       s"[$addedPartitionReplicaAssignment]")
 
     // 9. if have "new added Partition", to do onNewPartitionCreation
+    // addedPartitionReplicaAssignment非空的场景下才会往“NEW”状态推进
     if (addedPartitionReplicaAssignment.nonEmpty) {
       val partitionAssignments = addedPartitionReplicaAssignment
         .map { case TopicIdReplicaAssignment(_, _, partitionsReplicas) => partitionsReplicas.keySet }

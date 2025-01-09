@@ -38,10 +38,10 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
    * Invoked on successful controller election.
    */
   def startup(): Unit = {
-    // 1.
+    // 1. 核心步骤1
     info("Initializing partition state")
     initializePartitionState()
-    // 2.
+    // 2.  核心步骤2
     info("Triggering online partition state changes")
     triggerOnlinePartitionStateChange()
     debug(s"Started partition state machine with initial state -> ${controllerContext.partitionStates}")
@@ -72,11 +72,13 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
   }
 
   private def triggerOnlineStateChangeForPartitions(partitions: collection.Set[TopicPartition]): Map[TopicPartition, Either[Throwable, LeaderAndIsr]] = {
+    // 需要去除“待删除的topic的Partition”
     // 1. try to move all partitions in NewPartition or OfflinePartition state to OnlinePartition state except partitions that belong to topics to be deleted
     val partitionsToTrigger = partitions.filter { partition =>
       !controllerContext.isTopicQueuedUpForDeletion(partition.topic)
     }.toSeq
 
+    // 往OnlinePartition 推进
     // 2. Try to change the state of the given partitions to the given targetState: "OnlinePartition State"
     handleStateChanges(partitionsToTrigger, OnlinePartition, Some(OfflinePartitionLeaderElectionStrategy(false)))
     // TODO: If handleStateChanges catches an exception, it is not enough to bail out and log an error.
@@ -86,21 +88,26 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
   /**
    * Invoked on startup of the partition's state machine to "set the initial state for all existing partitions" in
    * zookeeper
+   * 迭代处理controllerContext中的allPartitions并初始化 partitionStates 这个Map [TopicPartition, PartitionState]
    */
   private def initializePartitionState(): Unit = {
     // traverse all Partitions of all brokers
     for (topicPartition <- controllerContext.allPartitions) {
       // check if leader and isr path exists for partition. If not, then it is in NEW state
       controllerContext.partitionLeadershipInfo(topicPartition) match {
+        // case1: 此TopicPartition存在LeaderISR等信息
         case Some(currentLeaderIsrAndEpoch) =>
+          // case1.1 此TopicPartition的Leader 副本 为Online状态 -> OnlinePartition
           // else, check if the leader for partition is alive. If yes, it is in Online state, else it is in Offline state
           if (controllerContext.isReplicaOnline(currentLeaderIsrAndEpoch.leaderAndIsr.leader, topicPartition))
           // leader is alive
             controllerContext.putPartitionState(topicPartition, OnlinePartition)
           else {
+          // case1.2 此TopicPartition的Leader 副本 不为Online状态 -> OfflinePartition
             // set "OfflinePartition" State
             controllerContext.putPartitionState(topicPartition, OfflinePartition)
           }
+        // case2: 此TopicPartition不存在LeaderISR等信息 -> NewPartition
         case None =>
           // if can not find PartitionInfo in zk, set "NewPartition" State
           controllerContext.putPartitionState(topicPartition, NewPartition)
@@ -167,6 +174,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         // 1. clear up controller Broker RequestBatch
         controllerBrokerRequestBatch.newBatch()
 
+        // 核心流程1：往Online推进
         // 2. ***exercises the partition's state machine
         val result = doHandleStateChanges(
           partitions,
@@ -174,6 +182,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
           partitionLeaderElectionStrategyOpt
         )
 
+        // 核心流程2：发送3大Controller Request
         // 3. controller need send Request to corresponding broker
         // LeaderAndIsrRequest
         // UpdateMetadataRequest
@@ -252,11 +261,15 @@ class ZkPartitionStateMachine(config: KafkaConfig,
 
       // case2: -> OnlinePartition
       case OnlinePartition =>
-        // a. get all uninitialized Partitions(Partitions in NewPartition State)
+        // 核心流程1
+        // 根据Partitions当前state，划分成[uninitializedPartitions, partitionsToElectLeader]
+        // a. get all uninitialized Partitions(Partitions in NewPartition State)：还未有LeaderISR相关信息
         val uninitializedPartitions = validPartitions.filter(partition => partitionState(partition) == NewPartition)
-        // b. get all "can elect Leader" Partitions(Partitions in OfflinePartition State or OnlinePartition state)
+
+        // b. get all "can elect Leader" Partitions(Partitions in OfflinePartition State or OnlinePartition state)：已有LeaderISR信息
         val partitionsToElectLeader = validPartitions.filter(partition => partitionState(partition) == OfflinePartition || partitionState(partition) == OnlinePartition)
 
+        // 核心流程2：处理uninitializedPartitions
         // c. handle above "uninitializedPartitions"
         if (uninitializedPartitions.nonEmpty) {
           // c.1 try to write "Leader and ISR" to zk Node
@@ -268,6 +281,8 @@ class ZkPartitionStateMachine(config: KafkaConfig,
             controllerContext.putPartitionState(partition, OnlinePartition)
           }
         }
+
+        // 核心流程3：处理partitionsToElectLeader
         // d. handle above "partitionsToElectLeader"
         if (partitionsToElectLeader.nonEmpty) {
           // d.1 call electLeaderForPartitions to get electionResults
@@ -313,6 +328,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
    */
   private def initializeLeaderAndIsrForPartitions(partitions: Seq[TopicPartition]): Seq[TopicPartition] = {
     val successfulInitializations = mutable.Buffer.empty[TopicPartition]
+    // 会从controllerContext中取得partition对应的partitionReplicaAssignment，先去看一下partitionReplicaAssignment的初始化/更新流程吧
     // 1. get all Replicas of Partition
     val replicasPerPartition = partitions.map(partition => partition -> controllerContext.partitionReplicaAssignment(partition))
     // 2. get all live Replicas of Partition

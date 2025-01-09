@@ -184,9 +184,11 @@ class ControllerContext extends ControllerChannelContext {
   }
 
   def updatePartitionFullReplicaAssignment(topicPartition: TopicPartition, newAssignment: ReplicaAssignment): Unit = {
+    // 更新partitionAssignments
     val assignments = partitionAssignments.getOrElseUpdate(topicPartition.topic, mutable.Map.empty)
     val previous = assignments.put(topicPartition.partition, newAssignment)
     val leadershipInfo = partitionLeadershipInfo.get(topicPartition)
+    // 更新PreferredReplicaImbalance指标
     updatePreferredReplicaImbalanceMetric(topicPartition, previous, leadershipInfo,
       Some(newAssignment), leadershipInfo)
   }
