@@ -106,11 +106,14 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
     leaderEndOffset: Long,
     brokerEpoch: Long
   ): Unit = {
+
+    // 更新lastCaughtUpTimeMs
     replicaState.updateAndGet { currentReplicaState =>
+      // 如果follower replica“想同步的offset” >= leader replica的现在的LEO -> “现在”已经完全追上
       val lastCaughtUpTime = if (followerFetchOffsetMetadata.messageOffset >= leaderEndOffset) {
-        math.max(currentReplicaState.lastCaughtUpTimeMs, followerFetchTimeMs)
-      } else if (followerFetchOffsetMetadata.messageOffset >= currentReplicaState.lastFetchLeaderLogEndOffset) {
-        math.max(currentReplicaState.lastCaughtUpTimeMs, currentReplicaState.lastFetchTimeMs)
+        math.max(currentReplicaState.lastCaughtUpTimeMs, followerFetchTimeMs) // 当前FetchTimeMs
+      } else if (followerFetchOffsetMetadata.messageOffset >= currentReplicaState.lastFetchLeaderLogEndOffset) { // 最后一次FetchRequest时当时“leader replica的LEO”
+        math.max(currentReplicaState.lastCaughtUpTimeMs, currentReplicaState.lastFetchTimeMs) // 最后一次发送FetchRequest的时间
       } else {
         currentReplicaState.lastCaughtUpTimeMs
       }

@@ -73,7 +73,7 @@ class LocalLeaderEndPoint(sourceBroker: BrokerEndPoint,
     request.data.topics.forEach { topic =>
       topicNames.put(topic.topicId, topic.topic)
     }
-
+    // 定义FetchResponse的回调函数
     def processResponseCallback(responsePartitionData: Seq[(TopicIdPartition, FetchPartitionData)]): Unit = {
       partitionData = responsePartitionData.map { case (tp, data) =>
         val abortedTransactions =  data.abortedTransactions.orElse(null)
@@ -102,6 +102,7 @@ class LocalLeaderEndPoint(sourceBroker: BrokerEndPoint,
       Optional.empty()
     )
 
+    // 调用ReplicaManager能力进行处理
     replicaManager.fetchMessages(
       params = fetchParams,
       fetchInfos = fetchData.asScala.toSeq,

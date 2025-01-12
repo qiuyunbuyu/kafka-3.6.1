@@ -75,13 +75,16 @@ class RemoteLeaderEndPoint(logPrefix: String,
   override def brokerEndPoint(): BrokerEndPoint = blockingSender.brokerEndPoint()
 
   override def fetch(fetchRequest: FetchRequest.Builder): collection.Map[TopicPartition, FetchData] = {
+    // Follower Replica 发送FetchRequest的入口
     val clientResponse = try {
+      // 核心步骤1：阻塞直到获取Response或(TimeOut)
       blockingSender.sendRequest(fetchRequest)
     } catch {
       case t: Throwable =>
         fetchSessionHandler.handleError(t)
         throw t
     }
+    // 核心步骤2：获取response，并处理
     val fetchResponse = clientResponse.responseBody.asInstanceOf[FetchResponse]
     if (!fetchSessionHandler.handleResponse(fetchResponse, clientResponse.requestHeader().apiVersion())) {
       // If we had a session topic ID related error, throw it, otherwise return an empty fetch data map.
@@ -177,11 +180,12 @@ class RemoteLeaderEndPoint(logPrefix: String,
         }
     }
   }
-
+  // Follower Replica 构建FetchRequest的入口
   override def buildFetch(partitions: Map[TopicPartition, PartitionFetchState]): ResultWithPartitions[Option[ReplicaFetch]] = {
     val partitionsWithError = mutable.Set[TopicPartition]()
 
     val builder = fetchSessionHandler.newBuilder(partitions.size, false)
+    // 遍历partitions
     partitions.forKeyValue { (topicPartition, fetchState) =>
       // We will not include a replica in the fetch request if it should be throttled.
       if (fetchState.isReadyForFetch && !shouldFollowerThrottle(quota, fetchState, topicPartition)) {

@@ -807,6 +807,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   /**
    * Handle a fetch request
+   * 处理FetchRequest的入口
    */
   def handleFetchRequest(request: RequestChannel.Request): Unit = {
     val versionId = request.header.apiVersion
@@ -834,6 +835,8 @@ class KafkaApis(val requestChannel: RequestChannel,
     //  "interesting" : construct PartitionData to Fetch
     val interesting = mutable.ArrayBuffer[(TopicIdPartition, FetchRequest.PartitionData)]()
 
+    // 核心流程：区分是Follower Replica还是Consumer发来的Request
+    // 区分的的标志是FetchRequest中的replica ID标志："The replica ID of the follower, or -1 if this request is from a consumer."
     // Distinguishing between two types of Fetch clients
     // Follower Replica Client
     if (fetchRequest.isFromFollower) {

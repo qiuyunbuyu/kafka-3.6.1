@@ -118,6 +118,7 @@ class ReplicaFetcherThread(name: String,
       trace("Follower has replica log end offset %d for partition %s. Received %d bytes of messages and leader hw %d"
         .format(log.logEndOffset, topicPartition, records.sizeInBytes, partitionData.highWatermark))
 
+    // 核心1：调用UnifiedLog的能力来实际执行append Log
     // Append the leader's messages to the log
     val logAppendInfo = partition.appendRecordsToFollowerOrFutureReplica(records, isFuture = false)
 
@@ -126,6 +127,8 @@ class ReplicaFetcherThread(name: String,
         .format(log.logEndOffset, records.sizeInBytes, topicPartition))
     val leaderLogStartOffset = partitionData.logStartOffset
 
+    // 核心2：更新UnifiedLog中的highWatermarkMetadata变量
+    // 按下面源码中的注释的说法，follower replica保存更新这一变量，可以用于 由Follower 变成 Leader的场景
     // For the follower replica, we do not need to keep its segment base offset and physical position.
     // These values will be computed upon becoming leader or handling a preferred read replica fetch.
     var maybeUpdateHighWatermarkMessage = s"but did not update replica high watermark"
@@ -134,6 +137,7 @@ class ReplicaFetcherThread(name: String,
       partitionsWithNewHighWatermark += topicPartition
     }
 
+    // 核心3：UnifiedLog的 LogStartOffset
     log.maybeIncrementLogStartOffset(leaderLogStartOffset, LogStartOffsetIncrementReason.LeaderOffsetIncremented)
     if (logTrace)
       trace(s"Follower received high watermark ${partitionData.highWatermark} from the leader " +

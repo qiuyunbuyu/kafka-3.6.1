@@ -1473,6 +1473,8 @@ class ReplicaManager(val config: KafkaConfig,
   /**
    * Fetch messages from a replica, and wait until enough data can be fetched and return;
    * the callback function will be triggered either when timeout or required fetch info is satisfied.
+   *
+   * 这里可以看出称kafka是“主读主写”的其实并不合适，consumer是可以从任何一个Replica读取的， follower只能从Leadr Replica读取
    * Consumers may fetch from any replica, but followers can only fetch from the leader.
    */
   def fetchMessages(params: FetchParams,
@@ -1634,6 +1636,7 @@ class ReplicaManager(val config: KafkaConfig,
             exception = None)
         } else {
           log = partition.localLogWithEpochOrThrow(fetchInfo.currentLeaderEpoch, params.fetchOnlyLeader())
+          // 调用Partition
           // call Partition.fetchRecords
           // Try the read first, this tells us whether we need all of adjustedFetchSize for this partition
           val readInfo: LogReadInfo = partition.fetchRecords(

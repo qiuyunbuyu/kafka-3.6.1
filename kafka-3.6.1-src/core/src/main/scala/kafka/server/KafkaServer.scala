@@ -717,7 +717,7 @@ class KafkaServer(
       None
     }
   }
-
+  // broker启动时创建ReplicaManager的入口
   protected def createReplicaManager(isShuttingDown: AtomicBoolean): ReplicaManager = {
     // 这是干啥的？只能猜测与事务相关
     val addPartitionsLogContext = new LogContext(s"[AddPartitionsToTxnManager broker=${config.brokerId}]")

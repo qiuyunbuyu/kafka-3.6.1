@@ -57,7 +57,7 @@ public class PartitionStates<S> {
         if (state != null)
             map.put(topicPartition, state);
     }
-
+    // 先移除，后放入，由于是个LinkedHashMap，这2步保证此TopicPartition，移到了最后一位
     public void updateAndMoveToEnd(TopicPartition topicPartition, S state) {
         map.remove(topicPartition);
         map.put(topicPartition, state);

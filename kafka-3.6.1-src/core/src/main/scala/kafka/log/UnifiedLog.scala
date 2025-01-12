@@ -387,11 +387,13 @@ class UnifiedLog(@volatile var logStartOffset: Long,
       throw new IllegalArgumentException("High watermark offset should be non-negative")
 
     lock synchronized {
+      // 新HighWatermark < 当前的HighWatermark，只是打印了一个警告？
       if (newHighWatermark.messageOffset < highWatermarkMetadata.messageOffset) {
         warn(s"Non-monotonic update of high watermark from $highWatermarkMetadata to $newHighWatermark")
       }
-      // update "highWatermarkMetadata" to "newHighWatermark"
+      // UnifiedLog 更新高水位
       highWatermarkMetadata = newHighWatermark
+      // 其他相关更新高水位
       producerStateManager.onHighWatermarkUpdated(newHighWatermark.messageOffset)
       logOffsetsListener.onHighWatermarkUpdated(newHighWatermark.messageOffset)
       maybeIncrementFirstUnstableOffset()
@@ -2175,7 +2177,7 @@ object UnifiedLog extends Logging {
    * If the recordVersion is >= RecordVersion.V2, then create and return a LeaderEpochFileCache.
    * Otherwise, the message format is considered incompatible and the existing LeaderEpoch file
    * is deleted.
-   *
+   * 从leader-epoch-checkpoint 文件中加载 LeaderEpoch 信息并存储到 LeaderEpochFileCache 中
    * @param dir                  The directory in which the log will reside
    * @param topicPartition       The topic partition
    * @param logDirFailureChannel The LogDirFailureChannel to asynchronously handle log dir failure

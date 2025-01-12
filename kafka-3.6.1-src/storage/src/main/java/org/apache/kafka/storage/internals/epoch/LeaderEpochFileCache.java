@@ -248,6 +248,15 @@ public class LeaderEpochFileCache {
      * if requestedEpoch is < the first epoch cached, UNDEFINED_EPOCH_OFFSET will be returned
      * so that the follower falls back to High Water Mark.
      *
+     * 5
+     * 1 0
+     * 2 110
+     * 3 120
+     * 4 180
+     * 5 190
+     *
+     * Epoch = 3 -> 180
+     * Epoch = 5 -> LEO
      * @param requestedEpoch requested leader epoch
      * @param logEndOffset   the existing Log End Offset
      * @return found leader epoch and end offset

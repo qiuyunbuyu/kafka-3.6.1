@@ -896,6 +896,11 @@ class Partition(val topicPartition: TopicPartition,
    * [[Replica.updateFetchState()]] for details.
    *
    * This method is visible for performance testing (see `UpdateFollowerFetchStateBenchmark`)
+   * 核心流程：
+   * 核心1：更新follower副本的FetchState
+   * 核心2：是否将此Replica加入ISR
+   * 核心3：判断HW的增长
+   * 核心4：delay Request的处理
    */
   def updateFollowerFetchState(
     replica: Replica,
@@ -909,7 +914,7 @@ class Partition(val topicPartition: TopicPartition,
     val oldLeaderLW = if (delayedOperations.numDelayedDelete > 0) lowWatermarkIfLeader else -1L
     val prevFollowerEndOffset = replica.stateSnapshot.logEndOffset
 
-    // update state
+    // 核心1：更新follower副本的FetchState
     replica.updateFetchState(
       followerFetchOffsetMetadata,
       followerStartOffset,
@@ -923,10 +928,14 @@ class Partition(val topicPartition: TopicPartition,
     // since the replica's logStartOffset may have incremented
     val leaderLWIncremented = newLeaderLW > oldLeaderLW
 
+    // 核心2：是否将此Replia加入ISR
+    // 此处为ISR扩容场景
+    // ISR缩容是ReplicaManager中schedule任务“isr-expiration”来检验+"isr-change-propagation"传播的
     // isr manage: Check and maybe expand the ISR of the partition.
     // Check if this in-sync replica needs to be added to the ISR.
     maybeExpandIsr(replica)
 
+    // 核心3：判断HW的增长
     // check if the HW of the partition can now be incremented
     // since the replica may already be in the ISR and its LEO has just incremented
     val leaderHWIncremented = if (prevFollowerEndOffset != replica.stateSnapshot.logEndOffset) {
@@ -939,6 +948,8 @@ class Partition(val topicPartition: TopicPartition,
       false
     }
 
+    // 核心4：如果有依赖ISR中所有所有Replica同步数据事件之后延迟Request（最典型的是ack = -1的Produce Request），当然还包括Fetch，DeleteRecords
+    //       此时可以触发延迟操作的正常结束行为
     // some delayed operations may be unblocked after HW or LW changed
     if (leaderLWIncremented || leaderHWIncremented)
       tryCompleteDelayedRequests()
@@ -1004,7 +1015,7 @@ class Partition(val topicPartition: TopicPartition,
    * epoch before it can join ISR, because otherwise, if there is committed data between current
    * leader's HW and LEO, the replica may become the leader before it fetches the committed data
    * and the data will be lost.
-   *
+   * 从技术上讲......., 但是......
    * Technically, a replica shouldn't be in ISR if it hasn't caught up for longer than replicaLagTimeMaxMs,
    * even if its log end offset is >= HW. However, to be consistent with how the follower determines
    * whether a replica is in-sync, we only check HW.
@@ -1432,7 +1443,7 @@ class Partition(val topicPartition: TopicPartition,
     minOneMessage: Boolean,
     updateFetchState: Boolean
   ): LogReadInfo = {
-    //
+    // 调用UnifiedLog Read能力
     def readFromLocalLog(log: UnifiedLog): LogReadInfo = {
       readRecords(
         log,
@@ -1444,8 +1455,10 @@ class Partition(val topicPartition: TopicPartition,
         minOneMessage
       )
     }
-    // case1
+
+    // case1- Follower Replica的读取
     if (fetchParams.isFromFollower) {
+      // 核心1 : (replica-获取Follower Replica, logReadInfo-读取并返回LogReadInfo(包含了读取的records))
       // Check that the request is from a valid replica before doing the read
       val (replica, logReadInfo) = inReadLock(leaderIsrUpdateLock) {
         val localLog = localLogWithEpochOrThrow(
@@ -1463,6 +1476,7 @@ class Partition(val topicPartition: TopicPartition,
       // only leader can manage ISR
       if (updateFetchState && !logReadInfo.divergingEpoch.isPresent) {
         // Update the follower's state in the leader based on the last fetch request
+        // 核心2： 更新Follower FetchState
         updateFollowerFetchState(
           replica,
           followerFetchOffsetMetadata = logReadInfo.fetchedData.fetchOffsetMetadata,
@@ -1472,7 +1486,7 @@ class Partition(val topicPartition: TopicPartition,
           fetchParams.replicaEpoch
         )
       }
-
+      // 返回读取的信息，定义在LogReadInfo中
       logReadInfo
     } else {
     // case2
@@ -1533,6 +1547,7 @@ class Partition(val topicPartition: TopicPartition,
     val initialLogEndOffset = localLog.logEndOffset
     val initialLastStableOffset = localLog.lastStableOffset
 
+    // 利用LeaderEpoch机制进行判断的地方
     // leader Epoch attach
     lastFetchedEpoch.ifPresent { fetchEpoch =>
       val epochEndOffset = lastOffsetForLeaderEpoch(currentLeaderEpoch, fetchEpoch, fetchOnlyFromLeader = false)
@@ -1566,6 +1581,7 @@ class Partition(val topicPartition: TopicPartition,
           initialLastStableOffset)
       }
     }
+
     // call UnifiedLog to read
     val fetchedData = localLog.read(
       fetchOffset,
