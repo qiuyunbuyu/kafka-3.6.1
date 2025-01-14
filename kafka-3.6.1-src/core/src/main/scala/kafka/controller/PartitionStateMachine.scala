@@ -174,7 +174,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         // 1. clear up controller Broker RequestBatch
         controllerBrokerRequestBatch.newBatch()
 
-        // 核心流程1：往Online推进
+        // 核心流程1：往targetState推进
         // 2. ***exercises the partition's state machine
         val result = doHandleStateChanges(
           partitions,
@@ -182,7 +182,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
           partitionLeaderElectionStrategyOpt
         )
 
-        // 核心流程2：发送3大Controller Request
+        // 核心流程2：尝试推进targetState后，都需发送3大Controller Request
         // 3. controller need send Request to corresponding broker
         // LeaderAndIsrRequest
         // UpdateMetadataRequest
@@ -283,23 +283,25 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         }
 
         // 核心流程3：处理partitionsToElectLeader
+        // 对应场景：处理ElectLeadersRequest时，筛选出的Partition一定是[partitionsToElectLeader]类型
         // d. handle above "partitionsToElectLeader"
         if (partitionsToElectLeader.nonEmpty) {
           // d.1 call electLeaderForPartitions to get electionResults
+          // 绕了一圈，发现最后走到了Partition的Leader选举流程
           val electionResults = electLeaderForPartitions(
             partitionsToElectLeader,
             partitionLeaderElectionStrategyOpt.getOrElse(
               throw new IllegalArgumentException("Election strategy is a required field when the target state is OnlinePartition")
             )
           )
-          // d.2 traverse all electionResults
+          // d.2 traverse all electionResults 遍历election结果
           electionResults.foreach {
             // elect Leader success
             case (partition, Right(leaderAndIsr)) =>
               stateChangeLog.info(
                 s"Changed partition $partition from ${partitionState(partition)} to $targetState with state $leaderAndIsr"
               )
-              // transfer partition state to  OnlinePartition
+              // transfer partition state to  OnlinePartition：Elect成功则更新PartitionState -> state
               controllerContext.putPartitionState(partition, OnlinePartition)
             // elect Leader fail
             case (_, Left(_)) => // Ignore; no need to update partition state on election error
@@ -407,6 +409,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
 
     // 2. traverse remaining partitions to elect Leader
     while (remaining.nonEmpty) {
+      // [核心流程]
       // 2.1 call doElectLeaderForPartitions to Elect Leader for Partitions, and classify results to (finished, updatesToRetry)
       val (finished, updatesToRetry) = doElectLeaderForPartitions(remaining, partitionLeaderElectionStrategy)
 
@@ -506,13 +509,18 @@ class ZkPartitionStateMachine(config: KafkaConfig,
     }
 
     // ============================ b. Start electing Leader ===================================
+    // 核心流程：根据partitionLeaderElectionStrategy，给对应Partition选Leader
+    // 划分了2个结果集(没能选出Leader的Partitions, 选出Leader的Partitions)
     val (partitionsWithoutLeaders, partitionsWithLeaders) = partitionLeaderElectionStrategy match {
+
       // case1: Leader election triggered by Leader Replica offline
       case OfflinePartitionLeaderElectionStrategy(allowUnclean) =>
+        // 对TopicPartition返回3元组：(TopicPartition, Option[LeaderAndIsr], Boolean)
         val partitionsWithUncleanLeaderElectionState = collectUncleanLeaderElectionState(
           validLeaderAndIsrs,
           allowUnclean
         )
+        // 返回值：ElectionResult(topicPartition: TopicPartition, leaderAndIsr: Option[LeaderAndIsr], liveReplicas: Seq[Int]
         leaderForOffline(
           controllerContext,
           isLeaderRecoverySupported,
@@ -534,6 +542,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
 
     // ============================ c. update metadata ===================================
     // 1. handle partitionsWithoutLeaders
+    // 核心流程：处理partitionsWithoutLeaders，没能选的出Leader
     partitionsWithoutLeaders.foreach { electionResult =>
       val partition = electionResult.topicPartition
       val failMsg = s"Failed to elect leader for partition $partition under strategy $partitionLeaderElectionStrategy"
@@ -541,6 +550,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
       failedElections.put(partition, Left(new StateChangeFailedException(failMsg)))
     }
 
+    // 核心流程：处理partitionsWithLeaders
     // 2. get data from above partitionsWithLeaders
     // AR List
     val recipientsPerPartition = partitionsWithLeaders.map(result => result.topicPartition -> result.liveReplicas).toMap
@@ -548,10 +558,12 @@ class ZkPartitionStateMachine(config: KafkaConfig,
     val adjustedLeaderAndIsrs = partitionsWithLeaders.map(result => result.topicPartition -> result.leaderAndIsr.get).toMap
 
     // 3. use [new Leader] + [new ISR] to update "${TopicPartitionZNode.path(partition)}/state" Node in zk
+    // 核心流程：更新zk上对应节点
     val UpdateLeaderAndIsrResult(finishedUpdates, updatesToRetry) = zkClient.updateLeaderAndIsr(
       adjustedLeaderAndIsrs, controllerContext.epoch, controllerContext.epochZkVersion)
 
     // 4. parse finishedUpdates
+    // 核心流程：变更结束，一定要发个LeaderAndIsr Request给对应 Broker（计算机不是魔法学，一切都有迹可循）
     finishedUpdates.forKeyValue { (partition, result) =>
       result.foreach { leaderAndIsr =>
         // 4.1 get replicaAssignment from controllerContext
@@ -583,7 +595,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
    * @param leaderIsrAndControllerEpochs set of partition to determine if unclean leader election should be
    *                                     allowed
    * @param allowUnclean whether to allow unclean election without having to read the topic configuration
-   * @return a sequence of three element tuple:
+   * @return a sequence of three element tuple: 重点关注这个返回值，下面都是根据不同的情况，封装了这个三元组返回值
    *         1. topic partition
    *         2. leader, isr and controller epoc. Some means election should be performed
    *         3. allow unclean
@@ -592,22 +604,28 @@ class ZkPartitionStateMachine(config: KafkaConfig,
     leaderAndIsrs: Seq[(TopicPartition, LeaderAndIsr)],
     allowUnclean: Boolean
   ): Seq[(TopicPartition, Option[LeaderAndIsr], Boolean)] = {
+
+    // 判断TopicPartition对应的LeaderAndIsr列表中是否 liveInSyncReplicas为空，并划分结果集
     val (partitionsWithNoLiveInSyncReplicas, partitionsWithLiveInSyncReplicas) = leaderAndIsrs.partition {
       case (partition, leaderAndIsr) =>
         val liveInSyncReplicas = leaderAndIsr.isr.filter(controllerContext.isReplicaOnline(_, partition))
         liveInSyncReplicas.isEmpty
     }
 
+    // 根据是否allowUnclean，来处理electionForPartitionWithoutLiveReplicas
     val electionForPartitionWithoutLiveReplicas = if (allowUnclean) {
       partitionsWithNoLiveInSyncReplicas.map { case (partition, leaderAndIsr) =>
         (partition, Option(leaderAndIsr), true)
       }
     } else {
+      // 从zk上获取Topic的配置，封装返回值：(Map[String, LogConfig], Map[String, Exception])
       val (logConfigs, failed) = zkClient.getLogConfigs(
         partitionsWithNoLiveInSyncReplicas.iterator.map { case (partition, _) => partition.topic }.toSet,
         config.originals()
       )
-
+      // partitionsWithNoLiveInSyncReplicas： 2类返回值
+      // (partition, None, false)
+      // ( partition, Option(leaderAndIsr), logConfigs(partition.topic).uncleanLeaderElectionEnable.booleanValue() )
       partitionsWithNoLiveInSyncReplicas.map { case (partition, leaderAndIsr) =>
         if (failed.contains(partition.topic)) {
           logFailedStateChange(partition, partitionState(partition), OnlinePartition, failed(partition.topic))
@@ -621,7 +639,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         }
       }
     }
-
+    // partitionsWithLiveInSyncReplicas： 1类返回值 (partition, Option(leaderAndIsr), false)
     electionForPartitionWithoutLiveReplicas ++
     partitionsWithLiveInSyncReplicas.map { case (partition, leaderAndIsr) =>
       (partition, Option(leaderAndIsr), false)
@@ -647,39 +665,49 @@ class ZkPartitionStateMachine(config: KafkaConfig,
   }
 }
 
+/**
+ * 4个Partition-Leader选举策略
+ */
 object PartitionLeaderElectionAlgorithms {
-  // Leader Election Strategy1
+  // Leader Election Strategy1: offline-Partition场景
   def offlinePartitionLeaderElection(assignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int], uncleanLeaderElectionEnabled: Boolean, controllerContext: ControllerContext): Option[Int] = {
-    // first [ live and inISR ] Replica
+    // first [ live and inISR ] Replica：第一：优选[live] + [isr]中的Replica
     assignment.find(id => liveReplicas.contains(id) && isr.contains(id)).orElse {
       // if allow unclean Leader Election: only need choose [ live ] Replica (not require in ISR)
-      if (uncleanLeaderElectionEnabled) {
+      if (uncleanLeaderElectionEnabled) { // 第二：ISR没有Replica，且允许uncleanLeaderElection，选择[live]中的Replica即可
         val leaderOpt = assignment.find(liveReplicas.contains)
         if (leaderOpt.isDefined)
           controllerContext.stats.uncleanLeaderElectionRate.mark()
         leaderOpt
-      } else {
+      } else { // 第3：[live] + [isr]中都没有Replica，那啥都选不出来了
         None
       }
     }
   }
-  // Leader Election Strategy2
+
+  // Leader Election Strategy2：reassign-Partition场景
   def reassignPartitionLeaderElection(reassignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int]): Option[Int] = {
     // find first [ live and inISR ] Replica in "reassignment"
     reassignment.find(id => liveReplicas.contains(id) && isr.contains(id))
   }
-  // Leader Election Strategy3
+
+  // Leader Election Strategy3：preferredReplica-Partition场景
   def preferredReplicaPartitionLeaderElection(assignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int]): Option[Int] = {
+    // 注意这里的[headOption]，preferredReplica是assignment列表中的对应的第一个 Replica的ID
     // find first [ live and inISR ] Replica in "assignment"
     assignment.headOption.filter(id => liveReplicas.contains(id) && isr.contains(id))
   }
-  // Leader Election Strategy4
+
+  // Leader Election Strategy4：controlledShutdown-Partition场景
   def controlledShutdownPartitionLeaderElection(assignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int], shuttingDownBrokers: Set[Int]): Option[Int] = {
     // find first [ live and inISR and not in shuttingDownBrokers ] Replica in "assignment"
     assignment.find(id => liveReplicas.contains(id) && isr.contains(id) && !shuttingDownBrokers.contains(id))
   }
 }
 
+/**
+ * 4种Leader 选举策略
+ */
 sealed trait PartitionLeaderElectionStrategy
 // Leader election triggered by Leader Replica offline
 final case class OfflinePartitionLeaderElectionStrategy(allowUnclean: Boolean) extends PartitionLeaderElectionStrategy

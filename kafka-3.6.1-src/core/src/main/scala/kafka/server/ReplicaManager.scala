@@ -2693,7 +2693,7 @@ class ReplicaManager(val config: KafkaConfig,
           responseCallback(failures)
       }
     }
-
+    // controller处理都是事件机制，将[ReplicaLeaderElection]放入了[事件队列]中，直接去找controller中的处理逻辑
     controller.electLeaders(partitions, electionType, electionCallback)
   }
 

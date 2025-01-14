@@ -272,6 +272,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.DESCRIBE_DELEGATION_TOKEN => handleDescribeTokensRequest(request)
         // Consumer: delete consumer groups
         case ApiKeys.DELETE_GROUPS => handleDeleteGroupsRequest(request, requestLocal).exceptionally(handleError)
+        // Broker 处理ElectLeadersRequest的入口
         // Broker: Force partition leader election
         case ApiKeys.ELECT_LEADERS => maybeForwardToController(request, handleElectLeaders)
         // Broker: alter configs incremental
@@ -3425,6 +3426,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     val zkSupport = metadataSupport.requireZkOrThrow(KafkaApis.shouldAlwaysForward(request))
     val electionRequest = request.body[ElectLeadersRequest]
 
+    // 构建并发送返回值的地方：ElectLeadersResponse
     def sendResponseCallback(
       error: ApiError
     )(
@@ -3468,7 +3470,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         )
       })
     }
-
+    // 权限校验
     if (!authHelper.authorize(request.context, ALTER, CLUSTER, CLUSTER_NAME)) {
       val error = new ApiError(Errors.CLUSTER_AUTHORIZATION_FAILED, null)
       val partitionErrors: Map[TopicPartition, ApiError] =
@@ -3476,16 +3478,17 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       sendResponseCallback(error)(partitionErrors)
     } else {
+    // 核心处理流程
       val partitions = if (electionRequest.data.topicPartitions == null) {
         metadataCache.getAllTopics().flatMap(metadataCache.getTopicPartitions)
       } else {
         electionRequest.topicPartitions
       }
-
+      // 重点关注入参
       replicaManager.electLeaders(
         zkSupport.controller,
-        partitions,
-        electionRequest.electionType,
+        partitions, // Set[TopicPartition]
+        electionRequest.electionType, // preferred或者unclean
         sendResponseCallback(ApiError.NONE),
         electionRequest.data.timeoutMs
       )

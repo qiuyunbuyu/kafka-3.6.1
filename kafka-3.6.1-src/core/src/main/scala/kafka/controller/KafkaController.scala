@@ -55,7 +55,7 @@ import scala.collection.{Map, Seq, Set, immutable, mutable}
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
-
+// Trigger 的三种方式：Admin, ZK, Auto
 sealed trait ElectionTrigger
 final case object AutoTriggered extends ElectionTrigger
 final case object ZkTriggered extends ElectionTrigger
@@ -1069,6 +1069,7 @@ class KafkaController(val config: KafkaConfig,
   ): Map[TopicPartition, Either[Throwable, LeaderAndIsr]] = {
     info(s"Starting replica leader election ($electionType) for partitions ${partitions.mkString(",")} triggered by $electionTrigger")
     try {
+      // 核心流程1：确定PartitionLeaderElectionStrategy
       val strategy = electionType match {
         case ElectionType.PREFERRED => PreferredReplicaPartitionLeaderElectionStrategy
         case ElectionType.UNCLEAN =>
@@ -1078,11 +1079,14 @@ class KafkaController(val config: KafkaConfig,
           OfflinePartitionLeaderElectionStrategy(allowUnclean = electionTrigger == AdminClientTriggered)
       }
 
+      // [core]*** 核心流程2：整个流程最核心的地方：利用partitionStateMachine将electablePartitions往OnlinePartition状态推进
       val results = partitionStateMachine.handleStateChanges(
         partitions.toSeq,
         OnlinePartition,
         Some(strategy)
       )
+
+      // 非Admin的Trigger特殊处理
       if (electionTrigger != AdminClientTriggered) {
         results.foreach {
           case (tp, Left(throwable)) =>
@@ -1098,6 +1102,7 @@ class KafkaController(val config: KafkaConfig,
 
       results
     } finally {
+      // 非Admin的Trigger特殊处理
       if (electionTrigger != AdminClientTriggered) {
         removePartitionsFromPreferredReplicaElection(partitions, electionTrigger == AutoTriggered)
       }
@@ -2515,6 +2520,8 @@ class KafkaController(val config: KafkaConfig,
         partitions.iterator.map(partition => partition -> Left(new ApiError(Errors.NOT_CONTROLLER, null))).toMap
       })
     } else {
+      // 核心流程1：确定要执行Elect的Partition
+      // 这里会区分是是AdminClient触发的，还是zk下Watch /admin/preferred_replica_election路径触发的
       // We need to register the watcher if the path doesn't exist in order to detect future preferred replica
       // leader elections and we get the `path exists` check for free
       if (electionTrigger == AdminClientTriggered || zkClient.registerZNodeChangeHandlerAndCheckExistence(preferredReplicaElectionHandler)) {
@@ -2528,7 +2535,7 @@ class KafkaController(val config: KafkaConfig,
         unknownPartitions.foreach { p =>
           info(s"Skipping replica leader election ($electionType) for partition $p by $electionTrigger since it doesn't exist.")
         }
-
+      // 核心流程2：排除流程1中的Partitions对应的2种异常情况(”不存在的”和“正在被删除的”)
         val (partitionsBeingDeleted, livePartitions) = knownPartitions.partition(partition =>
             topicDeletionManager.isTopicQueuedUpForDeletion(partition.topic))
         if (partitionsBeingDeleted.nonEmpty) {
@@ -2536,21 +2543,35 @@ class KafkaController(val config: KafkaConfig,
             s"by $electionTrigger since the respective topics are being deleted")
         }
 
+        // 核心流程3：确定 electablePartitions，有些partition已经是有比较合适的Leader Replica，就没必要再Elect了
+        // 看下面流程之前，一定要了解如下元数据信息组成
+        // Topic级别元数据示例：{"partitions":{"0":[1,2],"1":[2,1]},"topic_id":"k27KoH66T5K1PI_eH2YXAg","adding_replicas":{},"removing_replicas":{},"version":3}
+        // Partition级别元数据示例：{"controller_epoch":2,"leader":1,"version":1,"leader_epoch":0,"isr":[1,2]}
         // partition those that have a valid leader
         val (electablePartitions, alreadyValidLeader) = livePartitions.partition { partition =>
           electionType match {
+            // 2.1 "有Leader场景下，想选个更好的Leader"
             case ElectionType.PREFERRED =>
               val assignedReplicas = controllerContext.partitionReplicaAssignment(partition)
+              // 为啥列表中的第一个Replica，就会被认为是preferredReplica？
+              // 这里谈一下自己的理解：
+              // 首先这个数据是创建Topic的时候，根据集群情况生成的“最优”方案，而去对应节点上创建Log的
+              // 如果不人为assign，初始化生成的数据{"0":[1,2],"1":[2,1]} 在一定程度上，可以认为是固定最优的
               val preferredReplica = assignedReplicas.head
               val currentLeader = controllerContext.partitionLeadershipInfo(partition).get.leaderAndIsr.leader
+              // 如果当前Partition的Leader，并不是初始化创建时对应的Leader -> 则可以认为是可以做“Preferred Leader Elect”的
               currentLeader != preferredReplica
 
+            // 2.2 "没有Leader场景下，选个Unclean，但保底的Leader"
             case ElectionType.UNCLEAN =>
+              // partition的现在Leader
               val currentLeader = controllerContext.partitionLeadershipInfo(partition).get.leaderAndIsr.leader
+              // 两种情况：[值为-1] 或 [值为正常 ID 但是对应的broker 已经不活了] -> 则可以认为是可以做“UnClean Leader Elect”的
               currentLeader == LeaderAndIsr.NoLeader || !controllerContext.liveBrokerIds.contains(currentLeader)
           }
         }
 
+        // 核心流程4：针对上面可以做“Leader Elect”的Partition，执行Elect
         val results = onReplicaElection(electablePartitions, electionType, electionTrigger).map {
           case (k, Left(ex)) =>
             if (ex.isInstanceOf[StateChangeFailedException]) {
@@ -2565,6 +2586,8 @@ class KafkaController(val config: KafkaConfig,
             }
           case (k, Right(leaderAndIsr)) => k -> Right(leaderAndIsr.leader)
         } ++
+
+        // 非核心部分，针对：alreadyValidLeader / partitionsBeingDeleted / unknownPartitions 返回个提示值
         alreadyValidLeader.map(_ -> Left(new ApiError(Errors.ELECTION_NOT_NEEDED))) ++
         partitionsBeingDeleted.map(
           _ -> Left(new ApiError(Errors.INVALID_TOPIC_EXCEPTION, "The topic is being deleted"))
@@ -2915,7 +2938,7 @@ class KafkaController(val config: KafkaConfig,
         // event3: Preferred Replica Leader Election
         case AutoPreferredReplicaLeaderElection =>
           processAutoPreferredReplicaLeaderElection()
-        // event4: Replica Leader Election
+        // event4: Replica Leader Election：对应的ElectLeadersRequest，先别管此事件上下的2类事件和这个有啥区别
         case ReplicaLeaderElection(partitions, electionType, electionTrigger, callback) =>
           processReplicaLeaderElection(partitions, electionType, electionTrigger, callback)
         // event5: Unclean Leader Election

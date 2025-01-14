@@ -34,7 +34,7 @@ package object api {
         }.toSet
       }
     }
-
+    // 判断 ElectLeader 的类型：直接看协议中的election_type字段即可
     def electionType: ElectionType = {
       if (self.version == 0) {
         ElectionType.PREFERRED

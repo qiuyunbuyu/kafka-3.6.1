@@ -20,7 +20,7 @@ import kafka.api.LeaderAndIsr
 import org.apache.kafka.common.TopicPartition
 
 import scala.collection.Seq
-
+// 下面所有的方法的返回值都是：ElectionResult，关注其所需变量如何构成即可
 case class ElectionResult(topicPartition: TopicPartition, leaderAndIsr: Option[LeaderAndIsr], liveReplicas: Seq[Int])
 
 object Election {
@@ -36,8 +36,11 @@ object Election {
     leaderAndIsrOpt match {
       case Some(leaderAndIsr) =>
         val isr = leaderAndIsr.isr
+        // 核心流程：返回值Option[Int]，代表选出的Leader的ID
         val leaderOpt = PartitionLeaderElectionAlgorithms.offlinePartitionLeaderElection(
           assignment, isr, liveReplicas.toSet, uncleanLeaderElectionEnabled, controllerContext)
+
+        // 核心流程：继续确定newLeaderAndIsrOpt
         val newLeaderAndIsrOpt = leaderOpt.map { leader =>
           val newIsr = if (isr.contains(leader)) isr.filter(replica => controllerContext.isReplicaOnline(replica, partition))
           else List(leader)
@@ -112,7 +115,9 @@ object Election {
     val assignment = controllerContext.partitionReplicaAssignment(partition)
     val liveReplicas = assignment.filter(replica => controllerContext.isReplicaOnline(replica, partition))
     val isr = leaderAndIsr.isr
+    // 选出preferred-Replica
     val leaderOpt = PartitionLeaderElectionAlgorithms.preferredReplicaPartitionLeaderElection(assignment, isr, liveReplicas.toSet)
+    // leaderEpoch + 1
     val newLeaderAndIsrOpt = leaderOpt.map(leader => leaderAndIsr.newLeader(leader))
     ElectionResult(partition, newLeaderAndIsrOpt, assignment)
   }
