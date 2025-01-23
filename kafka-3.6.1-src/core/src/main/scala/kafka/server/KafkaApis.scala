@@ -277,7 +277,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.ELECT_LEADERS => maybeForwardToController(request, handleElectLeaders)
         // Broker: alter configs incremental
         case ApiKeys.INCREMENTAL_ALTER_CONFIGS => handleIncrementalAlterConfigsRequest(request)
-        // Broker: alter partition reassign
+        // Broker: alter partition reassign：接收到AlterPartitionReassignmentsRequest，并转发交给Controller节点处理
         case ApiKeys.ALTER_PARTITION_REASSIGNMENTS => maybeForwardToController(request, handleAlterPartitionReassignmentsRequest)
         // Broker: list partition reassigning now
         case ApiKeys.LIST_PARTITION_REASSIGNMENTS => maybeForwardToController(request, handleListPartitionReassignmentsRequest)

@@ -224,6 +224,11 @@ object ReassignPartitionsCommand extends Logging {
     }
   }
 
+  /**
+   * 核心流程
+   * @param adminClient: Admin
+   * @param opts: 该脚本执行的动作
+   */
   private def handleAction(adminClient: Admin,
                            opts: ReassignPartitionsCommandOptions): Unit = {
     if (opts.options.has(opts.verifyOpt)) {
@@ -580,11 +585,19 @@ object ReassignPartitionsCommand extends Logging {
                          brokerListString: String,
                          enableRackAwareness: Boolean)
                          : (Map[TopicPartition, Seq[Int]], Map[TopicPartition, Seq[Int]]) = {
+    // 核心流程1：从用户入参 解析得到[brokers to reassign, topics to reassign]
     val (brokersToReassign, topicsToReassign) =
       parseGenerateAssignmentArgs(reassignmentJson, brokerListString)
+
+    // 核心流程2：利用MetadataRequest，得到currentAssignments：[TopicPartition, Seq[Int] 当前副本分布情况]
     val currentAssignments = getReplicaAssignmentForTopics(adminClient, topicsToReassign)
+    // 核心流程3：利用DescribeClusterRequest，得到Seq[BrokerMetadata]
     val brokerMetadatas = getBrokerMetadata(adminClient, brokersToReassign, enableRackAwareness)
+
+    // 这步核心是计算的算法是啥样的
+    // 核心流程4：利用3.4步骤获取的信息，得到proposedAssignments：Map[TopicPartition, Seq[Int] 预期副本分布情况]
     val proposedAssignments = calculateAssignment(currentAssignments, brokerMetadatas)
+
     println("Current partition replica assignment\n%s\n".
       format(formatAsReassignmentJson(currentAssignments, Map.empty)))
     println("Proposed partition reassignment configuration\n%s".
@@ -603,12 +616,17 @@ object ReassignPartitionsCommand extends Logging {
   def calculateAssignment(currentAssignment: Map[TopicPartition, Seq[Int]],
                           brokerMetadatas: Seq[BrokerMetadata])
                           : Map[TopicPartition, Seq[Int]] = {
+    // 按Topic分组
     val groupedByTopic = currentAssignment.groupBy { case (tp, _) => tp.topic }
     val proposedAssignments = mutable.Map[TopicPartition, Seq[Int]]()
     groupedByTopic.forKeyValue { (topic, assignment) =>
       val (_, replicas) = assignment.head
+      // Ressign分配算法入口
+      // 上面绕了一圈取这取那的，但是并不会根据当前的Replica列表来规划分配
+      // 注意看这下面方法的入参assignment.size，replicas.size
       val assignedReplicas = CoreUtils.replicaToBrokerAssignmentAsScala(AdminUtils.
         assignReplicasToBrokers(brokerMetadatas.asJavaCollection, assignment.size, replicas.size))
+      // 更新[TopicPartition, Seq[Int]] - TopicPartition对应的 副本
       proposedAssignments ++= assignedReplicas.map { case (partition, replicas) =>
         new TopicPartition(topic, partition) -> replicas
       }
@@ -750,8 +768,10 @@ object ReassignPartitionsCommand extends Logging {
                         timeoutMs: Long = 10000L,
                         time: Time = Time.SYSTEM): Unit = {
     val (proposedParts, proposedReplicas) = parseExecuteAssignmentArgs(reassignmentJson)
+    // 发送ListPartitionReassignmentsRequest，获取正在执行的
     val currentReassignments = adminClient.
       listPartitionReassignments().reassignments().get().asScala
+
     // If there is an existing assignment, check for --additional before proceeding.
     // This helps avoid surprising users.
     if (!additional && currentReassignments.nonEmpty) {
@@ -775,6 +795,7 @@ object ReassignPartitionsCommand extends Logging {
       }
     }
 
+    // 对应AlterPartitionReassignmentsRequest
     // Execute the partition reassignments.
     val errors = alterPartitionReassignments(adminClient, proposedParts)
     if (errors.nonEmpty) {
@@ -1348,6 +1369,7 @@ object ReassignPartitionsCommand extends Logging {
       CommandLineUtils.printUsageAndExit(opts.parser, "Please specify --bootstrap-server")
 
     // Make sure that we have all the required arguments for our action.
+    // 核心参数校验
     val requiredArgs = Map(
       opts.verifyOpt -> collection.immutable.Seq(
         opts.reassignmentJsonFileOpt
@@ -1355,6 +1377,8 @@ object ReassignPartitionsCommand extends Logging {
       opts.generateOpt -> collection.immutable.Seq(
         opts.topicsToMoveJsonFileOpt,
         opts.brokerListOpt
+        // --generate需要2个参数：brokerList + topicsToMoveJsonFile
+        // 将topicsToMoveJsonFile中的topic对应的TopicPartition Reassign 到 brokerList上
       ),
       opts.executeOpt -> collection.immutable.Seq(
         opts.reassignmentJsonFileOpt
@@ -1433,13 +1457,18 @@ object ReassignPartitionsCommand extends Logging {
   }
 
   sealed class ReassignPartitionsCommandOptions(args: Array[String]) extends CommandDefaultOptions(args)  {
-    // Actions
+    // Actions: Ressign 可选的动作
+    // --verify
     val verifyOpt = parser.accepts("verify", "Verify if the reassignment completed as specified by the " +
       "--reassignment-json-file option. If there is a throttle engaged for the replicas specified, and the rebalance has completed, the throttle will be removed")
+    // --generate
     val generateOpt = parser.accepts("generate", "Generate a candidate partition reassignment configuration." +
       " Note that this only generates a candidate assignment, it does not execute it.")
+    // --execute
     val executeOpt = parser.accepts("execute", "Kick off the reassignment as specified by the --reassignment-json-file option.")
+    // --cancel
     val cancelOpt = parser.accepts("cancel", "Cancel an active reassignment.")
+    // --list
     val listOpt = parser.accepts("list", "List all active partition reassignments.")
 
     // Arguments

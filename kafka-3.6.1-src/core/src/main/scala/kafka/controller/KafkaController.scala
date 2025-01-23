@@ -929,6 +929,10 @@ class KafkaController(val config: KafkaConfig,
    * {4,5,6,1,2,3}     {4,5,6}     {1,2,3}     4          {4,5,6}           (step B4)
    * {4,5,6}           {}          {}          4          {4,5,6}           (step B6)
    *
+   * 这种极端的Reassign情况，kafka不仅给你干，还给你“贴心”的写了一个注释(((φ(◎ロ◎;)φ)))---
+   * 核心是把新增的[4,5,6]加入到ISR(Replica上线+等待Log数据的复制到同步完成)，然后下线[1,2,3](Replica下线+对应底层Log文件的删除)
+   * 期间最大的资源消耗就是新加入的Replica会需要从0开始复制同步一份完整的Log
+   * 如果历史数据和当前写入/读取流量还大。。。。。
    * Note that we have to update RS in ZK with TRS last since it's the only place where we store ORS persistently.
    * This way, if the controller crashes before that step, we can still recover.
    */
@@ -944,7 +948,7 @@ class KafkaController(val config: KafkaConfig,
     if (!isReassignmentComplete(topicPartition, reassignment)) {
       // A1. Send LeaderAndIsr request to every replica in ORS + TRS (with the new RS, AR and RR).
       updateLeaderEpochAndSendRequest(topicPartition, reassignment)
-      // A2. replicas in AR -> NewReplica
+      // A2. replicas in AR -> NewReplica：加入新Replica
       startNewReplicasForReassignedPartition(topicPartition, addingReplicas)
     } else {
       // B1. replicas in AR -> OnlineReplica
@@ -952,11 +956,16 @@ class KafkaController(val config: KafkaConfig,
       // B2. Set RS = TRS, AR = [], RR = [] in memory.
       val completedReassignment = ReplicaAssignment(reassignment.targetReplicas)
       controllerContext.updatePartitionFullReplicaAssignment(topicPartition, completedReassignment)
+
       // B3. Send LeaderAndIsr request with a potential new leader (if current leader not in TRS) and
       //   a new RS (using TRS) and same isr to every broker in ORS + TRS or TRS
       moveReassignedPartitionLeaderIfRequired(topicPartition, completedReassignment)
+
+      // 旧Replica的下线+底层Log文件存储的删除
       // B4. replicas in RR -> Offline (force those replicas out of isr)
       // B5. replicas in RR -> NonExistentReplica (force those replicas to be deleted)
+
+      // 元数据更新
       stopRemovedReplicasOfReassignedPartition(topicPartition, removingReplicas)
       // B6. Update ZK with RS = TRS, AR = [], RR = [].
       updateReplicaAssignmentForPartition(topicPartition, completedReassignment)
@@ -1035,6 +1044,7 @@ class KafkaController(val config: KafkaConfig,
         val assignedReplicas = controllerContext.partitionReplicaAssignment(tp)
         if (assignedReplicas.nonEmpty) {
           try {
+            // 根据用户输入reassignments执行PartitionReassignment
             onPartitionReassignment(tp, reassignment)
             ApiError.NONE
           } catch {
@@ -2586,10 +2596,8 @@ class KafkaController(val config: KafkaConfig,
             }
           case (k, Right(leaderAndIsr)) => k -> Right(leaderAndIsr.leader)
         } ++
-
-        // 非核心部分，针对：alreadyValidLeader / partitionsBeingDeleted / unknownPartitions 返回个提示值
         alreadyValidLeader.map(_ -> Left(new ApiError(Errors.ELECTION_NOT_NEEDED))) ++
-        partitionsBeingDeleted.map(
+        partitionsBeingDeleted.map(  // 非核心部分，针对：alreadyValidLeader / partitionsBeingDeleted / unknownPartitions 返回个提示值
           _ -> Left(new ApiError(Errors.INVALID_TOPIC_EXCEPTION, "The topic is being deleted"))
         ) ++
         unknownPartitions.map(
@@ -2989,7 +2997,7 @@ class KafkaController(val config: KafkaConfig,
         // event20: topic delete
         case TopicDeletion =>
           processTopicDeletion()
-        // event21: Api Partition Reassignment
+        // event21: Api Partition Reassignment：处理PartitionReassignment入口
         case ApiPartitionReassignment(reassignments, callback) =>
           processApiPartitionReassignment(reassignments, callback)
         // event22: Zk Partition Reassignment

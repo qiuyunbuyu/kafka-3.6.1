@@ -126,17 +126,28 @@ public class AdminUtils {
             throw new InvalidReplicationFactorException("Replication factor must be larger than 0.");
         if (replicationFactor > brokerMetadatas.size())
             throw new InvalidReplicationFactorException("Replication factor: " + replicationFactor + " larger than available brokers: " + brokerMetadatas.size() + ".");
+        // assignReplicasToBrokersRackUnaware
         if (brokerMetadatas.stream().noneMatch(b -> b.rack.isPresent()))
             return assignReplicasToBrokersRackUnaware(nPartitions, replicationFactor, brokerMetadatas.stream().map(b -> b.id).collect(Collectors.toList()), fixedStartIndex,
                 startPartitionId);
         else {
             if (brokerMetadatas.stream().anyMatch(b -> !b.rack.isPresent()))
                 throw new AdminOperationException("Not all brokers have rack information for replica rack aware assignment.");
+        // assignReplicasToBrokersRackAware
             return assignReplicasToBrokersRackAware(nPartitions, replicationFactor, brokerMetadatas, fixedStartIndex,
                 startPartitionId);
         }
     }
 
+    /**
+     * 入参都是Int，纯数学算法，不考虑当前Replica情况
+     * @param nPartitions Topic的Partition数量
+     * @param replicationFactor 副本数
+     * @param brokerList 想分到哪几个broker上
+     * @param fixedStartIndex -1
+     * @param startPartitionId -1
+     * @return [TopicPartition序号 - replica列表]
+     */
     private static Map<Integer, List<Integer>> assignReplicasToBrokersRackUnaware(int nPartitions,
                                                                                   int replicationFactor,
                                                                                   List<Integer> brokerList,
@@ -146,14 +157,19 @@ public class AdminUtils {
         int startIndex = fixedStartIndex >= 0 ? fixedStartIndex : RAND.nextInt(brokerList.size());
         int currentPartitionId = Math.max(0, startPartitionId);
         int nextReplicaShift = fixedStartIndex >= 0 ? fixedStartIndex : RAND.nextInt(brokerList.size());
+        // Partition迭代
         for (int i = 0; i < nPartitions; i++) {
             if (currentPartitionId > 0 && (currentPartitionId % brokerList.size() == 0))
                 nextReplicaShift += 1;
             int firstReplicaIndex = (currentPartitionId + startIndex) % brokerList.size();
             List<Integer> replicaBuffer = new ArrayList<>();
             replicaBuffer.add(brokerList.get(firstReplicaIndex));
+
+            // 计算currentPartitionId，规划的Replica列表
             for (int j = 0; j < replicationFactor - 1; j++)
                 replicaBuffer.add(brokerList.get(replicaIndex(firstReplicaIndex, nextReplicaShift, j, brokerList.size())));
+
+            // 更新TopicPartition结果集 [TopicPartition序号 - replica列表]
             ret.put(currentPartitionId, replicaBuffer);
             currentPartitionId += 1;
         }
