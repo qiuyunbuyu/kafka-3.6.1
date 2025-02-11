@@ -1325,7 +1325,9 @@ class KafkaApis(val requestChannel: RequestChannel,
       // 2.2.1 find non Existing Topics
       val nonExistingTopics = topics.diff(topicResponses.map(_.name).toSet)
       // 2.2.2 handle non Existing Topics, accord "allowAutoTopicCreation?"
-
+      // 如果有“没能”从 metadataCache 中获取的 topic信息，判断是否支持自动创建
+      // 支持 -> 创建
+      // 不支持 -> 抛出 UNKNOWN_TOPIC_OR_PARTITION或INVALID_TOPIC_EXCEPTION
       val nonExistingTopicResponses = if (allowAutoTopicCreation) {
         // a. try to "auto create noExist topic"
         val controllerMutationQuota = quotas.controllerMutation.newPermissiveQuotaFor(request)
@@ -1349,11 +1351,19 @@ class KafkaApis(val requestChannel: RequestChannel,
           )
         }
       }
+
     // 3. return two part
       topicResponses ++ nonExistingTopicResponses
     }
   }
 
+  /**
+   * 主要获取了:
+   * 1. 获取AliveBroker信息[node_id, host, port]
+   * 2. 获取所需topic及其对应partition信息[partition_index, leader信息, replica信息, isr信息]
+   *
+   * 以上信息都是从MetadataCache中获取的，所以更核心的是：每台broker上MetadataCache更新维护逻辑
+   */
   def handleTopicMetadataRequest(request: RequestChannel.Request): Unit = {
     val metadataRequest = request.body[MetadataRequest]
     val requestVersion = request.header.apiVersion
@@ -1436,7 +1446,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     val allowAutoCreation = config.autoCreateTopicsEnable && metadataRequest.allowAutoTopicCreation && !metadataRequest.isAllTopics
 
-    // ***
+    // * 获取所需topic及其对应partition信息[partition_index, leader信息, replica信息, isr信息]
     val topicMetadata = getTopicMetadata(request, metadataRequest.isAllTopics, allowAutoCreation, authorizedTopics,
       request.context.listenerName, errorUnavailableEndpoints, errorUnavailableListeners)
 
@@ -1466,18 +1476,20 @@ class KafkaApis(val requestChannel: RequestChannel,
     val completeTopicMetadata =  unknownTopicIdsTopicMetadata ++
       topicMetadata ++ unauthorizedForCreateTopicMetadata ++ unauthorizedForDescribeTopicMetadata
 
+    // * 获取AliveBroker信息[node_id, host, port]
     val brokers = metadataCache.getAliveBrokerNodes(request.context.listenerName)
 
     trace("Sending topic metadata %s and brokers %s for correlation id %d to client %s".format(completeTopicMetadata.mkString(","),
       brokers.mkString(","), request.header.correlationId, request.header.clientId))
 
-    // controllerId
+    // 获取controllerId
     val controllerId = {
       metadataCache.getControllerId.flatMap {
         case ZkCachedControllerId(id) => Some(id)
         case KRaftCachedControllerId(_) => metadataCache.getRandomAliveBrokerId
       }
     }
+
     // 发送response给客户端， 基本每个Handle都有这个方法
     requestHelper.sendResponseMaybeThrottle(request, requestThrottleMs =>
        MetadataResponse.prepareResponse(

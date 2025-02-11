@@ -1836,7 +1836,7 @@ class ReplicaManager(val config: KafkaConfig,
         throw new ControllerMovedException(stateChangeLogger.messageWithPrefix(stateControllerEpochErrorMessage))
       } else {
         val zkMetadataCache = metadataCache.asInstanceOf[ZkMetadataCache]
-        // 处理入口
+        // 处理 UpdateMetadataRequest时会更新zkMetadataCache中所维护的 [metadataSnapshot]
         val deletedPartitions = zkMetadataCache.updateMetadata(correlationId, updateMetadataRequest)
         controllerEpoch = updateMetadataRequest.controllerEpoch
         deletedPartitions

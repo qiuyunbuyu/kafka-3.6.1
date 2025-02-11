@@ -111,6 +111,7 @@ object ZkMetadataCache {
 }
 
 /**
+ *  以下注释说明了cache重要的3个点
  *  1. A cache for the state (e.g., current leader) of each partition.  (cache内容)
  *  This cache is updated through
  *  2. UpdateMetadataRequest from the controller. (cache更新方式)
@@ -125,7 +126,10 @@ class ZkMetadataCache(
   extends MetadataCache with ZkFinalizedFeatureCache with Logging {
 
   private val partitionMetadataLock = new ReentrantReadWriteLock()
-  //this is the cache state. every MetadataSnapshot instance is immutable, and updates (performed under a lock)
+
+  // 更新的方式不是修改现有的 MetadataSnapshot 实例，而是创建一个全新的 MetadataSnapshot 实例并替换原有的实例
+  // 维护了5大块信息：partition，topic，controller，broker，Node[ListenerName, Node]一个Node可以配置多个ListenerName
+  // this is the cache state. every MetadataSnapshot instance is immutable, and updates (performed under a lock)
   //replace the value with a completely new one. this means reads (which are not under any lock) need to grab
   //the value of this var (into a val) ONCE and retain that read copy for the duration of their operation.
   //multiple reads of this value risk getting different snapshots.
@@ -166,6 +170,8 @@ class ZkMetadataCache(
     }
   }
 
+  // 从MetadataSnapshotp-partitionStates中获取Partition详细信息
+  // 注意返回值MetadataResponsePartition，对应的就是MetadataResponseData中定义的内部类
   // errorUnavailableEndpoints exists to support v0 MetadataResponses
   // If errorUnavailableListeners=true, return LISTENER_NOT_FOUND if listener is missing on the broker.
   // Otherwise, return LEADER_NOT_AVAILABLE for broker unavailable and missing listener (Metadata response v5 and below).
@@ -176,6 +182,8 @@ class ZkMetadataCache(
         val topicPartition = new TopicPartition(topic, partitionId.toInt)
         val leaderBrokerId = partitionState.leader
         val leaderEpoch = partitionState.leaderEpoch
+
+        // leaderBrokerId与listenerName的匹配
         val maybeLeader = getAliveEndpoint(snapshot, leaderBrokerId, listenerName)
 
         val replicas = partitionState.replicas
@@ -546,6 +554,7 @@ class ZkMetadataCache(
         stateChangeLogger.info(s"Add $cachedPartitionsCount partitions and deleted ${deletedPartitions.size} partitions from metadata cache " +
           s"in response to UpdateMetadata request sent by controller $controllerId epoch $controllerEpoch with correlation id $correlationId")
 
+        // 上面会根据UpdateMetadataRequest来更新确定MetadataSnapshot所需的 5大类的信息，然后重新创建了MetadataSnapshot对象
         metadataSnapshot = MetadataSnapshot(partitionStates, topicIds.toMap, controllerIdOpt, aliveBrokers, aliveNodes)
       }
       deletedPartitions

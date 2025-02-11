@@ -353,7 +353,9 @@ class KafkaServer(
           kraftControllerNodes = Seq.empty
         }
 
-        /* 2.11 metadataCache: Initialization timing */
+        /* 2.11
+          MetadataCache初始化入口
+        */
         metadataCache = MetadataCache.zkMetadataCache(
           config.brokerId,
           config.interBrokerProtocolVersion,

@@ -46,6 +46,7 @@ public class Topic {
         });
     }
 
+    // 无效/非法的topic定义对应-InvalidTopicException
     private static String detectInvalidTopic(String name) {
         if (name.isEmpty())
             return "the empty string is not allowed";
