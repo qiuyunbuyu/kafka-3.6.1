@@ -465,6 +465,7 @@ class ZkMetadataCache(
           }
         }
       }
+
       // 1. create key variables to store info
       val aliveBrokers = new mutable.LongMap[Broker](metadataSnapshot.aliveBrokers.size)
       val aliveNodes = new mutable.LongMap[collection.Map[ListenerName, Node]](metadataSnapshot.aliveNodes.size)
@@ -491,6 +492,7 @@ class ZkMetadataCache(
           endPoints += new EndPoint(ep.host, ep.port, listenerName, SecurityProtocol.forId(ep.securityProtocol))
           nodes.put(listenerName, new Node(broker.id, ep.host, ep.port, broker.rack()))
         }
+        // 更新broker本地cache所需的brokers和nodes相关的信息
         aliveBrokers(broker.id) = Broker(broker.id, endPoints, Option(broker.rack))
         aliveNodes(broker.id) = nodes.asScala
       }
@@ -512,12 +514,15 @@ class ZkMetadataCache(
       topicIds ++= newTopicIds.toMap
 
       // 6. handle Partitions
+      // 关键变量 deletedPartitions
       val deletedPartitions = new mutable.ArrayBuffer[TopicPartition]
+
       if (!updateMetadataRequest.partitionStates.iterator.hasNext) {
         metadataSnapshot = MetadataSnapshot(metadataSnapshot.partitionStates, topicIds.toMap,
           controllerIdOpt, aliveBrokers, aliveNodes)
       } else {
         //since kafka may do partial metadata updates, we start by copying the previous state
+        // 变更前broker维护的partitionStates信息
         val partitionStates = new mutable.AnyRefMap[String, mutable.LongMap[UpdateMetadataPartitionState]](metadataSnapshot.partitionStates.size)
         metadataSnapshot.partitionStates.forKeyValue { (topic, oldPartitionStates) =>
           val copy = new mutable.LongMap[UpdateMetadataPartitionState](oldPartitionStates.size)
@@ -528,6 +533,8 @@ class ZkMetadataCache(
         val traceEnabled = stateChangeLogger.isTraceEnabled
         val controllerId = updateMetadataRequest.controllerId
         val controllerEpoch = updateMetadataRequest.controllerEpoch
+
+        // UpdateMetadataRequest请求中携带的所有分区数据
         val newStates = updateMetadataRequest.partitionStates.asScala
 
         // 处理 partitionStates
@@ -535,11 +542,13 @@ class ZkMetadataCache(
           // per-partition logging here can be very expensive due going through all partitions in the cluster
           val tp = new TopicPartition(state.topicName, state.partitionIndex)
           // 场景1：removePartitionInfo
-          if (state.leader == LeaderAndIsr.LeaderDuringDelete) {
+          if (state.leader == LeaderAndIsr.LeaderDuringDelete) { // 判定partition正在删除的标志是leader的id标志为了-2
+            // broker本地cache中删除此TP
             removePartitionInfo(partitionStates, topicIds, tp.topic, tp.partition)
             if (traceEnabled)
               stateChangeLogger.trace(s"Deleted partition $tp from metadata cache in response to UpdateMetadata " +
                 s"request sent by controller $controllerId epoch $controllerEpoch with correlation id $correlationId")
+            // 添加至deletedPartitions列表
             deletedPartitions += tp
           } else {
           // 场景2：addOrUpdatePartitionInfo
