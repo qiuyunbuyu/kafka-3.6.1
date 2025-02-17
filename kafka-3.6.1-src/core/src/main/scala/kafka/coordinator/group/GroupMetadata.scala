@@ -793,6 +793,8 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   def removeAllOffsets(): immutable.Map[TopicPartition, OffsetAndMetadata] = removeOffsets(offsets.keySet.toSeq)
 
   def removeOffsets(topicPartitions: Seq[TopicPartition]): immutable.Map[TopicPartition, OffsetAndMetadata] = {
+    // 定义某个ConsumerGroup下
+    // 移除[pendingOffsetCommits][pendingTransactionalOffsetCommits][offsets]集合中有关 Seq[TopicPartition] 的信息
     topicPartitions.flatMap { topicPartition =>
       pendingOffsetCommits.remove(topicPartition)
       pendingTransactionalOffsetCommits.forKeyValue { (_, pendingOffsets) =>
@@ -892,6 +894,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
 
   def numOffsets: Int = offsets.size
 
+  // 3个HashMap中但凡有一个不为空，都可以认为还有“Offsets”
   def hasOffsets: Boolean = offsets.nonEmpty || pendingOffsetCommits.nonEmpty || pendingTransactionalOffsetCommits.nonEmpty
 
   private def assertValidTransition(targetState: GroupState): Unit = {
