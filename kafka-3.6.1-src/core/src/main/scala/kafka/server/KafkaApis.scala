@@ -437,11 +437,12 @@ class KafkaApis(val requestChannel: RequestChannel,
         new UpdateMetadataResponse(new UpdateMetadataResponseData().setErrorCode(Errors.STALE_BROKER_EPOCH.code)))
     } else {
       // 正常处理流程
-      // 核心流程1：找出deletedPartitions + 更新 MetadataSnapshot
+      // *核心流程1：找出deletedPartitions + 更新 MetadataSnapshot
       val deletedPartitions = replicaManager.maybeUpdateMetadataCache(correlationId, updateMetadataRequest)
 
-      // 核心流程2：groupCoordinator没必要保存deletedPartitions相关的offset了
+      // *核心流程2：groupCoordinator没必要保存deletedPartitions相关的offset了
       if (deletedPartitions.nonEmpty) {
+        // 调用GroupCoordinator能力对内存和磁盘文件中，无需维护的Partition-consumer的元数据进行清理
         groupCoordinator.onPartitionsDeleted(deletedPartitions.asJava, requestLocal.bufferSupplier)
       }
 

@@ -876,69 +876,85 @@ class GroupMetadataManager(brokerId: Int,
   def cleanupGroupMetadata(groups: Iterable[GroupMetadata], requestLocal: RequestLocal,
                            selector: GroupMetadata => Map[TopicPartition, OffsetAndMetadata]): Int = {
     var offsetsRemoved = 0
-
+    // 遍历多个Consumer Group的GroupMetadata
     groups.foreach { group =>
       val groupId = group.groupId
+
+      // *** Clean核心1：内存中维护的数据的Clean
       val (removedOffsets, groupIsDead, generation) = group.inLock {
+        // selector是个处理函数，按其中对应处理逻辑来处理GroupMetadata信息
         val removedOffsets = selector(group)
+
+        // 如果 [group下没有成员信息] 或者 [没有任何TopicPartition相关的offset信息]
         if (group.is(Empty) && !group.hasOffsets) {
           info(s"Group $groupId transitioned to Dead in generation ${group.generationId}")
+          // group状态转换为Dead
           group.transitionTo(Dead)
         }
         (removedOffsets, group.is(Dead), group.generationId)
       }
 
-    val offsetsPartition = partitionFor(groupId)
-    val appendPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, offsetsPartition)
-    getMagic(offsetsPartition) match {
-      case Some(magicValue) =>
-        // We always use CREATE_TIME, like the producer. The conversion to LOG_APPEND_TIME (if necessary) happens automatically.
-        val timestampType = TimestampType.CREATE_TIME
-        val timestamp = time.milliseconds()
+      // 根据groupId来计算 该Consumer Group被哪个 __consumer_offsets下哪个Partition管
+      val offsetsPartition = partitionFor(groupId)
+      val appendPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, offsetsPartition)
 
-          replicaManager.onlinePartition(appendPartition).foreach { partition =>
-            val tombstones = ArrayBuffer.empty[SimpleRecord]
-            removedOffsets.forKeyValue { (topicPartition, offsetAndMetadata) =>
-              trace(s"Removing expired/deleted offset and metadata for $groupId, $topicPartition: $offsetAndMetadata")
-              val commitKey = GroupMetadataManager.offsetCommitKey(groupId, topicPartition)
-              tombstones += new SimpleRecord(timestamp, commitKey, null)
-            }
-            trace(s"Marked ${removedOffsets.size} offsets in $appendPartition for deletion.")
+      // *** Clean核心2：__consumer_offset—x中磁盘文件中维护的数据的Clean
+      // **** 这里真的很有意思，__consumer_offset—x中维护的数据如何删除？
+      // - 首先得知道这个内部Topic的清理机制是 Compact
+      // - 其次还得知道value为null的的 tombstones 消息在整个机制中发挥的作用
+      getMagic(offsetsPartition) match {
+        case Some(magicValue) =>
+          // We always use CREATE_TIME, like the producer. The conversion to LOG_APPEND_TIME (if necessary) happens automatically.
+          val timestampType = TimestampType.CREATE_TIME
+          val timestamp = time.milliseconds()
 
-            // We avoid writing the tombstone when the generationId is 0, since this group is only using
-            // Kafka for offset storage.
-            if (groupIsDead && groupMetadataCache.remove(groupId, group) && generation > 0) {
-              // Append the tombstone messages to the partition. It is okay if the replicas don't receive these (say,
-              // if we crash or leaders move) since the new leaders will still expire the consumers with heartbeat and
-              // retry removing this group.
-              val groupMetadataKey = GroupMetadataManager.groupMetadataKey(group.groupId)
-              tombstones += new SimpleRecord(timestamp, groupMetadataKey, null)
-              trace(s"Group $groupId removed from the metadata cache and marked for deletion in $appendPartition.")
-            }
+            replicaManager.onlinePartition(appendPartition).foreach { partition =>
+              // * ”墓碑“Record集合
+              val tombstones = ArrayBuffer.empty[SimpleRecord]
 
-            if (tombstones.nonEmpty) {
-              try {
-                // do not need to require acks since even if the tombstone is lost,
-                // it will be appended again in the next purge cycle
-                val records = MemoryRecords.withRecords(magicValue, 0L, compressionType, timestampType, tombstones.toArray: _*)
-                partition.appendRecordsToLeader(records, origin = AppendOrigin.COORDINATOR, requiredAcks = 0,
-                  requestLocal = requestLocal)
+              // * 填充(groupId, topicPartition)对应的commitKey的”墓碑“Record
+              removedOffsets.forKeyValue { (topicPartition, offsetAndMetadata) =>
+                trace(s"Removing expired/deleted offset and metadata for $groupId, $topicPartition: $offsetAndMetadata")
+                val commitKey = GroupMetadataManager.offsetCommitKey(groupId, topicPartition)
+                tombstones += new SimpleRecord(timestamp, commitKey, null)
+              }
+              trace(s"Marked ${removedOffsets.size} offsets in $appendPartition for deletion.")
 
-                offsetsRemoved += removedOffsets.size
-                trace(s"Successfully appended ${tombstones.size} tombstones to $appendPartition for expired/deleted " +
-                  s"offsets and/or metadata for group $groupId")
-              } catch {
-                case t: Throwable =>
-                  error(s"Failed to append ${tombstones.size} tombstones to $appendPartition for expired/deleted " +
-                    s"offsets and/or metadata for group $groupId.", t)
-                // ignore and continue
+              // We avoid writing the tombstone when the generationId is 0, since this group is only using
+              // Kafka for offset storage.
+              if (groupIsDead && groupMetadataCache.remove(groupId, group) && generation > 0) {
+                // Append the tombstone messages to the partition. It is okay if the replicas don't receive these (say,
+                // if we crash or leaders move) since the new leaders will still expire the consumers with heartbeat and
+                // retry removing this group.
+                val groupMetadataKey = GroupMetadataManager.groupMetadataKey(group.groupId)
+                tombstones += new SimpleRecord(timestamp, groupMetadataKey, null)
+                trace(s"Group $groupId removed from the metadata cache and marked for deletion in $appendPartition.")
+              }
+
+              if (tombstones.nonEmpty) {
+                try {
+                  // * 将上述构建的”墓碑“Record写入__consumer_offset—x对应的磁盘文件中，集合Log Compact机制，完成整个Clean流程
+                  // do not need to require acks since even if the tombstone is lost,
+                  // it will be appended again in the next purge cycle
+                  val records = MemoryRecords.withRecords(magicValue, 0L, compressionType, timestampType, tombstones.toArray: _*)
+                  partition.appendRecordsToLeader(records, origin = AppendOrigin.COORDINATOR, requiredAcks = 0,
+                    requestLocal = requestLocal)
+
+                  offsetsRemoved += removedOffsets.size
+                  trace(s"Successfully appended ${tombstones.size} tombstones to $appendPartition for expired/deleted " +
+                    s"offsets and/or metadata for group $groupId")
+                } catch {
+                  case t: Throwable =>
+                    error(s"Failed to append ${tombstones.size} tombstones to $appendPartition for expired/deleted " +
+                      s"offsets and/or metadata for group $groupId.", t)
+                  // ignore and continue
+                }
               }
             }
-          }
 
-        case None =>
-          info(s"BrokerId $brokerId is no longer a coordinator for the group $groupId. Proceeding cleanup for other alive groups")
-      }
+          case None =>
+            info(s"BrokerId $brokerId is no longer a coordinator for the group $groupId. Proceeding cleanup for other alive groups")
+        }
     }
 
     offsetsRemoved

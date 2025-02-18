@@ -1127,6 +1127,9 @@ private[group] class GroupCoordinator(
   }
 
   def handleDeletedPartitions(topicPartitions: Seq[TopicPartition], requestLocal: RequestLocal): Unit = {
+    // 注意这里的入参
+    // 第二个入参是个函数，对应实际“某个ConsumerGroup”下metadata删除逻辑
+    // 第一个入参是当前所有的consumer group (为啥要传入所有的group呢? 因为一个TopicPartition可能被多个Consumer Group消费)
     val offsetsRemoved = groupManager.cleanupGroupMetadata(groupManager.currentGroups, requestLocal,
       _.removeOffsets(topicPartitions))
     info(s"Removed $offsetsRemoved offsets associated with deleted partitions: ${topicPartitions.mkString(", ")}.")
