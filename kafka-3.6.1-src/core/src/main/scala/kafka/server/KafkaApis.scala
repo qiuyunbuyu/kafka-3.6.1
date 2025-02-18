@@ -1685,10 +1685,14 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   private def handleFindCoordinatorRequestV4AndAbove(request: RequestChannel.Request): Unit = {
+    // 1. 解析出FindCoordinatorRequest
     val findCoordinatorRequest = request.body[FindCoordinatorRequest]
 
+    // 2. 计算出Coordinator，并构建response
     val coordinators = findCoordinatorRequest.data.coordinatorKeys.asScala.map { key =>
+      // 2.1 ** 核心计算逻辑
       val (error, node) = getCoordinator(request, findCoordinatorRequest.data.keyType, key)
+      // 2.2 以上一步结果构建Response Body
       new FindCoordinatorResponseData.Coordinator()
         .setKey(key)
         .setErrorCode(error.code)
@@ -1696,6 +1700,8 @@ class KafkaApis(val requestChannel: RequestChannel,
         .setNodeId(node.id)
         .setPort(node.port)
     }
+
+    // 3. 构建FindCoordinatorResponse并返回
     def createResponse(requestThrottleMs: Int): AbstractResponse = {
       val response = new FindCoordinatorResponse(
               new FindCoordinatorResponseData()
@@ -1732,6 +1738,17 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
   }
 
+  /**
+   *
+   * @param request FindCoordinator Request
+   * @param keyType CoordinatorType.GROUP/TRANSACTION
+   * @param key：groupID，transactionID，用户自己标记的字符串
+   * @return (Errors"是否有报错", Node“Coordinator所在节点”)
+   *
+   * try to get coordinatorEndpoint, two step:
+   *  1. find partitionID by(Group ID、Transaction ID)
+   *  2. find brokerID (the leader of Replica of "partitionID")
+   */
   private def getCoordinator(request: RequestChannel.Request, keyType: Byte, key: String): (Errors, Node) = {
     // Group authorization failed.
     if (keyType == CoordinatorType.GROUP.id &&
@@ -1741,17 +1758,22 @@ class KafkaApis(val requestChannel: RequestChannel,
         !authHelper.authorize(request.context, DESCRIBE, TRANSACTIONAL_ID, key))
       (Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED, Node.noNode)
     else {
+      // 1. 计算 groupID，transactionID，对应被哪个 Partition-X管
       // distinguish CoordinatorType to get [topic-name(__consumer_offsets | __transaction_state) <-> partitionNum ]
       val (partition, internalTopicName) = CoordinatorType.forId(keyType) match {
+        // 区分出想找的是Coordinator是 ConsumerGroup-Coordinator，还是 TRANSACTION-Coordinator
         case CoordinatorType.GROUP =>
           (groupCoordinator.partitionFor(key), GROUP_METADATA_TOPIC_NAME) // __consumer_offsets
 
         case CoordinatorType.TRANSACTION =>
           (txnCoordinator.partitionFor(key), TRANSACTION_STATE_TOPIC_NAME) // __transaction_state
       }
-      // get internalTopicName Metadata
+
+      // 2. 获取internalTopicName元数据，光知道被哪个 Partition-X管是还不够的，还得知道Partition-X的leader replica在哪个broker上
+      // 2.1 从metadataSnapshot中获取internalTopicName的元数据
       val topicMetadata = metadataCache.getTopicMetadata(Set(internalTopicName), request.context.listenerName)
 
+      // 2.2 没有internalTopicName的元数据的情况，会自动创建
       if (topicMetadata.headOption.isEmpty) {
         val controllerMutationQuota = quotas.controllerMutation.newPermissiveQuotaFor(request)
         // auto try to create internalTopic if not exist
@@ -1761,9 +1783,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         if (topicMetadata.head.errorCode != Errors.NONE.code) {
           (Errors.COORDINATOR_NOT_AVAILABLE, Node.noNode)
         } else {
-          // try to get coordinatorEndpoint, two step:
-          // 1. find partitionID
-          // 2. find brokerID (the leader of Replica of "partitionID")
+          // 2.3 从internalTopicName的元数据中找到partition-X对应的 Leader Replica所在机器
           val coordinatorEndpoint = topicMetadata.head.partitions.asScala
             .find(_.partitionIndex == partition)
             .filter(_.leaderId != MetadataResponse.NO_LEADER_ID)
