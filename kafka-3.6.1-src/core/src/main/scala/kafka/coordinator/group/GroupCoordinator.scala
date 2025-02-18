@@ -47,6 +47,11 @@ import scala.math.max
  * lock. ReplicaManager.appendRecords may be invoked while holding the group lock
  * used by its callback.  The delayed callback may acquire the group lock
  * since the delayed operation is completed only if the group lock can be acquired.
+ *
+ * 可以从此处看到整个GroupCoordinator的组织
+ * - 消费者组的元数据信息 1 GroupMetadataManager -> N GroupMetadata -> N MemberMetadata
+ * - heartbeatPurgatory
+ * - rebalancePurgatory
  */
 private[group] class GroupCoordinator(
   val brokerId: Int,

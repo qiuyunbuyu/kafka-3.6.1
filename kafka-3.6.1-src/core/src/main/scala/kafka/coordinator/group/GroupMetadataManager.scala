@@ -53,6 +53,7 @@ import scala.collection._
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
+// 管理多个组的元数据
 class GroupMetadataManager(brokerId: Int,
                            interBrokerProtocolVersion: MetadataVersion,
                            config: OffsetConfig, // __consumer_offsets config
@@ -84,6 +85,10 @@ class GroupMetadataManager(brokerId: Int,
   @volatile private var groupMetadataTopicPartitionCount: Int = _
 
   /* single-thread scheduler to handle offset/group metadata cache loading and unloading */
+  // 周期性："delete-expired-group-metadata"
+  // Once:  scheduleLoadGroupAndOffsets
+  // Once:  removeGroupsForPartition
+  // Once: scheduleHandleTxnCompletion
   private val scheduler = new KafkaScheduler(1, true, "group-metadata-manager-")
 
   /* The groups with open transactional offsets commits per producer. We need this because when the commit or abort
@@ -179,14 +184,16 @@ class GroupMetadataManager(brokerId: Int,
   def startup(retrieveGroupMetadataTopicPartitionCount: () => Int, enableMetadataExpiration: Boolean): Unit = {
     // the num of __consumer_offsets partitions
     groupMetadataTopicPartitionCount = retrieveGroupMetadataTopicPartitionCount()
-    // start
+
+    // start: group-metadata-manager-线程
     scheduler.startup()
-    // if enable Metadata Expiration
+
+    // if enable Metadata Expiration：周期性执行cleanupGroupMetadata()任务
     if (enableMetadataExpiration) {
       scheduler.schedule("delete-expired-group-metadata",
         () => cleanupGroupMetadata(),
         0L,
-        config.offsetsRetentionCheckIntervalMs) // OffsetConfig.DefaultOffsetsRetentionCheckIntervalMs
+        config.offsetsRetentionCheckIntervalMs) // OffsetConfig.DefaultOffsetsRetentionCheckIntervalMs = 600000MS = 600S
     }
   }
 
@@ -859,8 +866,10 @@ class GroupMetadataManager(brokerId: Int,
   // visible for testing
   private[group] def cleanupGroupMetadata(): Unit = {
     val currentTimestamp = time.milliseconds()
+    // 清理consumer group中过期的 offsets： 这里清理的动作执行的是 removeExpiredOffsets
     val numOffsetsRemoved = cleanupGroupMetadata(groupMetadataCache.values, RequestLocal.NoCaching,
       _.removeExpiredOffsets(currentTimestamp, config.offsetsRetentionMs))
+    // metrics相关
     offsetExpiredSensor.record(numOffsetsRemoved)
     if (numOffsetsRemoved > 0)
       info(s"Removed $numOffsetsRemoved expired offsets in ${time.milliseconds() - currentTimestamp} milliseconds.")
@@ -871,6 +880,9 @@ class GroupMetadataManager(brokerId: Int,
     * @param groups Groups whose metadata are to be cleaned up
     * @param selector A function that implements deletion of (all or part of) group offsets. This function is called while
     *                 a group lock is held, therefore there is no need for the caller to also obtain a group lock.
+    *   这个函数设计的也很有意思，目的是为了清除 Consumer Group 中相关 GroupMetadata 休息，清除工作包含2个部分：：
+   *    部分1-内存中：针对不同的场景（过期，topic删除）由selector函数自己完成
+   *    部分2-磁盘文件上：统一的处理逻辑
     * @return The cumulative number of offsets removed
     */
   def cleanupGroupMetadata(groups: Iterable[GroupMetadata], requestLocal: RequestLocal,
@@ -882,7 +894,7 @@ class GroupMetadataManager(brokerId: Int,
 
       // *** Clean核心1：内存中维护的数据的Clean
       val (removedOffsets, groupIsDead, generation) = group.inLock {
-        // selector是个处理函数，按其中对应处理逻辑来处理GroupMetadata信息
+        // selector是个处理函数，按其中对应处理逻辑来处理”内存“中GroupMetadata信息
         val removedOffsets = selector(group)
 
         // 如果 [group下没有成员信息] 或者 [没有任何TopicPartition相关的offset信息]

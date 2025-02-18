@@ -181,6 +181,7 @@ case class CommitRecordMetadataAndOffset(appendedBatchOffset: Option[Long], offs
 }
 
 /**
+ * 管理1个组的元数据
  * Group contains the following metadata:
  *
  *  Membership metadata:
@@ -207,7 +208,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   var generationId = 0
   // group leader
   private var leaderId: Option[String] = None
-  // group members
+  // group members：(MemberMetadata.memberId, MemberMetadata)
   private val members = new mutable.HashMap[String, MemberMetadata]
   // Static membership mapping [key: group.instance.id, value: member.id]
   private val staticMembers = new mutable.HashMap[String, String]
@@ -813,18 +814,19 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
    * @return
    */
   def removeExpiredOffsets(currentTimestamp: Long, offsetRetentionMs: Long): Map[TopicPartition, OffsetAndMetadata] = {
-    // get TopicPartition --> ExpiredOffsets
+    // 定义了一个获取 TopicPartition过期的 offsets元数据 的函数，返回 <TopicPartition --> ExpiredOffsets>
     def getExpiredOffsets(baseTimestamp: CommitRecordMetadataAndOffset => Long,
                           subscribedTopics: Set[String] = Set.empty): Map[TopicPartition, OffsetAndMetadata] = {
+      // 从offsets中过滤获取
       offsets.filter {
         case (topicPartition, commitRecordMetadataAndOffset) =>
           !subscribedTopics.contains(topicPartition.topic()) &&
           !pendingOffsetCommits.contains(topicPartition) && {
             commitRecordMetadataAndOffset.offsetAndMetadata.expireTimestamp match {
-              case None =>
+              case None => // offsetAndMetadata未定义expireTimestamp时
                 // current version with no per partition retention
                 currentTimestamp - baseTimestamp(commitRecordMetadataAndOffset) >= offsetRetentionMs
-              case Some(expireTimestamp) =>
+              case Some(expireTimestamp) => // offsetAndMetadata定义了 expireTimestamp时
                 // older versions with explicit expire_timestamp field => old expiration semantics is used
                 currentTimestamp >= expireTimestamp
             }
@@ -868,7 +870,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
 
     if (expiredOffsets.nonEmpty)
       debug(s"Expired offsets from group '$groupId': ${expiredOffsets.keySet}")
-
+    // 清除 内存 中过期的offsets
     offsets --= expiredOffsets.keySet
     expiredOffsets
   }

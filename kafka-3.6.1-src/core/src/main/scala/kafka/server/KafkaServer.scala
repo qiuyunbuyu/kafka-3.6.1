@@ -528,7 +528,7 @@ class KafkaServer(
         // ZkAdminManager
         adminManager = new ZkAdminManager(config, metrics, metadataCache, zkClient)
 
-        /* 2.24 start group coordinator */
+        /* 2.24 start group coordinator GroupCoordinator初始化时机*/
         // Hardcode Time.SYSTEM for now as some Streams tests fail otherwise, it would be good to fix the underlying issue
         groupCoordinator = GroupCoordinatorAdapter(
           config,
@@ -536,6 +536,7 @@ class KafkaServer(
           Time.SYSTEM,
           metrics
         )
+        // 启动 ”group-metadata-manager- 线程“
         groupCoordinator.startup(() => zkClient.getTopicPartitionCount(Topic.GROUP_METADATA_TOPIC_NAME).getOrElse(config.offsetsTopicPartitions))
 
         /* 2.25 create producer ids manager */

@@ -33,6 +33,7 @@ private object MemberMetadata {
 }
 
 /**
+ * 一个消费者的元数据信息
  * Member metadata contains the following metadata:
  *
  * Heartbeat metadata:
