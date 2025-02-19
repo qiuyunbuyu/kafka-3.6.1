@@ -29,6 +29,9 @@ case class MemberSummary(memberId: String,
                          assignment: Array[Byte])
 
 private object MemberMetadata {
+  // supportedProtocols.map(_._1)
+  // 第一个 _ 取到 每一个 (String, Array[Byte])
+  // ._1 取到 (String, Array[Byte]) 中第一个元素，即String
   def plainProtocolSet(supportedProtocols: List[(String, Array[Byte])]) = supportedProtocols.map(_._1).toSet
 }
 

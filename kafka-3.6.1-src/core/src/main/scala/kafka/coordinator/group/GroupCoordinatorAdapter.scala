@@ -92,19 +92,22 @@ private[group] class GroupCoordinatorAdapter(
         .setMembers(joinResult.members.asJava)
       )
     }
-
+    // 静态消费者标记
     val groupInstanceId = Option(request.groupInstanceId)
 
     // Only return MEMBER_ID_REQUIRED error if joinGroupRequest version is >= 4
     // and groupInstanceId is configured to unknown.
+    // groupInstanceId是空的，就一定需要MemberId了
     val requireKnownMemberId = context.apiVersion >= 4 && groupInstanceId.isEmpty
 
+    // 解析出(protocol.name, protocol.metadata)
     val protocols = request.protocols.valuesList.asScala.map { protocol =>
       (protocol.name, protocol.metadata)
     }.toList
 
     val supportSkippingAssignment = context.apiVersion >= 9
 
+    // **
     coordinator.handleJoinGroup(
       request.groupId,
       request.memberId,

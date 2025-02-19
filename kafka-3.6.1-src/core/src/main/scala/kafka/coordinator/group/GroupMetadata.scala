@@ -245,6 +245,11 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
 
   def isConsumerGroup: Boolean = protocolType.contains(ConsumerProtocol.PROTOCOL_TYPE)
 
+  /**
+   * 某个 Consumer Group 新增 一个 Consumer Member的逻辑
+   * @param member: Consumer Member 的元数据
+   * @param callback
+   */
   def add(member: MemberMetadata, callback: JoinCallback = null): Unit = {
     // if staticMembers already contain the member id, will throw exception
     member.groupInstanceId.foreach { instanceId =>
@@ -267,6 +272,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
     // add member to members
     members.put(member.memberId, member)
     // ++ partition assign Strategy
+    // 更新supportedProtocols： supportedProtocols(protocol) += 1
     incSupportedProtocols(member)
     // set call back
     member.awaitingJoinCallback = callback
@@ -425,7 +431,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   def rebalanceTimeoutMs: Int = members.values.foldLeft(0) { (timeout, member) =>
     timeout.max(member.rebalanceTimeoutMs)
   }
-
+  // MemberId生成规则
   def generateMemberId(clientId: String,
                        groupInstanceId: Option[String]): String = {
     groupInstanceId match {
@@ -489,10 +495,12 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   }
 
   def supportsProtocols(memberProtocolType: String, memberProtocols: Set[String]): Boolean = {
+    // 当前Group的state是Empty，还走到了这里，就证明是组里面的第一个Member，那么它的memberProtocolType和memberProtocols都不能为空
     if (is(Empty))
       memberProtocolType.nonEmpty && memberProtocols.nonEmpty
     else {
-      // ? how to judge " memberProtocols.exists(supportedProtocols(_) == members.size) "
+      // 这个Member不是Group里面第一个Member
+      //  _ 是 Scala 中的占位符，表示memberProtocols集合中的每个元素
       protocolType.contains(memberProtocolType) && memberProtocols.exists(supportedProtocols(_) == members.size)
     }
   }

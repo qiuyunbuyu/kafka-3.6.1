@@ -240,10 +240,15 @@ class GroupMetadataManager(brokerId: Int,
    * is true - or null if not found
    */
   def getOrMaybeCreateGroup(groupId: String, createIfNotExist: Boolean): Option[GroupMetadata] = {
+    // 这里的createIfNotExist 是由 memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID来判断的
+    // case1：如果收到一个MEMBER_ID为空 的 ”JOINGROUP“请求，可能有如下2种情况：
+    // - 一个”新的消费者组“下的 ”第一个消费者“ -> 创建一个以groupId为标记的元数据信息 new GroupMetadata(groupId, Empty, time)
+    // - 一个”已有消费者组“下的 ”一个新消费者“ -> 直接取出groupMetadataCache中groupId已有的GroupMetadata
     if (createIfNotExist) {
       // if not exist, create consumer group(state is *empty*)
       Option(groupMetadataCache.getAndMaybePut(groupId, new GroupMetadata(groupId, Empty, time)))
     } else
+    // case2：memberId都不为空，一定意味着groupMetadataCache有对应groupId的信息
       Option(groupMetadataCache.get(groupId))
   }
 

@@ -1880,8 +1880,10 @@ class KafkaApis(val requestChannel: RequestChannel,
     request: RequestChannel.Request,
     requestLocal: RequestLocal
   ): CompletableFuture[Unit] = {
+    // 1. 解析出 JoinGroupRequest
     val joinGroupRequest = request.body[JoinGroupRequest]
 
+    // groupInstanceId为”静态消费者“字段，需要broker版本大于2.3才支持： Errors.UNSUPPORTED_VERSION
     if (joinGroupRequest.data.groupInstanceId != null && config.interBrokerProtocolVersion.isLessThan(IBP_2_3_IV0)) {
       // Only enable static membership when IBP >= 2.3, because it is not safe for the broker to use the static member logic
       // until we are sure that all brokers support it. If static group being loaded by an older coordinator, it will discard
@@ -1889,9 +1891,11 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestHelper.sendMaybeThrottle(request, joinGroupRequest.getErrorResponse(Errors.UNSUPPORTED_VERSION.exception))
       CompletableFuture.completedFuture[Unit](())
     } else if (!authHelper.authorize(request.context, READ, GROUP, joinGroupRequest.data.groupId)) {
+      // 鉴权未通过：Errors.GROUP_AUTHORIZATION_FAILED
       requestHelper.sendMaybeThrottle(request, joinGroupRequest.getErrorResponse(Errors.GROUP_AUTHORIZATION_FAILED.exception))
       CompletableFuture.completedFuture[Unit](())
     } else {
+      // ** 调用groupCoordinator能力
       groupCoordinator.joinGroup(
         request.context,
         joinGroupRequest.data,

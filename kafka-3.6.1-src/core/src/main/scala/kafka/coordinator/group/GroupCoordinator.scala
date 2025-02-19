@@ -133,7 +133,7 @@ private[group] class GroupCoordinator(
   /**
    * Verify if the group has space to accept the joining member. The various
    * criteria are explained below.
-   * * group.max.size *
+   * * group.max.size 默认值是 Int.MaxValue
    */
   private def acceptJoiningMember(group: GroupMetadata, member: String): Boolean = {
     group.currentState match {
@@ -179,29 +179,34 @@ private[group] class GroupCoordinator(
       responseCallback(JoinGroupResult(memberId, error))
       return
     }
-    // 2. groupConfig.groupMinSessionTimeoutMs < sessionTimeoutMs < groupConfig.groupMaxSessionTimeoutMs
+    // 2. sessionTimeoutMs很关键的一个参数
+    // ”The coordinator considers the consumer dead if it receives no heartbeat after this timeout in milliseconds.“
+    // ---
+    // groupConfig.groupMinSessionTimeoutMs < sessionTimeoutMs < groupConfig.groupMaxSessionTimeoutMs
     if (sessionTimeoutMs < groupConfig.groupMinSessionTimeoutMs ||
       sessionTimeoutMs > groupConfig.groupMaxSessionTimeoutMs) {
       // 2.1 INVALID_SESSION_TIMEOUT
       responseCallback(JoinGroupResult(memberId, Errors.INVALID_SESSION_TIMEOUT))
     } else {
-      // 2.2  consumer memberId is blank?
+      // 2.2 [先结合groupID/memberId找到所属 Group] + [Group 调用 addMemberAndRebalance]
+      // consumer memberId is blank?
       val isUnknownMember = memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID
-      // group is created if it does not exist and the member id is UNKNOWN. if member
-      // is specified but group does not exist, request is rejected with UNKNOWN_MEMBER_ID
+      // group is created if it does not exist and the member id is UNKNOWN.
       groupManager.getOrMaybeCreateGroup(groupId, isUnknownMember) match {
+        // 以groupId获取对应GroupMetadata
         case None =>
+          // if member is specified but group does not exist, request is rejected with UNKNOWN_MEMBER_ID
           responseCallback(JoinGroupResult(memberId, Errors.UNKNOWN_MEMBER_ID))
         case Some(group) =>
           group.inLock {
             val joinReason = reason.getOrElse("not provided")
-            // *
+            // * 判断group能否再接受此 memberId
             if (!acceptJoiningMember(group, memberId)) {
               // if full, cannot join
               group.remove(memberId)
               responseCallback(JoinGroupResult(JoinGroupRequest.UNKNOWN_MEMBER_ID, Errors.GROUP_MAX_SIZE_REACHED))
             } else if (isUnknownMember) {
-              // blank memberId join group
+              // case1：blank memberId join group
               doNewMemberJoinGroup(
                 group,
                 groupInstanceId,
@@ -218,7 +223,7 @@ private[group] class GroupCoordinator(
                 joinReason
               )
             } else {
-              // not blank memberId join group
+              // case2：not blank memberId join group
               doCurrentMemberJoinGroup(
                 group,
                 memberId,
@@ -268,9 +273,11 @@ private[group] class GroupCoordinator(
         responseCallback(JoinGroupResult(JoinGroupRequest.UNKNOWN_MEMBER_ID, Errors.COORDINATOR_NOT_AVAILABLE))
       } else if (!group.supportsProtocols(protocolType, MemberMetadata.plainProtocolSet(protocols))) {
       // 2. Errors.INCONSISTENT_GROUP_PROTOCOL
+        // "The group member's supported protocols are incompatible with those of existing members "
+        // "or first group member tried to join with empty protocol type or empty protocol list."
         responseCallback(JoinGroupResult(JoinGroupRequest.UNKNOWN_MEMBER_ID, Errors.INCONSISTENT_GROUP_PROTOCOL))
       } else {
-        // 3.1 create newMemberId
+        // 3.1 create newMemberId: 服务端生成一个MemberId
         val newMemberId = group.generateMemberId(clientId, groupInstanceId)
         groupInstanceId match {
           case Some(instanceId) =>
@@ -372,8 +379,12 @@ private[group] class GroupCoordinator(
       info(s"Dynamic member with unknown member id joins group ${group.groupId} in " +
         s"${group.currentState} state. Created a new member id $newMemberId and request the " +
         s"member to rejoin with this id.")
+      // 加入 pendingMembers 列表
       group.addPendingMember(newMemberId)
+      // heartbeat purgatory
       addPendingMemberExpiration(group, newMemberId, sessionTimeoutMs)
+      // 服务端返回newMemberId + Errors.MEMBER_ID_REQUIRED
+      // 客户端Consumer收到此response后会 会填入 newMemberId，再次发送 JoinGroup 请求，所以服务端视角这个consumer就是”PendingMember“
       responseCallback(JoinGroupResult(newMemberId, Errors.MEMBER_ID_REQUIRED))
     } else {
       info(s"Dynamic Member with unknown member id joins group ${group.groupId} in " +
@@ -437,7 +448,8 @@ private[group] class GroupCoordinator(
       } else if (!group.supportsProtocols(protocolType, MemberMetadata.plainProtocolSet(protocols))) {
       // 2. Errors.INCONSISTENT_GROUP_PROTOCOL)
         responseCallback(JoinGroupResult(memberId, Errors.INCONSISTENT_GROUP_PROTOCOL))
-      } else if (group.isPendingMember(memberId)) {
+
+      } else if (group.isPendingMember(memberId)) { // 判断pendingMembers是否包含此memberId
         // A rejoining pending member will be accepted. Note that pending member cannot be a static member.
         groupInstanceId.foreach { instanceId =>
           throw new IllegalStateException(s"Received unexpected JoinGroup with groupInstanceId=$instanceId " +
@@ -451,6 +463,7 @@ private[group] class GroupCoordinator(
         addMemberAndRebalance(rebalanceTimeoutMs, sessionTimeoutMs, memberId, None,
           clientId, clientHost, protocolType, protocols, group, responseCallback, reason)
       } else {
+
         val memberErrorOpt = validateCurrentMember(
           group,
           memberId,
@@ -1304,6 +1317,7 @@ private[group] class GroupCoordinator(
                                     group: GroupMetadata,
                                     callback: JoinCallback,
                                     reason: String): Unit = {
+    // 1. 生成此consumer member对应的 MemberMetadata
     val member = new MemberMetadata(memberId, groupInstanceId, clientId, clientHost,
       rebalanceTimeoutMs, sessionTimeoutMs, protocolType, protocols)
 
@@ -1313,8 +1327,10 @@ private[group] class GroupCoordinator(
     if (group.is(PreparingRebalance) && group.generationId == 0)
       group.newMemberAdded = true
 
+    // 2. group添加 member
     group.add(member, callback)
 
+    // ？
     // The session timeout does not affect new members since they do not have their memberId and
     // cannot send heartbeats. Furthermore, we cannot detect disconnects because sockets are muted
     // while the JoinGroup is in purgatory. If the client does disconnect (e.g. because of a request
@@ -1323,6 +1339,7 @@ private[group] class GroupCoordinator(
     // for new members. If the new member is still there, we expect it to retry.
     completeAndScheduleNextExpiration(group, member, NewMemberJoinTimeoutMs)
 
+    //
     maybePrepareRebalance(group, s"Adding new member $memberId with group instance id $groupInstanceId; client reason: $reason")
   }
 
@@ -1453,6 +1470,7 @@ private[group] class GroupCoordinator(
 
   private def maybePrepareRebalance(group: GroupMetadata, reason: String): Unit = {
     group.inLock {
+      // 首先判断此 group 是否可以 Rebalance：前置状态合法 (Stable, CompletingRebalance, Empty)
       if (group.canRebalance)
         prepareRebalance(group, reason)
     }
@@ -1467,6 +1485,7 @@ private[group] class GroupCoordinator(
     // if a sync expiration is pending, cancel it.
     removeSyncExpiration(group)
 
+    // "开始 rebalance 后， broker 会等待 consumer 加入 group。等待会有超时时间，超时后 broker 会踢出没有及时加入 group 的旧 member，将当前的 group 元数据持久化"
     val delayedRebalance = if (group.is(Empty))
       new InitialDelayedJoin(this,
         rebalancePurgatory,
@@ -1565,6 +1584,7 @@ private[group] class GroupCoordinator(
           // trigger the awaiting join group response callback for all the members after rebalancing
           for (member <- group.allMemberMetadata) {
             val joinResult = JoinGroupResult(
+              // "对于 leader，会额外返回所有 consumer 的 member id，以便 leader 进行后续的 partition 分配工作。"
               members = if (group.isLeader(member.memberId)) {
                 group.currentMemberMetadata
               } else {
