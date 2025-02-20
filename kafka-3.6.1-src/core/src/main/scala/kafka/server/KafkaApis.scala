@@ -1914,8 +1914,9 @@ class KafkaApis(val requestChannel: RequestChannel,
     request: RequestChannel.Request,
     requestLocal: RequestLocal
   ): CompletableFuture[Unit] = {
+    // 1. 解析出SyncGroupRequest
     val syncGroupRequest = request.body[SyncGroupRequest]
-
+    // 2. 异常情况返回
     if (syncGroupRequest.data.groupInstanceId != null && config.interBrokerProtocolVersion.isLessThan(IBP_2_3_IV0)) {
       // Only enable static membership when IBP >= 2.3, because it is not safe for the broker to use the static member logic
       // until we are sure that all brokers support it. If static group being loaded by an older coordinator, it will discard
@@ -1930,6 +1931,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestHelper.sendMaybeThrottle(request, syncGroupRequest.getErrorResponse(Errors.GROUP_AUTHORIZATION_FAILED.exception))
       CompletableFuture.completedFuture[Unit](())
     } else {
+    // 3. 常规情况
       groupCoordinator.syncGroup(
         request.context,
         syncGroupRequest.data,

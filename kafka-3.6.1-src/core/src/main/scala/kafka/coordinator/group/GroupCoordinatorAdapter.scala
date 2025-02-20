@@ -134,8 +134,9 @@ private[group] class GroupCoordinatorAdapter(
     bufferSupplier: BufferSupplier
   ): CompletableFuture[SyncGroupResponseData] = {
     val future = new CompletableFuture[SyncGroupResponseData]()
-
+    // 1. 定义回调
     def callback(syncGroupResult: SyncGroupResult): Unit = {
+      // SyncGroupResponse构建
       future.complete(new SyncGroupResponseData()
         .setErrorCode(syncGroupResult.error.code)
         .setProtocolType(syncGroupResult.protocolType.orNull)
@@ -143,12 +144,14 @@ private[group] class GroupCoordinatorAdapter(
         .setAssignment(syncGroupResult.memberAssignment)
       )
     }
-
+    // 2. 从SyncGroupResponseData中拆解出 Leader Consumer Member 制订的 assignment
+    // [assignment.memberId -> assignment.assignment]
     val assignmentMap = immutable.Map.newBuilder[String, Array[Byte]]
     request.assignments.forEach { assignment =>
       assignmentMap += assignment.memberId -> assignment.assignment
     }
 
+    // 3. 调用coordinator 能力
     coordinator.handleSyncGroup(
       request.groupId,
       request.generationId,

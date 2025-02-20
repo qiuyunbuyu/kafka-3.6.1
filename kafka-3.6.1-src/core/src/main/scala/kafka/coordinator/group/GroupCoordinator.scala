@@ -547,6 +547,7 @@ private[group] class GroupCoordinator(
                       groupAssignment: Map[String, Array[Byte]],
                       responseCallback: SyncCallback,
                       requestLocal: RequestLocal = RequestLocal.NoCaching): Unit = {
+    // 校验 Consumer Group 状态
     validateGroupStatus(groupId, ApiKeys.SYNC_GROUP) match {
       case Some(error) if error == Errors.COORDINATOR_LOAD_IN_PROGRESS =>
         // The coordinator is loading, which means we've lost the state of the active rebalance and the
@@ -560,7 +561,7 @@ private[group] class GroupCoordinator(
       case None =>
         groupManager.getGroup(groupId) match {
           case None => responseCallback(SyncGroupResult(Errors.UNKNOWN_MEMBER_ID))
-          // doSyncGroup
+          // * doSyncGroup
           case Some(group) => doSyncGroup(group, generation, memberId, protocolType, protocolName,
             groupInstanceId, groupAssignment, requestLocal, responseCallback)
         }
@@ -611,6 +612,7 @@ private[group] class GroupCoordinator(
                           requestLocal: RequestLocal,
                           responseCallback: SyncCallback): Unit = {
     group.inLock {
+      // 1. 对 Current Consumer Member进行校验
       val validationErrorOpt = validateSyncGroup(
         group,
         generationId,
@@ -632,13 +634,17 @@ private[group] class GroupCoordinator(
 
           case CompletingRebalance =>
             group.get(memberId).awaitingSyncCallback = responseCallback
+
+            // *1: [pendingSyncMembers 移除此memberId ] + [DelayedSync tryComplete]
             removePendingSyncMember(group, memberId)
 
+            // *2 下面的活，只涉及Leader conusmer member了， follower consumer member 等通知”Assignment“SyncGroupResult就好了
             // if this is the leader, then we can attempt to persist state and transition to stable
             if (group.isLeader(memberId)) {
               info(s"Assignment received from leader $memberId for group ${group.groupId} for generation ${group.generationId}. " +
                 s"The group has ${group.size} members, ${group.allStaticMembers.size} of which are static.")
 
+              // 2.1 找出”missing assignment“异常情况，正常情况是 每个consumer member 都有 Assignment
               // fill any missing members with an empty assignment
               val missing = group.allMembers.diff(groupAssignment.keySet)
               val assignment = groupAssignment ++ missing.map(_ -> Array.empty[Byte]).toMap
@@ -647,6 +653,7 @@ private[group] class GroupCoordinator(
                 warn(s"Setting empty assignments for members $missing of ${group.groupId} for generation ${group.generationId}")
               }
 
+              // *2.2 [GroupCoordinator 会持久化 group 的 metadata]
               groupManager.storeGroup(group, assignment, (error: Errors) => {
                 group.inLock {
                   // another member may have joined the group while we were awaiting this callback,
@@ -657,9 +664,9 @@ private[group] class GroupCoordinator(
                       resetAndPropagateAssignmentError(group, error)
                       maybePrepareRebalance(group, s"Error $error when storing group assignment during SyncGroup (member: $memberId)")
                     } else {
-                      // set assignment plan
+                      // *2.3 [在持久化了Assignment之后，set assignment plan for consumer member]
                       setAndPropagateAssignment(group, assignment)
-                      // group state set to Stable
+                      // group state set to Stable => 转向 Stable 状态
                       group.transitionTo(Stable)
                     }
                   }
@@ -1242,13 +1249,16 @@ private[group] class GroupCoordinator(
 
   private def setAndPropagateAssignment(group: GroupMetadata, assignment: Map[String, Array[Byte]]): Unit = {
     assert(group.is(CompletingRebalance))
+    // 确定 Consummer Member <-> Assignment
     group.allMemberMetadata.foreach(member => member.assignment = assignment(member.memberId))
     propagateAssignment(group, Errors.NONE)
   }
 
   private def resetAndPropagateAssignmentError(group: GroupMetadata, error: Errors): Unit = {
     assert(group.is(CompletingRebalance))
+    // 将所有Consumer Member 的 assignment 移除
     group.allMemberMetadata.foreach(_.assignment = Array.empty)
+    // 告诉每个consumer member 对应的 assignment
     propagateAssignment(group, error)
   }
 
@@ -1257,11 +1267,21 @@ private[group] class GroupCoordinator(
       (group.protocolType, group.protocolName)
     else
       (None, None)
+
+    // **** 遍历每一个 consumer member，回复SyncGroupResponse
     for (member <- group.allMemberMetadata) {
+      // 异常情况：Errors.NONE 并且 分给 consumer member 对应的 assignment 为空
       if (member.assignment.isEmpty && error == Errors.NONE) {
         warn(s"Sending empty assignment to member ${member.memberId} of ${group.groupId} for generation ${group.generationId} with no errors")
       }
 
+      // 这里是调用回调，恢复SyncGroupResponse的地方，大致分为2大类
+      // 第一大类：error != Errors.NONE
+      //    以error的形式 告诉正在等待sync结果的consumer member
+      //    比如DelayedSync在一定时间内，还有joined consumer member 没发SyncGroupRequest过来
+      //    那么Errors.REBALANCE_IN_PROGRESS， ”The group is rebalancing, so a rejoin is needed.“，再次发JoinGroupRequest吧
+      // 第二大类：error == Errors.NONE
+      //    返回正常的 SyncGroupResponse，告诉对应的consumer member 对应的 assignment
       if (group.maybeInvokeSyncCallback(member, SyncGroupResult(protocolType, protocolName, member.assignment, error))) {
         // reset the session timeout for members after propagating the member's assignment.
         // This is because if any member's session expired while we were still awaiting either
@@ -1479,8 +1499,13 @@ private[group] class GroupCoordinator(
   // package private for testing
   private[group] def prepareRebalance(group: GroupMetadata, reason: String): Unit = {
     // if any members are awaiting sync, cancel their request and have them rejoin
-    if (group.is(CompletingRebalance))
+    if (group.is(CompletingRebalance)) {
+      // Q：这里可能一下子看到会有点疑惑，为啥 consumer group的状态已经是CompletingRebalance，但是又要prepareRebalance呢？
+      // A：首先只有一种情况 consumer group 能 成为 CompletingRebalance 状态 =》 ”PreparingRebalance =》 some members have joined by the timeout => CompletingRebalance“
+      //    但是Join Consumer Group 不是目标，给Joined的Conusmer Memeber 制订 assignment 才是目标
+      //    在”一段时间内“，没能收到joined consumer member的 SyncGroupRequest，那么就得把这个Joined Consumer Member移除掉，重新”Rebalance“
       resetAndPropagateAssignmentError(group, Errors.REBALANCE_IN_PROGRESS)
+    }
 
     // if a sync expiration is pending, cancel it.
     removeSyncExpiration(group)
@@ -1621,13 +1646,13 @@ private[group] class GroupCoordinator(
             group.addPendingSyncMember(member.memberId)
           }
           // e. consumer group 被是作为 “PendingSync” - DelayedSync
-          // 这也是下一阶段SyncGroup的起点
+          // 这也是下一阶段SyncGroup的起点: SyncGroupRequest broker端处理入口1
           schedulePendingSync(group)
         }
       }
     }
   }
-
+  // [pendingSyncMembers 移除此memberId ] + [DelayedSync tryComplete]
   private def removePendingSyncMember(
     group: GroupMetadata,
     memberId: String
@@ -1653,8 +1678,10 @@ private[group] class GroupCoordinator(
   private def schedulePendingSync(
     group: GroupMetadata
   ): Unit = {
+    // 1. 构建DelayedSync
     val delayedSync = new DelayedSync(this, group, group.generationId, group.rebalanceTimeoutMs)
     val groupKey = GroupSyncKey(group.groupId)
+    // 2. Purgatory 管理 DelayedSync
     rebalancePurgatory.tryCompleteElseWatch(delayedSync, Seq(groupKey))
   }
 
@@ -1694,9 +1721,10 @@ private[group] class GroupCoordinator(
               s"already transitioned to the ${group.currentState} state.")
 
           case CompletingRebalance | Stable =>
+            // 有些Consumer Memeber 虽然发送了 JoinGroupRequest，但并没有在一定时间内进一步发送 SyncGroupRequest
             if (!group.hasReceivedSyncFromAllMembers) {
               val pendingSyncMembers = group.allPendingSyncMembers
-
+              // Consumer Group中移除 pending Consumer Memeber
               pendingSyncMembers.foreach { memberId =>
                 group.remove(memberId)
                 removeHeartbeatForLeavingMember(group, memberId)
@@ -1704,7 +1732,7 @@ private[group] class GroupCoordinator(
 
               debug(s"Group ${group.groupId} removed members who haven't " +
                 s"sent their sync request: $pendingSyncMembers")
-
+              // 再次Rebalance(
               prepareRebalance(group, s"Removing $pendingSyncMembers on pending sync request expiration")
             }
         }

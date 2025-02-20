@@ -266,7 +266,7 @@ class GroupMetadataManager(brokerId: Int,
   }
 
   /**
-   *
+   * 持久化 group 的 ”metadata“ 持久化到 __consumer_offset_x 中
    * @param group
    * @param groupAssignment
    * @param responseCallback
@@ -284,6 +284,7 @@ class GroupMetadataManager(brokerId: Int,
         val key = GroupMetadataManager.groupMetadataKey(group.groupId)
         val value = GroupMetadataManager.groupMetadataValue(group, groupAssignment, interBrokerProtocolVersion)
 
+        // 封装 待写入的 ”records“
         val records = {
           val buffer = ByteBuffer.allocate(AbstractRecords.estimateSizeInBytes(magicValue, compressionType,
             Seq(new SimpleRecord(timestamp, key, value)).asJava))
@@ -291,11 +292,12 @@ class GroupMetadataManager(brokerId: Int,
           builder.append(timestamp, key, value)
           builder.build()
         }
-
+        // 找到此groupId被__consumer_offsets下哪个Partition管
         val groupMetadataPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, partitionFor(group.groupId))
         val groupMetadataRecords = Map(groupMetadataPartition -> records)
         val generationId = group.generationId
 
+        // appendRecords回调函数
         // set the callback function to insert the created group into cache after log append completed
         def putCacheCallback(responseStatus: Map[TopicPartition, PartitionResponse]): Unit = {
           // the append response should only contain the topics partition
@@ -345,6 +347,7 @@ class GroupMetadataManager(brokerId: Int,
 
           responseCallback(responseError)
         }
+        // 调用replicaManager.appendRecords来写入groupMetadataRecords
         appendForGroup(group, groupMetadataRecords, requestLocal, putCacheCallback)
 
       case None =>
