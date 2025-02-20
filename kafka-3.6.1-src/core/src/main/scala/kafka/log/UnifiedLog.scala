@@ -1343,6 +1343,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
       // For the earliest and latest, we do not need to return the timestamp.
       if (targetTimestamp == ListOffsetsRequest.EARLIEST_TIMESTAMP ||
         (!remoteLogEnabled() && targetTimestamp == ListOffsetsRequest.EARLIEST_LOCAL_TIMESTAMP)) {
+        // 常规场景EARLIEST ->
         // The first cached epoch usually corresponds to the log start offset, but we have to verify this since
         // it may not be true following a message format version bump as the epoch will not be available for
         // log entries written in the older format.
@@ -1353,6 +1354,7 @@ class UnifiedLog(@volatile var logStartOffset: Long,
 
         Some(new TimestampAndOffset(RecordBatch.NO_TIMESTAMP, logStartOffset, epochOpt))
       } else if (targetTimestamp == ListOffsetsRequest.EARLIEST_LOCAL_TIMESTAMP) {
+        // 使用分层存储的场景EARLIEST -> curLocalLogStartOffset
         val curLocalLogStartOffset = localLogStartOffset()
 
         val earliestLocalLogEpochEntry = leaderEpochCache.asJava.flatMap(cache => {

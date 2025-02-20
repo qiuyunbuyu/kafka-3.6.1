@@ -1608,6 +1608,7 @@ class Partition(val topicPartition: TopicPartition,
     // decide whether to only fetch from leader
     val localLog = localLogWithEpochOrThrow(currentLeaderEpoch, fetchOnlyFromLeader)
 
+    // LATEST情况下， 根据隔离级别，确定能获取到的”最大“ Offset的位置
     val lastFetchableOffset = isolationLevel match {
       case Some(IsolationLevel.READ_COMMITTED) => localLog.lastStableOffset
       case Some(IsolationLevel.READ_UNCOMMITTED) => localLog.highWatermark
@@ -1630,15 +1631,18 @@ class Partition(val topicPartition: TopicPartition,
         s"start offset from the beginning of this epoch ($epochStart)."))
 
     def getOffsetByTimestamp: Option[TimestampAndOffset] = {
+      // 调用 LogManager 能力
       logManager.getLog(topicPartition).flatMap(log => log.fetchOffsetByTimestamp(timestamp, remoteLogManager))
     }
 
     // If we're in the lagging HW state after a leader election, throw OffsetNotAvailable for "latest" offset
     // or for a timestamp lookup that is beyond the last fetchable offset.
     timestamp match {
+      // LATEST -> lastFetchableOffset
       case ListOffsetsRequest.LATEST_TIMESTAMP =>
         maybeOffsetsError.map(e => throw e)
           .orElse(Some(new TimestampAndOffset(RecordBatch.NO_TIMESTAMP, lastFetchableOffset, Optional.of(leaderEpoch))))
+      // EARLIEST -> logStartOffset
       case ListOffsetsRequest.EARLIEST_TIMESTAMP | ListOffsetsRequest.EARLIEST_LOCAL_TIMESTAMP =>
         getOffsetByTimestamp
       case _ =>

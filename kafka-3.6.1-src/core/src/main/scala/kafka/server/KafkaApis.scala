@@ -1133,12 +1133,12 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   def handleListOffsetRequest(request: RequestChannel.Request): Unit = {
     val version = request.header.apiVersion
-
+    // 1. 按照协议版本获取：List[ListOffsetsTopicResponse]
     val topics = if (version == 0)
       handleListOffsetRequestV0(request)
     else
       handleListOffsetRequestV1AndAbove(request)
-
+    // 2. 返回 ListOffsetsResponse
     requestHelper.sendResponseMaybeThrottle(request, requestThrottleMs => new ListOffsetsResponse(new ListOffsetsResponseData()
       .setThrottleTimeMs(requestThrottleMs)
       .setTopics(topics.asJava)))
@@ -1200,11 +1200,13 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   private def handleListOffsetRequestV1AndAbove(request : RequestChannel.Request): List[ListOffsetsTopicResponse] = {
+    // 1. 拆解ListOffsetsRequest
     val correlationId = request.header.correlationId
     val clientId = request.header.clientId
     val offsetRequest = request.body[ListOffsetsRequest]
     val version = request.header.apiVersion
 
+    // 2. ErrorResponse的构建
     def buildErrorResponse(e: Errors, partition: ListOffsetsPartition): ListOffsetsPartitionResponse = {
       new ListOffsetsPartitionResponse()
         .setPartitionIndex(partition.partitionIndex)
@@ -1213,6 +1215,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         .setOffset(ListOffsetsResponse.UNKNOWN_OFFSET)
     }
 
+    // 3. 权限校验相关
     val (authorizedRequestInfo, unauthorizedRequestInfo) = authHelper.partitionSeqByAuthorized(request.context,
         DESCRIBE, TOPIC, offsetRequest.topics.asScala.toSeq)(_.name)
 
@@ -1223,6 +1226,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           buildErrorResponse(Errors.TOPIC_AUTHORIZATION_FAILED, partition)).asJava)
     )
 
+    // * 4. 遍历
     val responseTopics = authorizedRequestInfo.map { topic =>
       val responsePartitions = topic.partitions.asScala.map { partition =>
         val topicPartition = new TopicPartition(topic.name, partition.partitionIndex)
@@ -1232,13 +1236,17 @@ class KafkaApis(val requestChannel: RequestChannel,
           buildErrorResponse(Errors.INVALID_REQUEST, partition)
         } else {
           try {
+            // offsetRequest.replicaId判断来源
+            // ”The broker ID of the requester, or -1 if this request is being made by a normal consumer.“
             val fetchOnlyFromLeader = offsetRequest.replicaId != ListOffsetsRequest.DEBUGGING_REPLICA_ID
             val isClientRequest = offsetRequest.replicaId == ListOffsetsRequest.CONSUMER_REPLICA_ID
+            // 如果来源是consumer memeber，那么还需要确定隔离级别(事务相关)
             val isolationLevelOpt = if (isClientRequest)
               Some(offsetRequest.isolationLevel)
             else
               None
 
+            // 调用replicaManager的能力
             val foundOpt = replicaManager.fetchOffsetForTimestamp(topicPartition,
               partition.timestamp,
               isolationLevelOpt,
@@ -1286,6 +1294,7 @@ class KafkaApis(val requestChannel: RequestChannel,
           }
         }
       }
+
       new ListOffsetsTopicResponse().setName(topic.name).setPartitions(responsePartitions.asJava)
     }
     (responseTopics ++ unauthorizedResponseStatus).toList
