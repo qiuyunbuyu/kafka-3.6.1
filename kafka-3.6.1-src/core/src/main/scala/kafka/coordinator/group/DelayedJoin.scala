@@ -45,9 +45,11 @@ private[group] class DelayedJoin(
     // try to complete delayed actions introduced by coordinator.onCompleteJoin
     tryToCompleteDelayedAction()
   }
+  // 还有个子类：InitialDelayedJoin 对应 group.is(Empty) 场景
   override def onComplete(): Unit = coordinator.onCompleteJoin(group)
 
   // TODO: remove this ugly chain after we move the action queue to handler thread
+  // "ugly chain ---- "
   private def tryToCompleteDelayedAction(): Unit = coordinator.groupManager.replicaManager.tryCompleteActions()
 }
 

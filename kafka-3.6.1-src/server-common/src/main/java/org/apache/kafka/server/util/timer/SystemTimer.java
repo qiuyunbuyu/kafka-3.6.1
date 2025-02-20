@@ -43,6 +43,7 @@ public class SystemTimer implements Timer {
     private final ReentrantReadWriteLock.WriteLock writeLock = readWriteLock.writeLock();
 
     public SystemTimer(String executorName) {
+        // 时间轮-关键数值初始化的地方
         this(executorName, 1, 20, Time.SYSTEM.hiResClockMs());
     }
 

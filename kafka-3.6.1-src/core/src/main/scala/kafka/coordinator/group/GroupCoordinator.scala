@@ -1486,6 +1486,7 @@ private[group] class GroupCoordinator(
     removeSyncExpiration(group)
 
     // "开始 rebalance 后， broker 会等待 consumer 加入 group。等待会有超时时间，超时后 broker 会踢出没有及时加入 group 的旧 member，将当前的 group 元数据持久化"
+    // InitialDelayedJoin 和 DelayedJoin 都属于 DelayedOperation体系
     val delayedRebalance = if (group.is(Empty))
       new InitialDelayedJoin(this,
         rebalancePurgatory,
@@ -1540,8 +1541,10 @@ private[group] class GroupCoordinator(
     }
   }
 
+  // DelayedOperation - DelayedJoin
   def onCompleteJoin(group: GroupMetadata): Unit = {
     group.inLock {
+      // 移除“一段时间内”还未加入 consumer group 的 consumer Member
       val notYetRejoinedDynamicMembers = group.notYetRejoinedMembers.filterNot(_._2.isStaticMember)
       if (notYetRejoinedDynamicMembers.nonEmpty) {
         info(s"Group ${group.groupId} removed dynamic members " +
@@ -1552,10 +1555,11 @@ private[group] class GroupCoordinator(
           removeHeartbeatForLeavingMember(group, failedMember.memberId)
         }
       }
-
+      // 场景1：consumer group 为 Dead状态
       if (group.is(Dead)) {
         info(s"Group ${group.groupId} is dead, skipping rebalance stage")
       } else if (!group.maybeElectNewJoinedLeader() && group.allMembers.nonEmpty) {
+      // 场景2：consumer group 中没 consumer member 了
         // If all members are not rejoining, we will postpone the completion
         // of rebalance preparing stage, and send out another delayed operation
         // until session timeout removes all the non-responsive members.
@@ -1564,7 +1568,13 @@ private[group] class GroupCoordinator(
           new DelayedJoin(this, group, group.rebalanceTimeoutMs),
           Seq(GroupJoinKey(group.groupId)))
       } else {
+        // 场景3：
+        // 走到这里，上一步的maybeElectNewJoinedLeader()，此consumer group 一定已经选出了consumer leader member
+
+        // 3.1 consumer group Generation + 1
         group.initNextGeneration()
+
+        // 3.2
         if (group.is(Empty)) {
           info(s"Group ${group.groupId} with generation ${group.generationId} is now empty " +
             s"(${Topic.GROUP_METADATA_TOPIC_NAME}-${partitionFor(group.groupId)})")
@@ -1578,11 +1588,13 @@ private[group] class GroupCoordinator(
             }
           }, RequestLocal.NoCaching)
         } else {
+        // 3.2
           info(s"Stabilized group ${group.groupId} generation ${group.generationId} " +
             s"(${Topic.GROUP_METADATA_TOPIC_NAME}-${partitionFor(group.groupId)}) with ${group.size} members")
 
           // trigger the awaiting join group response callback for all the members after rebalancing
           for (member <- group.allMemberMetadata) {
+            // a. 构建JoinGroup Response
             val joinResult = JoinGroupResult(
               // "对于 leader，会额外返回所有 consumer 的 member id，以便 leader 进行后续的 partition 分配工作。"
               members = if (group.isLeader(member.memberId)) {
@@ -1598,13 +1610,18 @@ private[group] class GroupCoordinator(
               skipAssignment = false,
               error = Errors.NONE)
 
+            // b. awaitingJoin Callback
             group.maybeInvokeJoinCallback(member, joinResult)
+
+            // c. 完成current heartbeat， 并等待next heartbeat
             completeAndScheduleNextHeartbeatExpiration(group, member)
             member.isNew = false
 
+            // d. consumer member 被视作为 “PendingSyncMember”
             group.addPendingSyncMember(member.memberId)
           }
-
+          // e. consumer group 被是作为 “PendingSync” - DelayedSync
+          // 这也是下一阶段SyncGroup的起点
           schedulePendingSync(group)
         }
       }
@@ -1772,6 +1789,7 @@ object GroupCoordinator {
     time: Time,
     metrics: Metrics
   ): GroupCoordinator = {
+    // Consumer Group Coordinator 2个Purgatory类初始化的地方
     val heartbeatPurgatory = DelayedOperationPurgatory[DelayedHeartbeat]("Heartbeat", config.brokerId)
     val rebalancePurgatory = DelayedOperationPurgatory[DelayedRebalance]("Rebalance", config.brokerId)
     GroupCoordinator(config, replicaManager, heartbeatPurgatory, rebalancePurgatory, time, metrics)
@@ -1798,6 +1816,7 @@ object GroupCoordinator {
     time: Time,
     metrics: Metrics
   ): GroupCoordinator = {
+    // GroupCoordinator 关键配置项
     val offsetConfig = this.offsetConfig(config)
     val groupConfig = GroupConfig(groupMinSessionTimeoutMs = config.groupMinSessionTimeoutMs,
       groupMaxSessionTimeoutMs = config.groupMaxSessionTimeoutMs,

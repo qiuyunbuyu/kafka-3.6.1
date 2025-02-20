@@ -309,9 +309,11 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   def maybeElectNewJoinedLeader(): Boolean = {
     leaderId.exists { currentLeaderId =>
       val currentLeader = get(currentLeaderId)
+      // case1: currentLeader 还是 isAwaitingJoin 状态，要重新选个新Leader
       if (!currentLeader.isAwaitingJoin) {
         members.find(_._2.isAwaitingJoin) match {
           case Some((anyJoinedMemberId, anyJoinedMember)) =>
+            // 选出了新的 consumer leader member
             leaderId = Option(anyJoinedMemberId)
             info(s"Group leader [member.id: ${currentLeader.memberId}, " +
               s"group.instance.id: ${currentLeader.groupInstanceId}] failed to join " +
@@ -326,6 +328,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
             false
         }
       } else {
+      // case2: “current leader is rejoined”
         true
       }
     }

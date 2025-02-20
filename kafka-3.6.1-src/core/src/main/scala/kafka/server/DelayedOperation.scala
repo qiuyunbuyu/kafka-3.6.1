@@ -31,9 +31,14 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 /**
+ * -定义了什么叫DelayedOperation：需要延迟处理最多给定的 delayMs 的操作
  * An operation whose processing needs to be delayed for at most the given delayMs. For example
  * a delayed produce operation could be waiting for specified number of acks; or
  * a delayed fetch operation could be waiting for a given number of bytes to accumulate.
+ *
+ * - DelayedOperation 中 “operation”, 对应实现是在 onComplete() 中 ，这个调用的场景有2个
+ * - forceComplete() -> 超过 delayMs 之后，强制执行
+ * - tryComplete() -> 还没超过delayMs，先判断操作现在是否可以完成，如果可以，则调用forceComplete()
  *
  * The logic upon completing a delayed operation is defined in onComplete() and will be called exactly once.
  * Once an operation is completed, isCompleted() will return true. onComplete() can be triggered by either
@@ -59,6 +64,7 @@ abstract class DelayedOperation(delayMs: Long, // usually setting in Client: "re
    * Force completing the delayed operation, if not already completed.
    * This function can be triggered when
    *
+   * 明确forceComplete的调用场景
    * 1. The operation has been verified to be completable inside tryComplete()
    * 2. The operation has expired and hence needs to be completed right now
    *
@@ -68,9 +74,12 @@ abstract class DelayedOperation(delayMs: Long, // usually setting in Client: "re
    * true, others will still return false
    */
   def forceComplete(): Boolean = {
+    // 强制 执行的前提一定是 completed是 false状态
     if (completed.compareAndSet(false, true)) {
       // cancel the timeout timer
+      // 从”任务双向链表“中移除此任务
       cancel()
+      // 调用 onComplete() 逻辑
       onComplete()
       true
     } else {
@@ -126,8 +135,11 @@ abstract class DelayedOperation(delayMs: Long, // usually setting in Client: "re
    * run() method defines a task that is executed on timeout
    */
   override def run(): Unit = {
-    if (forceComplete())
+    if (forceComplete()) {
+      // forceComplete()为 true 表示  “operation” 已经 超时
+      // onExpiration对应的是确定 “operation” 已经 超时的情况下，额外所需执行的动作
       onExpiration()
+    }
   }
 }
 
@@ -140,6 +152,7 @@ object DelayedOperationPurgatory {
                                    purgeInterval: Int = 1000,
                                    reaperEnabled: Boolean = true,
                                    timerEnabled: Boolean = true): DelayedOperationPurgatory[T] = {
+    // 1 Purgatory - 1 SystemTimer
     val timer = new SystemTimer(purgatoryName)
     new DelayedOperationPurgatory[T](purgatoryName, timer, brokerId, purgeInterval, reaperEnabled, timerEnabled)
   }
@@ -184,13 +197,14 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
   private[this] val estimatedTotalOperations = new AtomicInteger(0)
 
   /* background thread expiring operations that have timed out */
-  // 延时任务收割线程
+  // 1 Purgatory - 1 延时任务收割+时钟推进 线程
   private val expirationReaper = new ExpiredOperationReaper()
 
   private val metricsTags = Map("delayedOperation" -> purgatoryName).asJava
   metricsGroup.newGauge("PurgatorySize", () => watched, metricsTags)
   metricsGroup.newGauge("NumDelayedOperations", () => numDelayed, metricsTags)
 
+  // 延时任务收割+时钟推进 线程启动，Purgatory构建处理就启动了
   if (reaperEnabled)
     expirationReaper.start()
 
@@ -454,7 +468,9 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
    * 业务线程只负责向时间轮中写入数据，那时间轮中的数据什么时候被清除呢？
    * ExpiredOperationReaper线程会实时扫描那些已经过期的任务，并将其从时间轮中移除
    *
-   * 它的作用只是去实时找出那些已经过期的任务，并将后续的回调逻辑扔给“回调线程池”，继而继续扫描，由此可见其任务并不繁重
+   * 它的作用只是去实时找出那些已经过期的任务，并将后续的回调逻辑扔给“回调线程池”
+   * 这里所谓的”回调线程“其实就是“DelayedOperationPurgatory - SystemTimer - taskExecutor单线程线程池“
+   * 继而继续扫描，由此可见其任务并不繁重
    */
   private class ExpiredOperationReaper extends ShutdownableThread(
     "ExpirationReaper-%d-%s".format(brokerId, purgatoryName),
