@@ -548,6 +548,7 @@ class GroupMetadataManager(brokerId: Int,
               topicPartition -> new PartitionData(OffsetFetchResponse.INVALID_OFFSET,
                 Optional.empty(), "", Errors.UNSTABLE_OFFSET_COMMIT)
             } else {
+              // 最后是从GroupMetadata在内存中维护的offsets集合中获取的
               val partitionData = group.offset(topicPartition) match {
                 case None =>
                   new PartitionData(OffsetFetchResponse.INVALID_OFFSET,

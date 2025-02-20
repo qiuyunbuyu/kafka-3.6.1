@@ -1510,6 +1510,7 @@ class KafkaApis(val requestChannel: RequestChannel,
   def handleOffsetFetchRequest(request: RequestChannel.Request): CompletableFuture[Unit] = {
     val version = request.header.apiVersion
     if (version == 0) {
+      // 旧版
       handleOffsetFetchRequestFromZookeeper(request)
     } else {
       handleOffsetFetchRequestFromCoordinator(request)
@@ -1563,18 +1564,25 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   private def handleOffsetFetchRequestFromCoordinator(request: RequestChannel.Request): CompletableFuture[Unit] = {
+    // 解析出OffsetFetchRequest
     val offsetFetchRequest = request.body[OffsetFetchRequest]
+    // 获取关键数据：[groupID - [topic-name | partitionIndexes] [topic-name | partitionIndexes] ]
     val groups = offsetFetchRequest.groups()
     val requireStable = offsetFetchRequest.requireStable()
 
     val futures = new mutable.ArrayBuffer[CompletableFuture[OffsetFetchResponseData.OffsetFetchResponseGroup]](groups.size)
+
+    // 预备OffsetFetchResponse
     groups.forEach { groupOffsetFetch =>
+      // 如果只给了一个 groupId，就认为是”isAllPartitions“
       val isAllPartitions = groupOffsetFetch.topics == null
       if (!authHelper.authorize(request.context, DESCRIBE, GROUP, groupOffsetFetch.groupId)) {
         futures += CompletableFuture.completedFuture(new OffsetFetchResponseData.OffsetFetchResponseGroup()
           .setGroupId(groupOffsetFetch.groupId)
           .setErrorCode(Errors.GROUP_AUTHORIZATION_FAILED.code))
       } else if (isAllPartitions) {
+        // 注意这个返回值，就是下面2个函数的目标了
+        // CompletableFuture[OffsetFetchResponseData.OffsetFetchResponseGroup]
         futures += fetchAllOffsetsForGroup(
           request.context,
           groupOffsetFetch,
@@ -1588,7 +1596,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         )
       }
     }
-
+    // 返回OffsetFetchResponse
     CompletableFuture.allOf(futures.toArray: _*).handle[Unit] { (_, _) =>
       val groupResponses = new ArrayBuffer[OffsetFetchResponseData.OffsetFetchResponseGroup](futures.size)
       futures.foreach(future => groupResponses += future.get())
@@ -1639,6 +1647,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       groupOffsetFetch.topics.asScala
     )(_.name)
 
+    // 调用groupCoordinator 的 fetchOffsets 能力
     groupCoordinator.fetchOffsets(
       requestContext,
       groupOffsetFetch.groupId,

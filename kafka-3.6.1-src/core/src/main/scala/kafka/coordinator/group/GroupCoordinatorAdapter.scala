@@ -299,13 +299,15 @@ private[group] class GroupCoordinatorAdapter(
     topics: util.List[OffsetFetchRequestData.OffsetFetchRequestTopics],
     requireStable: Boolean
   ): CompletableFuture[util.List[OffsetFetchResponseData.OffsetFetchResponseTopics]] = {
+
+    // 构建要获取Offsets的TopicPartition集合
     val topicPartitions = new mutable.ArrayBuffer[TopicPartition]()
     topics.forEach { topic =>
       topic.partitionIndexes.forEach { partition =>
         topicPartitions += new TopicPartition(topic.name, partition)
       }
     }
-
+    // handleFetchOffset
     handleFetchOffset(
       groupId,
       requireStable,
@@ -318,6 +320,7 @@ private[group] class GroupCoordinatorAdapter(
     requireStable: Boolean,
     partitions: Option[Seq[TopicPartition]]
   ): CompletableFuture[util.List[OffsetFetchResponseData.OffsetFetchResponseTopics]] = {
+    // handleFetchOffsets
     val (error, results) = coordinator.handleFetchOffsets(
       groupId,
       requireStable,

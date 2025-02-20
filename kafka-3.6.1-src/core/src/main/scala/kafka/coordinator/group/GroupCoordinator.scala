@@ -1110,7 +1110,7 @@ private[group] class GroupCoordinator(
     requireStable: Boolean,
     partitions: Option[Seq[TopicPartition]] = None
   ): (Errors, Map[TopicPartition, OffsetFetchResponse.PartitionData]) = {
-
+    // 校验 groupId 所处 consumer group状态，正常则调用 groupManager.getOffsets来获取
     validateGroupStatus(groupId, ApiKeys.OFFSET_FETCH) match {
       case Some(error) => error -> Map.empty
       case None =>
