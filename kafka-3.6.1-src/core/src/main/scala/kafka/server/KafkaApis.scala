@@ -2018,8 +2018,10 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   def handleHeartbeatRequest(request: RequestChannel.Request): CompletableFuture[Unit] = {
+    // 获取 HeartbeatRequest
     val heartbeatRequest = request.body[HeartbeatRequest]
 
+    // 2类异常情况：Errors.UNSUPPORTED_VERSION + Errors.GROUP_AUTHORIZATION_FAILED
     if (heartbeatRequest.data.groupInstanceId != null && config.interBrokerProtocolVersion.isLessThan(IBP_2_3_IV0)) {
       // Only enable static membership when IBP >= 2.3, because it is not safe for the broker to use the static member logic
       // until we are sure that all brokers support it. If static group being loaded by an older coordinator, it will discard
@@ -2030,6 +2032,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestHelper.sendMaybeThrottle(request, heartbeatRequest.getErrorResponse(Errors.GROUP_AUTHORIZATION_FAILED.exception))
       CompletableFuture.completedFuture[Unit](())
     } else {
+    // 调用groupCoordinator能力
       groupCoordinator.heartbeat(
         request.context,
         heartbeatRequest.data

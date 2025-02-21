@@ -892,7 +892,7 @@ private[group] class GroupCoordinator(
       }
     }
   }
-
+  // 其实核心就是一件事情 completeAndScheduleNextHeartbeatExpiration
   def handleHeartbeat(groupId: String,
                       memberId: String,
                       groupInstanceId: Option[String],
@@ -922,6 +922,11 @@ private[group] class GroupCoordinator(
         if (validationErrorOpt.isDefined) {
           validationErrorOpt.get
         } else {
+          // [ 情况1 ]
+          //    接收到心跳最合理的状态是CompletingRebalance和Stable
+          // [ 情况2 ]
+          //    如果再一些情况下group状态是PreparingRebalance，那么HeartBeatResponse就会返回Errors.REBALANCE_IN_PROGRESS
+          //    consumer member在收到Errors.REBALANCE_IN_PROGRESS，就会再开始新的一轮rebalance
           group.currentState match {
             case Empty =>
               Errors.UNKNOWN_MEMBER_ID
@@ -1320,11 +1325,11 @@ private[group] class GroupCoordinator(
   private def completeAndScheduleNextExpiration(group: GroupMetadata, member: MemberMetadata, timeoutMs: Long): Unit = {
     val memberKey = MemberKey(group.groupId, member.memberId)
 
-    // complete current heartbeat expectation
+    // 结束当前的：complete current heartbeat expectation
     member.heartbeatSatisfied = true
     heartbeatPurgatory.checkAndComplete(memberKey)
 
-    // reschedule the next heartbeat expiration deadline
+    // 计划开启下一轮的：reschedule the next heartbeat expiration deadline
     member.heartbeatSatisfied = false
     val delayedHeartbeat = new DelayedHeartbeat(this, group, member.memberId, isPending = false, timeoutMs)
     heartbeatPurgatory.tryCompleteElseWatch(delayedHeartbeat, Seq(memberKey))
@@ -1794,7 +1799,7 @@ private[group] class GroupCoordinator(
       true
     }
   }
-
+  // heartbeat过期，常见的就是某个consumer member 意外退出了，长期没发过来HeartbeatRequest
   def onExpireHeartbeat(group: GroupMetadata, memberId: String, isPending: Boolean): Unit = {
     group.inLock {
       if (group.is(Dead)) {
@@ -1805,9 +1810,11 @@ private[group] class GroupCoordinator(
       } else if (!group.has(memberId)) {
         debug(s"Member $memberId has already been removed from the group.")
       } else {
+        // 找出是哪个consumer member
         val member = group.get(memberId)
         if (!member.hasSatisfiedHeartbeat) {
           info(s"Member ${member.memberId} in group ${group.groupId} has failed, removing it from the group")
+          // 移除此Member，并计划开启下一轮reblanace
           removeMemberAndUpdateGroup(group, member, s"removing member ${member.memberId} on heartbeat expiration")
         }
       }
