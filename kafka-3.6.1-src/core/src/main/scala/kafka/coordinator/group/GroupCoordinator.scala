@@ -694,36 +694,44 @@ private[group] class GroupCoordinator(
                        leavingMembers: List[MemberIdentity],
                        responseCallback: LeaveGroupResult => Unit): Unit = {
 
+    // 实际执行从一个consumer group 移除下面 某个 consumer member 动作的地方
     def removeCurrentMemberFromGroup(group: GroupMetadata, memberId: String, reason: Option[String]): Unit = {
+      // 获取 MemberMetadata
       val member = group.get(memberId)
+      // ”离开的原因“
       val leaveReason = reason.getOrElse("not provided")
       removeMemberAndUpdateGroup(group, member, s"Removing member $memberId on LeaveGroup; client reason: $leaveReason")
+      // 移除此consumer member的 heartbeat炼狱
       removeHeartbeatForLeavingMember(group, member.memberId)
       info(s"Member $member has left group $groupId through explicit `LeaveGroup`; client reason: $leaveReason")
     }
 
+    // Group 状态校验
     validateGroupStatus(groupId, ApiKeys.LEAVE_GROUP) match {
       case Some(error) =>
         responseCallback(leaveError(error, List.empty))
       case None =>
+        // 根据 Group Id 获取 GroupMetadata
         groupManager.getGroup(groupId) match {
           case None =>
             responseCallback(leaveError(Errors.NONE, leavingMembers.map {leavingMember =>
               memberLeaveError(leavingMember, Errors.UNKNOWN_MEMBER_ID)
             }))
           case Some(group) =>
+            // GroupMetadata
             group.inLock {
               if (group.is(Dead)) {
                 responseCallback(leaveError(Errors.COORDINATOR_NOT_AVAILABLE, List.empty))
               } else {
                 val memberErrors = leavingMembers.map { leavingMember =>
+                  // 要离开的，consumer member 的一些信息
                   val memberId = leavingMember.memberId
                   val groupInstanceId = Option(leavingMember.groupInstanceId)
                   val reason = Option(leavingMember.reason)
 
                   // The LeaveGroup API allows administrative removal of members by GroupInstanceId
                   // in which case we expect the MemberId to be undefined.
-                  if (memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID) {
+                  if (memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID) { // memberId 为 空 的场景
                     groupInstanceId.flatMap(group.currentStaticMemberId) match {
                       case Some(currentMemberId) =>
                         removeCurrentMemberFromGroup(group, currentMemberId, reason)
@@ -731,22 +739,27 @@ private[group] class GroupCoordinator(
                       case None =>
                         memberLeaveError(leavingMember, Errors.UNKNOWN_MEMBER_ID)
                     }
-                  } else if (group.isPendingMember(memberId)) {
+                  } else if (group.isPendingMember(memberId)) { // ”要离开的是 正在等待加入的“
+                    // consumer group 内存中移除 + 2个炼狱的 checkAndComplete
                     removePendingMemberAndUpdateGroup(group, memberId)
                     heartbeatPurgatory.checkAndComplete(MemberKey(group.groupId, memberId))
                     info(s"Pending member with memberId=$memberId has left group ${group.groupId} " +
                       s"through explicit `LeaveGroup` request")
                     memberLeaveError(leavingMember, Errors.NONE)
                   } else {
+                    // 最常见的情况，Consumer group 状态为stable 情况下，某个其下的consumer member想要离开了
+                    // 1. 校验 consumer member 状态
                     val memberError = validateCurrentMember(
                       group,
                       memberId,
                       groupInstanceId,
                       operation = "leave-group"
                     ).getOrElse {
+                      // 2. 真正的移除逻辑
                       removeCurrentMemberFromGroup(group, memberId, reason)
                       Errors.NONE
                     }
+                    // 3. 以memberError构建返回LeaveMemberResponse
                     memberLeaveError(leavingMember, memberError)
                   }
                 }
@@ -1527,6 +1540,7 @@ private[group] class GroupCoordinator(
     else
       new DelayedJoin(this, group, group.rebalanceTimeoutMs)
 
+    // consumer group state -> PreparingRebalance
     group.transitionTo(PreparingRebalance)
 
     info(s"Preparing to rebalance group ${group.groupId} in state ${group.currentState} with old generation " +
@@ -1546,8 +1560,14 @@ private[group] class GroupCoordinator(
     // to invoke the callback before removing the member. We return UNKNOWN_MEMBER_ID so that the consumer
     // will retry the JoinGroup request if is still active.
     group.maybeInvokeJoinCallback(member, JoinGroupResult(JoinGroupRequest.UNKNOWN_MEMBER_ID, Errors.UNKNOWN_MEMBER_ID))
+
+    // group内存中移除
     group.remove(member.memberId)
 
+    // Q：当一个 Consumer Group 下某个 Consumer Member 要离开时会发生什么？
+    // A: 根据group状态来决定
+    //    group状态是 Stable | CompletingRebalance -> Rebalance
+    //    group状态是 PreparingRebalance -> DelayedJoin 炼狱 尝试结束
     group.currentState match {
       case Dead | Empty =>
       case Stable | CompletingRebalance => maybePrepareRebalance(group, reason)
@@ -1556,8 +1576,9 @@ private[group] class GroupCoordinator(
   }
 
   private def removePendingMemberAndUpdateGroup(group: GroupMetadata, memberId: String): Unit = {
+    // consumer group 中 移除 某个 consumer member
     group.remove(memberId)
-
+    // 如果当前 group 状态是 PreparingRebalance，那就尝试结束一下 炼狱 中的 组件
     if (group.is(PreparingRebalance)) {
       rebalancePurgatory.checkAndComplete(GroupJoinKey(group.groupId))
     }

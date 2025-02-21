@@ -2044,16 +2044,19 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   def handleLeaveGroupRequest(request: RequestChannel.Request): CompletableFuture[Unit] = {
+    // 取出LeaveGroupRequest
     val leaveGroupRequest = request.body[LeaveGroupRequest]
 
     if (!authHelper.authorize(request.context, READ, GROUP, leaveGroupRequest.data.groupId)) {
       requestHelper.sendMaybeThrottle(request, leaveGroupRequest.getErrorResponse(Errors.GROUP_AUTHORIZATION_FAILED.exception))
       CompletableFuture.completedFuture[Unit](())
     } else {
+      // 调用groupCoordinator能力
       groupCoordinator.leaveGroup(
         request.context,
         leaveGroupRequest.normalizedData()
       ).handle[Unit] { (response, exception) =>
+        // 发送LeaveGroupResponseData
         if (exception != null) {
           requestHelper.sendMaybeThrottle(request, leaveGroupRequest.getErrorResponse(exception))
         } else {

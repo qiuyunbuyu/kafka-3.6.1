@@ -189,8 +189,8 @@ private[group] class GroupCoordinatorAdapter(
     context: RequestContext,
     request: LeaveGroupRequestData
   ): CompletableFuture[LeaveGroupResponseData] = {
+    // future + callback模式
     val future = new CompletableFuture[LeaveGroupResponseData]()
-
     def callback(leaveGroupResult: LeaveGroupResult): Unit = {
       future.complete(new LeaveGroupResponseData()
         .setErrorCode(leaveGroupResult.topLevelError.code)
@@ -202,7 +202,7 @@ private[group] class GroupCoordinatorAdapter(
         }.asJava)
       )
     }
-
+    // 调coordinator能力
     coordinator.handleLeaveGroup(
       request.groupId,
       request.members.asScala.toList,
