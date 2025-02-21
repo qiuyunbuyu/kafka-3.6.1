@@ -220,6 +220,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   // [key: TopicPartition, value: CommitRecordMetadataAndOffset]
   private val offsets = new mutable.HashMap[TopicPartition, CommitRecordMetadataAndOffset]
   private val pendingOffsetCommits = new mutable.HashMap[TopicPartition, OffsetAndMetadata]
+  // Long -> producerId
   private val pendingTransactionalOffsetCommits = new mutable.HashMap[Long, mutable.Map[TopicPartition, CommitRecordMetadataAndOffset]]()
   private var receivedTransactionalOffsetCommits = false
   private var receivedConsumerOffsetCommits = false
@@ -668,13 +669,15 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   }
 
   /**
+   * 整个offset合理的提交的写入过程是 cache(pendingOffsetCommits) -> log file(_consumer_offsets_X) -> cache(offsets)
    * onOffsetCommitAppend
    * @param topicIdPartition
    * @param offsetWithCommitRecordMetadata
    */
   def onOffsetCommitAppend(topicIdPartition: TopicIdPartition, offsetWithCommitRecordMetadata: CommitRecordMetadataAndOffset): Unit = {
     val topicPartition = topicIdPartition.topicPartition
-    //
+    // 合理的情况是最初 pendingOffsetCommits保存了topicPartition 相关的要提交的  offset
+    // 1. 先保存至 offsets: HashMap[TopicPartition, CommitRecordMetadataAndOffset]
     if (pendingOffsetCommits.contains(topicPartition)) {
       // appendedBatchOffset is empty, throw exception
       if (offsetWithCommitRecordMetadata.appendedBatchOffset.isEmpty)
@@ -685,7 +688,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
         offsets.put(topicPartition, offsetWithCommitRecordMetadata)
     }
 
-    // handle pendingOffsetCommits
+    // 2. 从pendingOffsetCommits 移除相关前置保存的
     pendingOffsetCommits.get(topicPartition) match {
       // success put
       case Some(stagedOffset) if offsetWithCommitRecordMetadata.offsetAndMetadata == stagedOffset =>
@@ -703,9 +706,10 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
       case _ =>
     }
   }
-
+  // 准备 提交 consumer offset
   def prepareOffsetCommit(offsets: Map[TopicIdPartition, OffsetAndMetadata]): Unit = {
     receivedConsumerOffsetCommits = true
+    // 将待提交的 consumer offset 保存至 pendingOffsetCommits 中
     offsets.forKeyValue { (topicIdPartition, offsetAndMetadata) =>
       pendingOffsetCommits += topicIdPartition.topicPartition -> offsetAndMetadata
     }

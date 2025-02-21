@@ -969,18 +969,21 @@ private[group] class GroupCoordinator(
     validateGroupStatus(groupId, ApiKeys.OFFSET_COMMIT) match {
       case Some(error) => responseCallback(offsetMetadata.map { case (k, _) => k -> error })
       case None =>
+
+        // 根据groupId获取到此consumer member 下的 GroupMetadata
         groupManager.getGroup(groupId) match {
+          // 没能获取到GroupMetadata
           case None =>
-            if (generationId < 0) {
+            if (generationId < 0) { // 对应 assign 模式，不需要 consumer group管理，也是合理的，也让提交
               // the group is not relying on Kafka for group management, so allow the commit
               val group = groupManager.addGroup(new GroupMetadata(groupId, Empty, time))
               doCommitOffsets(group, memberId, groupInstanceId, generationId, offsetMetadata,
                 responseCallback, requestLocal)
-            } else {
+            } else { // 非 assign 模式，但是没能获取到 GroupMetadata  -> 非法状态
               // or this is a request coming from an older generation. either way, reject the commit
               responseCallback(offsetMetadata.map { case (k, _) => k -> Errors.ILLEGAL_GENERATION })
             }
-
+          // 正常获取到了 GroupMetadata 的情况
           case Some(group) =>
             doCommitOffsets(group, memberId, groupInstanceId, generationId, offsetMetadata,
               responseCallback, requestLocal)
@@ -1030,6 +1033,7 @@ private[group] class GroupCoordinator(
     groupInstanceId: Option[String],
     isTransactional: Boolean
   ): Option[Errors] = {
+
     if (group.is(Dead)) {
       Some(Errors.COORDINATOR_NOT_AVAILABLE)
     } else if (generationId < 0 && group.is(Empty)) {
@@ -1069,6 +1073,7 @@ private[group] class GroupCoordinator(
                               responseCallback: immutable.Map[TopicIdPartition, Errors] => Unit,
                               requestLocal: RequestLocal): Unit = {
     group.inLock {
+      // 再次进行状态校验
       val validationErrorOpt = validateOffsetCommit(
         group,
         generationId,
@@ -1076,7 +1081,7 @@ private[group] class GroupCoordinator(
         groupInstanceId,
         isTransactional = false
       )
-
+      // 上面校验存在相关错误
       if (validationErrorOpt.isDefined) {
         responseCallback(offsetMetadata.map { case (k, _) => k -> validationErrorOpt.get })
       } else {

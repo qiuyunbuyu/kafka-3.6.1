@@ -501,6 +501,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     request: RequestChannel.Request,
     requestLocal: RequestLocal
   ): CompletableFuture[Unit] = {
+    // 取出OffsetCommitRequest
     val offsetCommitRequest = request.body[OffsetCommitRequest]
 
     // Reject the request if not authorized to the group
@@ -514,34 +515,44 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestHelper.sendMaybeThrottle(request, offsetCommitRequest.getErrorResponse(Errors.UNSUPPORTED_VERSION.exception))
       CompletableFuture.completedFuture[Unit](())
     } else {
+       // 正常提交流程入口
       val authorizedTopics = authHelper.filterByAuthorized(
         request.context,
         READ,
         TOPIC,
         offsetCommitRequest.data.topics.asScala
       )(_.name)
-
+      // response 构建
       val responseBuilder = new OffsetCommitResponse.Builder()
       val authorizedTopicsRequest = new mutable.ArrayBuffer[OffsetCommitRequestData.OffsetCommitRequestTopic]()
-      offsetCommitRequest.data.topics.forEach { topic =>
+
+      // 遍历 OffsetCommitRequest 中的 List<OffsetCommitRequestTopic>
+      // 咔咔一长段，其实就是从MetadataCache中判断 Topic-Partition是否都存在
+      offsetCommitRequest.data.topics.forEach { topic => // 第一重 topic 级别循环
+        // 权限错误
         if (!authorizedTopics.contains(topic.name)) {
           // If the topic is not authorized, we add the topic and all its partitions
           // to the response with TOPIC_AUTHORIZATION_FAILED.
           responseBuilder.addPartitions[OffsetCommitRequestData.OffsetCommitRequestPartition](
             topic.name, topic.partitions, _.partitionIndex, Errors.TOPIC_AUTHORIZATION_FAILED)
         } else if (!metadataCache.contains(topic.name)) {
+          // 判断topic是否存在
           // If the topic is unknown, we add the topic and all its partitions
           // to the response with UNKNOWN_TOPIC_OR_PARTITION.
           responseBuilder.addPartitions[OffsetCommitRequestData.OffsetCommitRequestPartition](
             topic.name, topic.partitions, _.partitionIndex, Errors.UNKNOWN_TOPIC_OR_PARTITION)
         } else {
+
           // Otherwise, we check all partitions to ensure that they all exist.
+          // 不仅要判断topic是否存在，还需要判断其下的partition是否存在
+          // 构建topicWithValidPartitions集合，存储 Topic-Partition-x均存在的 有效的集合
           val topicWithValidPartitions = new OffsetCommitRequestData.OffsetCommitRequestTopic().setName(topic.name)
 
-          topic.partitions.forEach { partition =>
+          topic.partitions.forEach { partition => // 第二重 topic下的 Partition 级别循环
             if (metadataCache.getPartitionInfo(topic.name, partition.partitionIndex).nonEmpty) {
               topicWithValidPartitions.partitions.add(partition)
             } else {
+              // partition不存在 -> UNKNOWN_TOPIC_OR_PARTITION
               responseBuilder.addPartition(topic.name, partition.partitionIndex, Errors.UNKNOWN_TOPIC_OR_PARTITION)
             }
           }
@@ -552,6 +563,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
       }
 
+      // *** consumer member committing Offset存储的核心流程
       if (authorizedTopicsRequest.isEmpty) {
         requestHelper.sendMaybeThrottle(request, responseBuilder.build())
         CompletableFuture.completedFuture(())
@@ -618,6 +630,8 @@ class KafkaApis(val requestChannel: RequestChannel,
     responseBuilder: OffsetCommitResponse.Builder,
     requestLocal: RequestLocal
   ): CompletableFuture[Unit] = {
+
+    // 这里的Topics字段 设置为了上一轮经过校验的 authorizedTopicsRequest
     val offsetCommitRequestData = new OffsetCommitRequestData()
       .setGroupId(offsetCommitRequest.data.groupId)
       .setMemberId(offsetCommitRequest.data.memberId)
@@ -626,6 +640,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       .setGroupInstanceId(offsetCommitRequest.data.groupInstanceId)
       .setTopics(authorizedTopicsRequest.asJava)
 
+    // 完成流程 + 获取结果 + 发送响应
     groupCoordinator.commitOffsets(
       request.context,
       offsetCommitRequestData,

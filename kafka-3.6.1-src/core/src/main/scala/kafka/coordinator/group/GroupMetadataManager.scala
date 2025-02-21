@@ -373,6 +373,10 @@ class GroupMetadataManager(brokerId: Int,
 
   /**
    * Store offsets by appending it to the replicated log and then inserting to cache
+   *
+   * 前面绕了一大圈，都是为了"合理的"走到这里, 这里要做2件事情
+   * 1. 写入groupId对应的 _consumer_offstes_x中
+   * 2. 写入cache中，所谓cache其实也就是 GroupMetadata中的一个Map，offsets = HashMap[TopicPartition, CommitRecordMetadataAndOffset]
    */
   def storeOffsets(group: GroupMetadata,
                    consumerId: String,
@@ -381,6 +385,8 @@ class GroupMetadataManager(brokerId: Int,
                    producerId: Long = RecordBatch.NO_PRODUCER_ID,
                    producerEpoch: Short = RecordBatch.NO_PRODUCER_EPOCH,
                    requestLocal: RequestLocal = RequestLocal.NoCaching): Unit = {
+
+    // 首先要校验offsetAndMetadata的大小，”The maximum allowed metadata for any offset commit.“
     // first filter out partitions with offset metadata size exceeding limit
     val filteredOffsetMetadata = offsetMetadata.filter { case (_, offsetAndMetadata) =>
       validateOffsetMetadataLength(offsetAndMetadata.metadata)
@@ -393,6 +399,7 @@ class GroupMetadataManager(brokerId: Int,
           s"should be avoided.")
     }
 
+    // 先要判断是不是 TxnOffsetCommit
     val isTxnOffsetCommit = producerId != RecordBatch.NO_PRODUCER_ID
     // construct the message set to append
     if (filteredOffsetMetadata.isEmpty) {
@@ -400,29 +407,39 @@ class GroupMetadataManager(brokerId: Int,
       val commitStatus = offsetMetadata.map { case (k, _) => k -> Errors.OFFSET_METADATA_TOO_LARGE }
       responseCallback(commitStatus)
     } else {
+      // 根据groupId来获取此 conusmer group，被__consumer_offset下面哪个 Partition 管
       getMagic(partitionFor(group.groupId)) match {
         case Some(magicValue) =>
           // We always use CREATE_TIME, like the producer. The conversion to LOG_APPEND_TIME (if necessary) happens automatically.
           val timestampType = TimestampType.CREATE_TIME
           val timestamp = time.milliseconds()
 
+          // 构建待存储到文件系统的 SimpleRecords, 再要看__consumer_offset里面存储了啥，就不要去网上搜了吧~~
+          // key是啥？ -> [groupId - topic - Partition]
+          // value是啥？ -> [ OffsetAndMetadata ]
           val records = filteredOffsetMetadata.map { case (topicIdPartition, offsetAndMetadata) =>
             val key = GroupMetadataManager.offsetCommitKey(group.groupId, topicIdPartition.topicPartition)
             val value = GroupMetadataManager.offsetCommitValue(offsetAndMetadata, interBrokerProtocolVersion)
             new SimpleRecord(timestamp, key, value)
           }
           val offsetTopicPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, partitionFor(group.groupId))
+
+          // 分配内存
           val buffer = ByteBuffer.allocate(AbstractRecords.estimateSizeInBytes(magicValue, compressionType, records.asJava))
 
           if (isTxnOffsetCommit && magicValue < RecordBatch.MAGIC_VALUE_V2)
             throw Errors.UNSUPPORTED_FOR_MESSAGE_FORMAT.exception("Attempting to make a transaction offset commit with an invalid magic: " + magicValue)
 
+          // records准备写入，先在内存中准备构建出来代写到文件系统的数据的
           val builder = MemoryRecords.builder(buffer, magicValue, compressionType, timestampType, 0L, time.milliseconds(),
             producerId, producerEpoch, 0, isTxnOffsetCommit, RecordBatch.NO_PARTITION_LEADER_EPOCH)
 
           records.foreach(builder.append)
+          // 待写入数据准备好了，现在都在内存中了 [offsetTopicPartition <-> MemoryRecords]
           val entries = Map(offsetTopicPartition -> builder.build())
 
+          // ** ”putCacheCallback“ -> ”为了把数据放入cache的回调“
+          // 联系函数上的注释就知道，是先调用ReplicaManager的能力将数据写入文件系统，然后利用此回调函数，再把对应数据放入GroupMetadata维护的cache中
           // set the callback function to insert offsets into cache after log append completed
           def putCacheCallback(responseStatus: Map[TopicPartition, PartitionResponse]): Unit = {
             // the append response should only contain the topics partition
@@ -436,12 +453,15 @@ class GroupMetadataManager(brokerId: Int,
 
             val responseError = group.inLock {
               if (status.error == Errors.NONE) {
+                // 将CommitRecordMetadataAndOffset据写入GroupMetadata的 ”cache“中
                 if (!group.is(Dead)) {
                   filteredOffsetMetadata.forKeyValue { (topicIdPartition, offsetAndMetadata) =>
                     if (isTxnOffsetCommit)
                       group.onTxnOffsetCommitAppend(producerId, topicIdPartition, CommitRecordMetadataAndOffset(Some(status.baseOffset), offsetAndMetadata))
-                    else
+                    else {
+                      // 保存至 offsets = new mutable.HashMap[TopicPartition, CommitRecordMetadataAndOffset]
                       group.onOffsetCommitAppend(topicIdPartition, CommitRecordMetadataAndOffset(Some(status.baseOffset), offsetAndMetadata))
+                    }
                   }
                 }
 
@@ -497,17 +517,20 @@ class GroupMetadataManager(brokerId: Int,
             responseCallback(commitStatus)
           }
 
+          // offset 提交前的 准备 工作
+          // TxnOffsetCommit提交场景
           if (isTxnOffsetCommit) {
             group.inLock {
               addProducerGroup(producerId, group.groupId)
               group.prepareTxnOffsetCommit(producerId, offsetMetadata)
             }
           } else {
+          // consumer offset commit提交场景
             group.inLock {
               group.prepareOffsetCommit(offsetMetadata)
             }
           }
-
+          // 先利用ReplicaManager写入LogFile，再执行putCacheCallback 写入 cache -> GroupMetadata:offsets中
           appendForGroup(group, entries, requestLocal, putCacheCallback)
 
         case None =>
