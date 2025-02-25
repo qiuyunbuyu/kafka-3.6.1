@@ -1319,6 +1319,8 @@ private[group] class GroupCoordinator(
    * Complete existing DelayedHeartbeats for the given member and schedule the next one
    */
   private def completeAndScheduleNextHeartbeatExpiration(group: GroupMetadata, member: MemberMetadata): Unit = {
+    // ** 注意这里的 member.sessionTimeoutMs，结合consumer客户端 GroupRebalanceConfig中的 session.timeout.ms
+    // 这个参数是consumer member设置的，要是这个时间内，还没收到consumer member发来的heartbeat，就要把它移除，并开启新一轮rebalance了
     completeAndScheduleNextExpiration(group, member, member.sessionTimeoutMs)
   }
 

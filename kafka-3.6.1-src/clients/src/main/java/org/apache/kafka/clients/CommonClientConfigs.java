@@ -160,6 +160,9 @@ public class CommonClientConfigs {
                                                        + "This can be used in combination with a larger session timeout to avoid group rebalances caused by transient unavailability "
                                                        + "(e.g. process restarts). If not set, the consumer will join the group as a dynamic member, which is the traditional behavior.";
 
+    // kafka 中Consumer Group 本质是一个 分布式成员管理/任务分配的模型, 所以时间就是一个很敏感的参数
+    // consumer client时间参数1：ProtocolType.CONSUMER | max.poll.interval.ms <-> 默认300000
+    // 关于这个参数，对[普通消费者] 和 [静态消费者] 不同的影响，在AbstractCoordinator里的 (heartbeat.pollTimeoutExpired(now)) 写了一点注释，可以看一下
     public static final String MAX_POLL_INTERVAL_MS_CONFIG = "max.poll.interval.ms";
     public static final String MAX_POLL_INTERVAL_MS_DOC = "The maximum delay between invocations of poll() when using "
                                                           + "consumer group management. This places an upper bound on the amount of time that the consumer can be idle "
@@ -169,12 +172,15 @@ public class CommonClientConfigs {
                                                           + "Instead, the consumer will stop sending heartbeats and partitions will be reassigned "
                                                           + "after expiration of <code>session.timeout.ms</code>. This mirrors the behavior of a static consumer which has shutdown.";
 
+    // consumer client时间参数1：ProtocolType.CONNECT | rebalance.timeout.ms <-> TimeUnit.MINUTES.toMillis(1)
     public static final String REBALANCE_TIMEOUT_MS_CONFIG = "rebalance.timeout.ms";
     public static final String REBALANCE_TIMEOUT_MS_DOC = "The maximum allowed time for each worker to join the group "
                                                           + "once a rebalance has begun. This is basically a limit on the amount of time needed for all tasks to "
                                                           + "flush any pending data and commit offsets. If the timeout is exceeded, then the worker will be removed "
                                                           + "from the group, which will cause offset commit failures.";
 
+    // consumer client时间参数2：session.timeout.ms <-> 45000
+    // 这个参数要结合DelayHeartBeat这个延迟操作看
     public static final String SESSION_TIMEOUT_MS_CONFIG = "session.timeout.ms";
     public static final String SESSION_TIMEOUT_MS_DOC = "The timeout used to detect client failures when using "
                                                         + "Kafka's group management facility. The client sends periodic heartbeats to indicate its liveness "
@@ -183,6 +189,8 @@ public class CommonClientConfigs {
                                                         + "must be in the allowable range as configured in the broker configuration by <code>group.min.session.timeout.ms</code> "
                                                         + "and <code>group.max.session.timeout.ms</code>.";
 
+    // consumer client时间参数3：heartbeat.interval.ms <-> 3000
+    // 发送HeartBeatRequest的间隔周期
     public static final String HEARTBEAT_INTERVAL_MS_CONFIG = "heartbeat.interval.ms";
     public static final String HEARTBEAT_INTERVAL_MS_DOC = "The expected time between heartbeats to the consumer "
                                                            + "coordinator when using Kafka's group management facilities. Heartbeats are used to ensure that the "

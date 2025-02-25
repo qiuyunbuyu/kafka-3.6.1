@@ -1523,15 +1523,21 @@ public abstract class AbstractCoordinator implements Closeable {
                             markCoordinatorUnknown("session timed out without receiving a "
                                     + "heartbeat response");
                         } else if (heartbeat.pollTimeoutExpired(now)) {
-                            // 拉取消息间隔超时：会主动发送LeaveGroupRequest
-                            // the poll timeout has expired, which means that the foreground thread has stalled
-                            // in between calls to poll().
+
+                            // 这里是 [ max.poll.interval.ms: 300000 ]  发挥影响最重要的地方 与 [session.timeout.ms: 45000 ] 区别最大的是：
+                            // [max.poll.interval.ms] 表示 普通consumer member 拉取消息间隔超时，普通consumer member 会主动发送LeaveGroupRequest -> client端主动触发rebalance
+                            // [session.timeout.ms] 表示 broker端的consumer group coordinator 很久没收到 consumer member发来的heartbeatRequest了 -> server端主动触发rebalance
+
+                            // the poll timeout has expired, which means that the foreground thread has stalledin between calls to poll().
                             log.warn("consumer poll timeout has expired. This means the time between subsequent calls to poll() " +
                                 "was longer than the configured max.poll.interval.ms, which typically implies that " +
                                 "the poll loop is spending too much time processing messages. You can address this " +
                                 "either by increasing max.poll.interval.ms or by reducing the maximum size of batches " +
                                 "returned in poll() with max.poll.records.");
 
+                            // [静态消费者]，不受这个[max.poll.interval.ms]的影响，要不下面这个方法咋叫 maybexxx呢，里面会判断是不是静态消费者，普通消费者才会主动发送LeaveGroupRequest
+                            // 但是[静态消费者]对[session.timeout.ms]影响，和[普通消费者]是一致的
+                            // 所以[静态消费者]只要在[session.timeout.ms]之前回来，发送HeartbeatRequest给 consumer coordinator就可以当作“无事发生，继续消费之前的Partition”
                             maybeLeaveGroup("consumer poll timeout has expired.");
                         } else if (!heartbeat.shouldHeartbeat(now)) {
                             // poll again after waiting for the retry backoff in case the heartbeat failed or the

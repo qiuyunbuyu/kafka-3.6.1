@@ -46,7 +46,7 @@ public class GroupRebalanceConfig {
     public final boolean leaveGroupOnClose;
 
     public GroupRebalanceConfig(AbstractConfig config, ProtocolType protocolType) {
-        // 1. 心跳响应<->超时时间设置
+        // 1. DelayedHeartbeat <->心跳延迟超时时间设置
         this.sessionTimeoutMs = config.getInt(CommonClientConfigs.SESSION_TIMEOUT_MS_CONFIG);
 
         // Consumer and Connect use different config names for defining rebalance timeout
