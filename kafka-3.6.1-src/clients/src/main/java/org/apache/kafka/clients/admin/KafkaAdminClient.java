@@ -3301,7 +3301,12 @@ public class KafkaAdminClient extends AdminClient {
         return new ListConsumerGroupsResult(all);
     }
 
-    @Override
+	/**
+	 * 写的还比较抽象，但本质还是2步骤
+     * 1. FindCoordinatorRequest: 找到此GroupId 对应的 Consumer Group的 Coordinator 在哪台broker上
+     * 2. OffsetFetchRequest: 基于1的结果，再从Coordinator 的Consumer Group Metadata中获取 <TopicPartition, OffsetAndMetadata>
+	 */
+	@Override
     public ListConsumerGroupOffsetsResult listConsumerGroupOffsets(Map<String, ListConsumerGroupOffsetsSpec> groupSpecs,
                                                                    ListConsumerGroupOffsetsOptions options) {
         SimpleAdminApiFuture<CoordinatorKey, Map<TopicPartition, OffsetAndMetadata>> future =

@@ -77,7 +77,7 @@ object ConsumerGroupCommand extends Logging {
         // --delete
         consumerGroupService.deleteGroups()
       } else if (opts.options.has(opts.resetOffsetsOpt)) {
-        // --reset-offsets
+        // --reset-offsets：reset offset 入口
         val offsetsToReset = consumerGroupService.resetOffsets()
         // Export operation execution to a CSV file. Supported operations: reset-offsets.
         if (opts.options.has(opts.exportOpt)) {
@@ -438,11 +438,13 @@ object ConsumerGroupCommand extends Logging {
     }
 
     def resetOffsets(): Map[String, Map[TopicPartition, OffsetAndMetadata]] = {
-      // ListConsumerRequest: get all groupIds or specify
+      // 1. reset offset 用户输入是基于Groups的, 返回 groupIds:List[String] 列表
       val groupIds =
-        if (opts.options.has(opts.allGroupsOpt)) listConsumerGroups()
-        else opts.options.valuesOf(opts.groupOpt).asScala
-      // DescribeGroupsRequest
+        if (opts.options.has(opts.allGroupsOpt)) listConsumerGroups() // --all-groups，利用 ListGroupsRequest: get all groupIds
+        else opts.options.valuesOf(opts.groupOpt).asScala // --group 用户指定了
+
+      // 2. 使用 [DescribeGroupsRequest] ，获取Map[String, KafkaFuture[ConsumerGroupDescription]]
+      // key: group ID + value: 此Consumer group 对应的信息(ConsumerGroupDescription)，包括组内成员等
       val consumerGroups = adminClient.describeConsumerGroups(
         groupIds.asJava,
         withTimeoutMs(new DescribeConsumerGroupsOptions)
@@ -450,16 +452,28 @@ object ConsumerGroupCommand extends Logging {
 
       val result =
         consumerGroups.asScala.foldLeft(immutable.Map[String, Map[TopicPartition, OffsetAndMetadata]]()) {
+          // acc：累加器，用于存储之前处理的消费者组的结果
           case (acc, (groupId, groupDescription)) =>
             groupDescription.get.state().toString match {
+              // 只有 Consumer Group 是"Empty" | "Dead"才可以重置
               case "Empty" | "Dead" =>
+                // 1. 获取此ConsumerGroup下想要重置的Seq[TopicPartition]
                 val partitionsToReset = getPartitionsToReset(groupId)
+
+                //  2. 根据reset情况
+                //  返回 TopicPartition 对应的想要重置的 OffsetAndMetadata
+                //  支持如下重置模式：
+                //      resetToOffsetOpt, resetShiftByOpt,
+                //      resetToDatetimeOpt, resetByDurationOpt,
+                //      resetToEarliestOpt, resetToLatestOpt, resetToCurrentOpt
+                //      resetFromFileOpt
                 val preparedOffsets = prepareOffsetsToReset(groupId, partitionsToReset)
 
                 // Dry-run is the default behavior if --execute is not specified
                 val dryRun = opts.options.has(opts.dryRunOpt) || !opts.options.has(opts.executeOpt)
                 if (!dryRun) {
-                  // call adminClient to send "OffsetCommitRequest"
+                  // 3. call adminClient to send "OffsetCommitRequest"
+                  // 实际就是利用OffsetCommitRequest，把步骤2中计算出的 OffsetAndMetadata，提交给Consumer Coordinator存储
                   adminClient.alterConsumerGroupOffsets(
                     groupId,
                     preparedOffsets.asJava,
@@ -468,6 +482,7 @@ object ConsumerGroupCommand extends Logging {
                 }
                 acc.updated(groupId, preparedOffsets)
               case currentState =>
+                // 非inactive的Consumer Group 无法重置
                 printError(s"Assignments can only be reset if the group '$groupId' is inactive, but the current state is $currentState.")
                 acc.updated(groupId, Map.empty)
             }
@@ -752,10 +767,16 @@ object ConsumerGroupCommand extends Logging {
       }
     }
 
+    /**
+     * @param topicArgs 用户指定了要重置的topicArgs
+     * @return 确定要重置的Seq[TopicPartition]
+     */
     private def parseTopicPartitionsToReset(topicArgs: Seq[String]): Seq[TopicPartition] = {
       val (topicsWithPartitions, topics) = topicArgs.partition(_.contains(":"))
+      // 既指定了topic也指定了partition，直接从文本中解析出即可
       val specifiedPartitions = topicsWithPartitions.flatMap(parseTopicsWithPartitions)
 
+      // 只指定了topic，未指定具体分区，通过MetadataRequest来获取topic的Partitions信息
       val unspecifiedPartitions = if (topics.nonEmpty) {
         val descriptionMap = adminClient.describeTopics(
           topics.asJava,
@@ -768,16 +789,23 @@ object ConsumerGroupCommand extends Logging {
         }
       } else
         Seq.empty
+      // 最终返回整体
       specifiedPartitions ++ unspecifiedPartitions
     }
 
+    // 实际执行reset操作的，一定是Consumer Group -> TopicPartition-X
+    // 但是 TopicPartition-X 是基于 Topic 而言的，
+    // 所以这里就是根据 --all-topics 和 --topic，来获取涉及的 TopicPartition-X
     private def getPartitionsToReset(groupId: String): Seq[TopicPartition] = {
+      // --all-topics场景：这个哈意思呢？我就要重置Consumer Group下面所有的TopicPartition，我也不知道涉及哪些Topic的情况
       if (opts.options.has(opts.allTopicsOpt)) {
         getCommittedOffsets(groupId).keys.toSeq
       } else if (opts.options.has(opts.topicOpt)) {
+      // --topic场景：指定了具体的Topic
         val topics = opts.options.valuesOf(opts.topicOpt).asScala
         parseTopicPartitionsToReset(topics)
       } else {
+      // --from-file
         if (opts.options.has(opts.resetFromFileOpt))
           Nil
         else
@@ -785,6 +813,11 @@ object ConsumerGroupCommand extends Logging {
       }
     }
 
+    /**
+     * FindCoordinatorRequest + OffsetFetchRequest
+     * @param groupId: 一个 Conusmer Group
+     * @return 对应的Conusmer Group下的current OffsetAndMetadata：Map[TopicPartition, OffsetAndMetadata]
+     */
     private def getCommittedOffsets(groupId: String): Map[TopicPartition, OffsetAndMetadata] = {
       adminClient.listConsumerGroupOffsets(
         Collections.singletonMap(groupId, new ListConsumerGroupOffsetsSpec),
@@ -823,14 +856,28 @@ object ConsumerGroupCommand extends Logging {
       dataMap
     }
 
+    /**
+     * 从这里就可以看出为啥重置Offset需要 Consumer Group是Inactive？
+     * 因为rest之前需要获取当前的情况，然后按情况进行一个计算
+     * 如果Consumer Group是active的，那就意味着当前Consumer Offset是不稳定的, 自然也就无法计算出一个准确的 reset Consumer Offset值
+     *
+     * @param groupId 要重置的 groupId
+     * @param partitionsToReset 更进一步 要重置的 groupId 下的 Seq[TopicPartition]
+     * @return 确定这个 TopicPartition 对应要重置的 OffsetAndMetadata
+     */
     private def prepareOffsetsToReset(groupId: String,
                                       partitionsToReset: Seq[TopicPartition]): Map[TopicPartition, OffsetAndMetadata] = {
+      // [ case1: --to-offset情况 ]
       if (opts.options.has(opts.resetToOffsetOpt)) {
+        // 取到--to-offset后面的值
         val offset = opts.options.valueOf(opts.resetToOffsetOpt)
+        // 校验这个 --to-offset后面的值 是不是 在每个partition 合理的范围内(logStartOffsets, logEndOffsets)
         checkOffsetsRange(groupId, partitionsToReset.map((_, offset)).toMap).map {
           case (topicPartition, newOffset) => (topicPartition, new OffsetAndMetadata(newOffset))
         }
       } else if (opts.options.has(opts.resetToEarliestOpt)) {
+      // [ case2: --to-earliest情况 ]
+      // Map[TopicPartition, LogOffsetResult]: TopicPartition对应的logStartOffset
         val logStartOffsets = getLogStartOffsets(groupId, partitionsToReset)
         partitionsToReset.map { topicPartition =>
           logStartOffsets.get(topicPartition) match {
@@ -839,6 +886,8 @@ object ConsumerGroupCommand extends Logging {
           }
         }.toMap
       } else if (opts.options.has(opts.resetToLatestOpt)) {
+        // [ case3: to-latest情况 ]
+        // Map[TopicPartition, LogOffsetResult]: TopicPartition对应的logEndOffset
         val logEndOffsets = getLogEndOffsets(groupId, partitionsToReset)
         partitionsToReset.map { topicPartition =>
           logEndOffsets.get(topicPartition) match {
@@ -847,18 +896,25 @@ object ConsumerGroupCommand extends Logging {
           }
         }.toMap
       } else if (opts.options.has(opts.resetShiftByOpt)) {
+        // [ case4: shift-by情况 ]
+        // 1. 先获取groupId下面每个TopicPartition对应的已提交的OffsetAndMetadata，Map[TopicPartition, OffsetAndMetadata]
         val currentCommittedOffsets = getCommittedOffsets(groupId)
+        // 2. 根据shift-by的值 以及现有的值，计算出requestedOffsets(currentOffset + shiftBy)
         val requestedOffsets = partitionsToReset.map { topicPartition =>
           val shiftBy = opts.options.valueOf(opts.resetShiftByOpt)
           val currentOffset = currentCommittedOffsets.getOrElse(topicPartition,
             throw new IllegalArgumentException(s"Cannot shift offset for partition $topicPartition since there is no current committed offset")).offset
           (topicPartition, currentOffset + shiftBy)
         }.toMap
+        // 3. 校验requestedOffsets是否在合理范围
         checkOffsetsRange(groupId, requestedOffsets).map {
           case (topicPartition, newOffset) => (topicPartition, new OffsetAndMetadata(newOffset))
         }
       } else if (opts.options.has(opts.resetToDatetimeOpt)) {
+        // [ case5: to-datetime情况 ]
+        // 将字符串形式的时间转换成long型的timestamp
         val timestamp = Utils.getDateTime(opts.options.valueOf(opts.resetToDatetimeOpt))
+        // ListOffsetsRequest指定对应timestamp，获取对应的offset
         val logTimestampOffsets = getLogTimestampOffsets(groupId, partitionsToReset, timestamp)
         partitionsToReset.map { topicPartition =>
           val logTimestampOffset = logTimestampOffsets.get(topicPartition)
@@ -868,10 +924,12 @@ object ConsumerGroupCommand extends Logging {
           }
         }.toMap
       } else if (opts.options.has(opts.resetByDurationOpt)) {
+        // [ case6: by-duration情况 ]：Reset offsets to offset by duration from current timestamp
         val duration = opts.options.valueOf(opts.resetByDurationOpt)
         val durationParsed = Duration.parse(duration)
         val now = Instant.now()
         durationParsed.negated().addTo(now)
+        // 最终还是转换成了目标时间戳 timestamp
         val timestamp = now.minus(durationParsed).toEpochMilli
         val logTimestampOffsets = getLogTimestampOffsets(groupId, partitionsToReset, timestamp)
         partitionsToReset.map { topicPartition =>
@@ -882,6 +940,7 @@ object ConsumerGroupCommand extends Logging {
           }
         }.toMap
       } else if (resetPlanFromFile.isDefined) {
+        // [ case7: 从csv中解析的情况 ]
         resetPlanFromFile.map(resetPlan => resetPlan.get(groupId).map { resetPlanForGroup =>
           val requestedOffsets = resetPlanForGroup.keySet.map { topicPartition =>
             topicPartition -> resetPlanForGroup(topicPartition).offset
@@ -896,10 +955,15 @@ object ConsumerGroupCommand extends Logging {
             Map[TopicPartition, OffsetAndMetadata]()
         }).getOrElse(Map.empty)
       } else if (opts.options.has(opts.resetToCurrentOpt)) {
+        // [ case7: to-current的情况 ]
+        // 1. 先获取对应的Conusmer Group下的current OffsetAndMetadata
         val currentCommittedOffsets = getCommittedOffsets(groupId)
+
+        // 2. 将currentCommittedOffsets划分成 2个 结果集(有CommittedOffset，没有CommittedOffset)
         val (partitionsToResetWithCommittedOffset, partitionsToResetWithoutCommittedOffset) =
           partitionsToReset.partition(currentCommittedOffsets.keySet.contains(_))
 
+        // 3. 有CommittedOffset -> 现有CommittedOffset
         val preparedOffsetsForPartitionsWithCommittedOffset = partitionsToResetWithCommittedOffset.map { topicPartition =>
           (topicPartition, new OffsetAndMetadata(currentCommittedOffsets.get(topicPartition) match {
             case Some(offset) => offset.offset
@@ -907,11 +971,13 @@ object ConsumerGroupCommand extends Logging {
           }))
         }.toMap
 
+        // 4. 没有CommittedOffset -> 获取LogEndOffset
         val preparedOffsetsForPartitionsWithoutCommittedOffset = getLogEndOffsets(groupId, partitionsToResetWithoutCommittedOffset).map {
           case (topicPartition, LogOffsetResult.LogOffset(offset)) => (topicPartition, new OffsetAndMetadata(offset))
           case (topicPartition, _) => ToolsUtils.printUsageAndExit(opts.parser, s"Error getting ending offset of topic partition: $topicPartition")
         }
 
+        // 5. 组装结果集
         preparedOffsetsForPartitionsWithCommittedOffset ++ preparedOffsetsForPartitionsWithoutCommittedOffset
       } else {
         ToolsUtils.printUsageAndExit(opts.parser, "Option '%s' requires one of the following scenarios: %s".format(opts.resetOffsetsOpt, opts.allResetOffsetScenarioOpts))
@@ -1020,6 +1086,8 @@ object ConsumerGroupCommand extends Logging {
       "to specify the maximum amount of time in milliseconds to wait before the group stabilizes (when the group is just created, " +
       "or is going through some changes)."
     val CommandConfigDoc = "Property file containing configs to be passed to Admin Client and Consumer."
+
+    // Rest Offset 相关文档 ↓ 其他地方还有相关的
     val ResetOffsetsDoc = "Reset offsets of consumer group. Supports one consumer group at the time, and instances should be inactive" + nl +
       "Has 2 execution options: --dry-run (the default) to plan which offsets to reset, and --execute to update the offsets. " +
       "Additionally, the --export option is used to export the results to a CSV format." + nl +
@@ -1037,6 +1105,8 @@ object ConsumerGroupCommand extends Logging {
     val ResetToLatestDoc = "Reset offsets to latest offset."
     val ResetToCurrentDoc = "Reset offsets to current offset."
     val ResetShiftByDoc = "Reset offsets shifting current offset by 'n', where 'n' can be positive or negative."
+    // Rest Offset 相关文档 ↑
+
     val MembersDoc = "Describe members of the group. This option may be used with '--describe' and '--bootstrap-server' options only." + nl +
       "Example: --bootstrap-server localhost:9092 --describe --group group1 --members"
     val VerboseDoc = "Provide additional information, if any, when describing the group. This option may be used " +
