@@ -1143,15 +1143,23 @@ private[group] class GroupCoordinator(
     }
   }
 
+  /**
+   * 从groupMetadataCache取出对应的List[GroupOverview]
+   * @param states "The states of the groups we want to list. If empty, all groups are returned with their state."
+   * @return List[GroupOverview]
+   */
   def handleListGroups(states: Set[String]): (Errors, List[GroupOverview]) = {
+    // broker上 consumer coordinator的状态不是Active
     if (!isActive.get) {
       (Errors.COORDINATOR_NOT_AVAILABLE, List[GroupOverview]())
     } else {
       val errorCode = if (groupManager.isLoading) Errors.COORDINATOR_LOAD_IN_PROGRESS else Errors.NONE
+      // 情况1：没特别指定需要哪个state，就返回所有的consumer group
       // if states is empty, return all groups
       val groups = if (states.isEmpty)
         groupManager.currentGroups
       else {
+        // 情况2：特别指定了需要哪个state，就返回对应state的consumer group
         // try to get from groupMetadataCache[new Pool[String, GroupMetadata]]
         groupManager.currentGroups.filter(g => states.contains(g.summary.state))
       }

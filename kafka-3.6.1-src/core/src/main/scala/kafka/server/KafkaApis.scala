@@ -1884,13 +1884,16 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   def handleListGroupsRequest(request: RequestChannel.Request): CompletableFuture[Unit] = {
+    // 1. 解析出 ListGroupsRequest
     val listGroupsRequest = request.body[ListGroupsRequest]
     val hasClusterDescribe = authHelper.authorize(request.context, DESCRIBE, CLUSTER, CLUSTER_NAME, logIfDenied = false)
 
+    // 2. 调用groupCoordinator能力
     groupCoordinator.listGroups(
       request.context,
       listGroupsRequest.data
     ).handle[Unit] { (response, exception) =>
+      // 3. 根据处理结果(response, exception)返回对应listGroupsResponse
       if (exception != null) {
         requestHelper.sendMaybeThrottle(request, listGroupsRequest.getErrorResponse(exception))
       } else {

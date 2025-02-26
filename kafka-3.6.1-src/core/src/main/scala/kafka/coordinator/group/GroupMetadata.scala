@@ -157,7 +157,7 @@ private object GroupMetadata extends Logging {
  * Case class used to represent group metadata for the ListGroups API
  */
 case class GroupOverview(groupId: String, // group.id
-                         protocolType: String, // protocolType
+                         protocolType: String, // protocolType | [consumer, connect]
                          state: String) // consumer state
 
 /**
