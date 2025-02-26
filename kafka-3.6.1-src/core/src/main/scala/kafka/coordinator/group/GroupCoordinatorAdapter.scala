@@ -241,8 +241,12 @@ private[group] class GroupCoordinatorAdapter(
   ): CompletableFuture[util.List[DescribeGroupsResponseData.DescribedGroup]] = {
 
     def describeGroup(groupId: String): DescribeGroupsResponseData.DescribedGroup = {
+      // 1.
+      // 其实就是先groupMetadataCache.get(groupId)获取GroupMetadata
+      // 然后GroupMetadata.summary 来获取GroupSummary
       val (error, summary) = coordinator.handleDescribeGroup(groupId)
 
+      // 2. 根据第一步获取的GroupSummary，封装返回DescribeGroupsResponse
       new DescribeGroupsResponseData.DescribedGroup()
         .setErrorCode(error.code)
         .setGroupId(groupId)
@@ -260,6 +264,7 @@ private[group] class GroupCoordinatorAdapter(
         }.asJava)
     }
 
+    // groupIds列表中每个groupId调用上面的describeGroup函数
     CompletableFuture.completedFuture(groupIds.asScala.map(describeGroup).asJava)
   }
 

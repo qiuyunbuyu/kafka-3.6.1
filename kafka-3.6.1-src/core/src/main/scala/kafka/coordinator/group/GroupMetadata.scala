@@ -639,6 +639,11 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
     }.toList
   }
 
+  /**
+   * DescribeGroupsRequest最后就是获取了GroupSummary，封装了DescribeGroupsResponse
+   * 主要是获取了 state 和 members.toList
+   * @return GroupSummary
+   */
   def summary: GroupSummary = {
     if (is(Stable)) {
       val protocol = protocolName.orNull

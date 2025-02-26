@@ -1841,6 +1841,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     val response = new DescribeGroupsResponseData()
     val authorizedGroups = new ArrayBuffer[String]()
 
+    // 遍历List[String] groups 做权限校验
     describeRequest.data.groups.forEach { groupId =>
       if (!authHelper.authorize(request.context, DESCRIBE, GROUP, groupId)) {
         response.groups.add(DescribeGroupsResponse.groupError(
@@ -1851,7 +1852,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         authorizedGroups += groupId
       }
     }
-
+    // 调用groupCoordinator能力
     groupCoordinator.describeGroups(
       request.context,
       authorizedGroups.asJava
