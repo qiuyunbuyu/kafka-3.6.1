@@ -70,7 +70,7 @@ object ConsumerGroupCommand extends Logging {
         // --list
         consumerGroupService.listGroups()
       } else if (opts.options.has(opts.describeOpt)) {
-        // --describe
+        // --describe: describe group入口
         // the entry of "describeGroups"
         consumerGroupService.describeGroups()
       } else if (opts.options.has(opts.deleteOpt)) {
@@ -409,6 +409,12 @@ object ConsumerGroupCommand extends Logging {
         describePartitions(group, coordinator, topicPartitions.sortBy(_.partition), getPartitionOffset, consumerIdOpt, hostOpt, clientIdOpt)
     }
 
+    /**
+     * --describe consumer group时会打印出 “lag” 的 数值
+     * @param commitedOffset
+     * @param logEndOffset
+     * @return "lag"
+     */
     private def getLag(offset: Option[Long], logEndOffset: Option[Long]): Option[Long] =
       offset.filter(_ != -1).flatMap(offset => logEndOffset.map(_ - offset))
 
@@ -603,8 +609,11 @@ object ConsumerGroupCommand extends Logging {
         val state = consumerGroup.state
         // OffsetFetch Request | try get committedOffsets
         val committedOffsets = getCommittedOffsets(groupId)
+
         // The admin client returns `null` as a value to indicate that there is not committed offset for a partition.
+        // 定义了一个用于获取某个TopicPartition的committedOffsets的函数，这个函数会作为后面很多方法的入参
         def getPartitionOffset(tp: TopicPartition): Option[Long] = committedOffsets.get(tp).filter(_ != null).map(_.offset)
+
         var assignedTopicPartitions = ListBuffer[TopicPartition]()
 
         // get rowsWithConsumer
@@ -612,11 +621,12 @@ object ConsumerGroupCommand extends Logging {
           .sortBy(_.assignment.topicPartitions.size)(Ordering[Int].reverse).flatMap { consumerSummary =>
           val topicPartitions = consumerSummary.assignment.topicPartitions.asScala
           assignedTopicPartitions = assignedTopicPartitions ++ topicPartitions
-          // ListOffsetsRequest | get LEO and calculate lag
+          // ListOffsetsRequest | [ get LEO and calculate lag]
           collectConsumerAssignment(groupId, Option(consumerGroup.coordinator), topicPartitions.toList,
             getPartitionOffset, Some(s"${consumerSummary.consumerId}"), Some(s"${consumerSummary.host}"),
             Some(s"${consumerSummary.clientId}"))
         }
+
         val unassignedPartitions = committedOffsets.filterNot { case (tp, _) => assignedTopicPartitions.contains(tp) }
 
         // rowsWithoutConsumer
