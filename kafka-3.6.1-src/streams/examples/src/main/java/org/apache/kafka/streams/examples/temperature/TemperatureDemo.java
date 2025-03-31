@@ -28,6 +28,10 @@ import org.apache.kafka.streams.kstream.TimeWindows;
 import org.apache.kafka.streams.kstream.Windowed;
 import org.apache.kafka.streams.kstream.WindowedSerdes;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
@@ -68,11 +72,13 @@ public class TemperatureDemo {
     // window size within which the filtering is applied
     private static final int TEMPERATURE_WINDOW_SIZE = 5;
 
-    public static void main(final String[] args) {
 
+    public static void main(final String[] args) throws ClassNotFoundException, SQLException {
+        Class.forName("com.mysql.cj.jdbc.Driver");
+        Connection connection = DriverManager.getConnection("jdbc:mysql://localhost:3306/your_database", "your_username", "your_password");
         final Properties props = new Properties();
         props.put(StreamsConfig.APPLICATION_ID_CONFIG, "streams-temperature");
-        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "kafka8010:9092");
         props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
         props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
 
@@ -105,6 +111,22 @@ public class TemperatureDemo {
 
         // need to override key serde to Windowed<String> type
         max.to("iot-temperature-max", Produced.with(windowedSerde, Serdes.String()));
+
+        // 将处理后的数据写入MySQL
+        max.foreach((key, value) -> {
+            System.out.println(key + "--------" + value);
+            try {
+                 PreparedStatement statement = connection.prepareStatement("INSERT INTO your_table (window_start, window_end, max_temperature) VALUES (?, ?, ?)");
+                long windowStart = key.window().start();
+                long windowEnd = key.window().end();
+                statement.setLong(1, windowStart);
+                statement.setLong(2, windowEnd);
+                statement.setString(3, value);
+                statement.executeUpdate();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
 
         final KafkaStreams streams = new KafkaStreams(builder.build(), props);
         final CountDownLatch latch = new CountDownLatch(1);
