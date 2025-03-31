@@ -139,7 +139,7 @@ class DefaultApiVersionManager(
     val supportedFeatures = brokerFeatures.supportedFeatures
     val finalizedFeatures = metadataCache.features()
     val controllerApiVersions = forwardingManager.flatMap(_.controllerApiVersions)
-
+    // 处理入口
     ApiVersionsResponse.createApiVersionsResponse(
       throttleTimeMs,
       finalizedFeatures.metadataVersion().highestSupportedRecordVersion,

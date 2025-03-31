@@ -116,6 +116,10 @@ public class ApiVersionsResponse extends AbstractResponse {
         boolean enableUnstableLastVersion,
         boolean zkMigrationEnabled
     ) {
+        // 确定 ApiVersion 集合， 包含如下信息：
+        // short apiKey;
+        // short minVersion;
+        // short maxVersion;
         ApiVersionCollection apiKeys;
         if (controllerApiVersions != null) {
             apiKeys = intersectForwardableApis(
@@ -131,7 +135,7 @@ public class ApiVersionsResponse extends AbstractResponse {
                 enableUnstableLastVersion
             );
         }
-
+        // 构建Response，核心字段apiKeys
         return createApiVersionsResponse(
             throttleTimeMs,
             apiKeys,
@@ -212,6 +216,7 @@ public class ApiVersionsResponse extends AbstractResponse {
         boolean enableUnstableLastVersion
     ) {
         ApiVersionCollection apiKeys = new ApiVersionCollection();
+        // Map<ApiMessageType.ListenerType, EnumSet<ApiKeys>> 循环遍历ListenerType( ZK_BROKER, BROKER, CONTROLLER )下的所有ApiKeys
         for (ApiKeys apiKey : ApiKeys.apisForListener(listenerType)) {
             if (apiKey.minRequiredInterBrokerMagic <= minRecordVersion.value) {
                 final Optional<ApiVersion> brokerApiVersion = apiKey.toApiVersion(enableUnstableLastVersion);
@@ -299,6 +304,7 @@ public class ApiVersionsResponse extends AbstractResponse {
         if (thisVersion.apiKey() != other.apiKey())
             throw new IllegalArgumentException("thisVersion.apiKey: " + thisVersion.apiKey()
                 + " must be equal to other.apiKey: " + other.apiKey());
+        // 获取min/max version
         short minVersion = (short) Math.max(thisVersion.minVersion(), other.minVersion());
         short maxVersion = (short) Math.min(thisVersion.maxVersion(), other.maxVersion());
         return minVersion > maxVersion
