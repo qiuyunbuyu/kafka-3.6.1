@@ -224,11 +224,15 @@ public class SubscriptionState {
      * Change the assignment to the specified partitions provided by the user,
      * note this is different from {@link #assignFromSubscribed(Collection)}
      * whose input partitions are provided from the subscribed topics.
+     *
+     * 更新了2个容器：
+     * - PartitionStates<TopicPartitionState> assignment
+     * - Set<String> subscription
      */
     public synchronized boolean assignFromUser(Set<TopicPartition> partitions) {
         // 1. set SubscriptionType-USER_ASSIGNED
         setSubscriptionType(SubscriptionType.USER_ASSIGNED);
-
+        // 如果 新/旧 assignment 是一致的，相当于 无事发生
         if (this.assignment.partitionSet().equals(partitions))
             return false;
 
@@ -238,17 +242,21 @@ public class SubscriptionState {
         // 2个临时对象
         Set<String> manualSubscribedTopics = new HashSet<>();
         Map<TopicPartition, TopicPartitionState> partitionToState = new HashMap<>();
+
+        // 遍历全部新增的partitions
         for (TopicPartition partition : partitions) {
+            // 从 [ LinkedHashMap<TopicPartition, S> ] 获取 partition的状态
             TopicPartitionState state = assignment.stateValue(partition);
             // 第一次添加
             if (state == null)
                 // *会设置该TP的FetchState为FetchStates.INITIALIZING
                 state = new TopicPartitionState();
 
-            // 更新临时对象
+            // 更新临时对象 Map
             partitionToState.put(partition, state);
             manualSubscribedTopics.add(partition.topic());
         }
+
         // 3. PartitionStates save info
         // 更新了SubscriptionState中2个存储信息的对象
         this.assignment.set(partitionToState);
@@ -1054,6 +1062,7 @@ public class SubscriptionState {
     }
 
     /**
+     * FetchState
      * An enumeration of all the possible fetch states. The state transitions are encoded in the values returned by
      * {@link FetchState#validTransitions}.
      */

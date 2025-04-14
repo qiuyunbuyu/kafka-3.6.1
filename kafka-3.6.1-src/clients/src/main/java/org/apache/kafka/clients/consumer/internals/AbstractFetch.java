@@ -689,6 +689,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
     public void clearBufferedDataForUnassignedPartitions(final Collection<TopicPartition> assignedPartitions) {
         final Iterator<CompletedFetch<K, V>> completedFetchesItr = completedFetches.iterator();
 
+        // 1. completedFetches清除
         while (completedFetchesItr.hasNext()) {
             final CompletedFetch<K, V> completedFetch = completedFetchesItr.next();
             final TopicPartition tp = completedFetch.partition;
@@ -699,7 +700,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                 completedFetchesItr.remove();
             }
         }
-
+        // 2. nextInLineFetch清除
         if (nextInLineFetch != null && !assignedPartitions.contains(nextInLineFetch.partition)) {
             nextInLineFetch.drain();
             nextInLineFetch = null;

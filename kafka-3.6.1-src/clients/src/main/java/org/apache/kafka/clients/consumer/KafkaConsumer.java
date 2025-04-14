@@ -1248,6 +1248,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * metadata change. Note that it is not possible to use both manual partition assignment with {@link #assign(Collection)}
      * and group assignment with {@link #subscribe(Collection, ConsumerRebalanceListener)}.
      * <p>
+     * 如果 auto-commit 是开启的，会在 新assignment 替换 旧assignment 之前，做一次异步提交
      * If auto-commit is enabled, an async commit (based on the old assignment) will be triggered before the new
      * assignment replaces the old one.
      *
@@ -1271,20 +1272,21 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     if (Utils.isBlank(topic))
                         throw new IllegalArgumentException("Topic partitions to assign to cannot have null or empty topic");
                 }
-				// 2.
+				// 2. 在 assign 新的之前，清除旧的 已经Fetch到的数据
                 fetcher.clearBufferedDataForUnassignedPartitions(partitions);
 
-                // 3.
+                // 3. 如果 auto-commit 是开启的，会在 新assignment 替换 旧assignment 之前，做一次异步提交
 	            // make sure the offsets of topic partitions the consumer is unsubscribing from
                 // are committed since there will be no following rebalance
                 if (coordinator != null)
                     this.coordinator.maybeAutoCommitOffsetsAsync(time.milliseconds());
 
-				// 4.
+				// 4. 更新 subscriptions 和 metadata
                 log.info("Assigned to partition(s): {}", Utils.join(partitions, ", "));
 				// SubscriptionState to save info and update metadata
 	            // consumer以"TP"来assign时对SubscriptionState调用，来更新“状态”
                 if (this.subscriptions.assignFromUser(new HashSet<>(partitions)))
+					// 标志需要更新 metadata， 网络组件NetworkClient会根据标志来发送MetadataRequest
                     metadata.requestUpdateForNewTopics();
             }
         } finally {
