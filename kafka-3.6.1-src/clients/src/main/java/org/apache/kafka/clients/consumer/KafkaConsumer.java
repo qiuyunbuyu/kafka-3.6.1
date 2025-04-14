@@ -1392,12 +1392,14 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         acquireAndEnsureOpen();
         try {
             this.kafkaConsumerMetrics.recordPollStart(timer.currentTimeMs());
-			// check2: Subscriptions Content Check
+			// check2: Subscriptions Content Check，简单来说就是判断 subscriptionType == SubscriptionType.NONE
+	        // 以为无论是 subscribe 还是 assign 模式，走到这里subscriptionType都不应该是 null 了
             if (this.subscriptions.hasNoSubscriptionOrUserAssignment()) {
                 throw new IllegalStateException("Consumer is not subscribed to any topics or assigned any partitions");
             }
-
+			// 循环“pull”逻辑
             do {
+				// * 如果 poll过程中，有另一个线程调用了 consumer.wakeup()方法，当前线程会感知到，并抛出 WakeupException 异常
                 client.maybeTriggerWakeup();
 
 				// *1 get partition allocation plan
@@ -1450,17 +1452,19 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
 	/**
 	 * Consumer group initialization & partition assignment
+	 * 目标1：获取Metadata + 成组[ subscribe模式 ]
+	 * 目标2：知道从哪里开始 Fetch
 	 * @param timer
 	 * @param waitForJoinGroup
 	 * @return
 	 */
     boolean updateAssignmentMetadataIfNeeded(final Timer timer, final boolean waitForJoinGroup) {
-		// 1. coordinator.poll: Interact with the broker side ： 保证group是"active"的 + 心跳线程的处理（sub模式下）
+		// 目标1. coordinator.poll: Interact with the broker side ： 保证group是"active"的 + 心跳线程的处理（sub模式下）
 	    // if coordinator.poll(...) return true means "this consumer join consumer group successful
         if (coordinator != null && !coordinator.poll(timer, waitForJoinGroup)) {
             return false;
         }
-		// 2. Set the fetch position to the committed position (if there is one) ： 确定Fetch的位置
+		// 目标2. Set the fetch position to the committed position (if there is one) ： 确定Fetch的位置
 		//    or reset it using the offset reset policy[earliest, latest] the user has configured.
         return updateFetchPositions(timer);
     }
@@ -2679,10 +2683,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         offsetFetcher.validatePositionsIfNeeded();
 
 		// 2. if subscriptions already get "Positions", return directly
+	    // subscriptions中已经确定了从哪Fetch，就可以直接返回了
         cachedSubscriptionHasAllFetchPositions = subscriptions.hasAllFetchPositions();
         if (cachedSubscriptionHasAllFetchPositions) return true;
 
-        // 3.
+        // 3. 尝试从 broker 端的 Coordinator 来获取 Committed Offset
 	    // If there are any partitions which do not have a valid position and are not
         // awaiting reset, then we need to fetch committed offsets. We will only do a
         // coordinator lookup if there are partitions which have missing positions, so
@@ -2690,7 +2695,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         // by always ensuring that assigned partitions have an initial position.
         if (coordinator != null && !coordinator.refreshCommittedOffsetsIfNeeded(timer)) return false;
 
-        // 4.
+        // 4. 也没能从Coordinator里面获取到从哪Fetch，那就根据 策略使用ListOffsetRequest来获取
 	    // If there are partitions still needing a position and a reset policy is defined,
         // request reset using the default policy. If no reset strategy is defined and there
         // are partitions with a missing position, then we will raise an exception.

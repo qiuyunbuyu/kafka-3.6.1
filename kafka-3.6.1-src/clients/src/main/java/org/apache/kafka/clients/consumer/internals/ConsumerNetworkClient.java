@@ -172,6 +172,7 @@ public class ConsumerNetworkClient implements Closeable {
      */
     public boolean awaitMetadataUpdate(Timer timer) {
         int version = this.metadata.requestUpdate();
+        // kafka consumer 阻塞至获取 所需的 metadata
         do {
             poll(timer);
         } while (this.metadata.updateVersion() == version && timer.notExpired());
@@ -295,6 +296,7 @@ public class ConsumerNetworkClient implements Closeable {
                 if (client.inFlightRequestCount() == 0)
                     pollTimeout = Math.min(pollTimeout, retryBackoffMs);
                 // 此处会调用NetworkClient poll的能力，所以这里可以看到ConsumerNetworkClient又包了一层
+                // NetworkClient poll 中会判断是否发 MetaDataRequest请求
                 client.poll(pollTimeout, timer.currentTimeMs());
             } else {
                 client.poll(0, timer.currentTimeMs());

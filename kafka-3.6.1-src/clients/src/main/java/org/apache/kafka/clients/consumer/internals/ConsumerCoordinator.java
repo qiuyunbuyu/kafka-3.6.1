@@ -541,7 +541,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         // 2. call completed Offset Commit Callbacks： 触发consumer.commitAsync(currentOffsets, new OffsetCommitCallback()...设置的回调
         invokeCompletedOffsetCommitCallbacks();
         // 3. hasAutoAssignedPartitions
-        if (subscriptions.hasAutoAssignedPartitions()) { // subscribe模式下的处理
+        if (subscriptions.hasAutoAssignedPartitions()) { // 主分支1：--------subscribe模式下的处理
             // 3.1 check RebalanceProtocol if null throw Exception
             if (protocol == null) {
                 throw new IllegalStateException("User configured " + ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG +
@@ -594,7 +594,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     return false;
                 }
             }
-        } else { // assign模式下的处理
+        } else { // 主分支2：-------- assign模式下的处理
             // 4. manually assigned partitions
             // For manually assigned partitions, we do not try to pro-actively lookup coordinator;
             // instead we only try to refresh metadata when necessary.
@@ -603,7 +603,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             // the wakeup, poll() with no channels would block for the timeout, delaying re-connection.
             // awaitMetadataUpdate() in ensureCoordinatorReady initiates new connections with configured backoff and avoids the busy loop.
             if (metadata.updateRequested() && !client.hasReadyNodes(timer.currentTimeMs())) {
-                client.awaitMetadataUpdate(timer);
+                client.awaitMetadataUpdate(timer);// 与broker建立连接，并发送MetadataRequest至更新了Metdata
             }
 
             // if there is pending coordinator requests, ensure they have a chance to be transmitted.
@@ -988,7 +988,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         // ** 1. Fetch the current committed offsets from the coordinator for a set of partitions.**
         final Map<TopicPartition, OffsetAndMetadata> offsets = fetchCommittedOffsets(initializingPartitions, timer);
-        if (offsets == null) return false;
+            if (offsets == null) return false;
 
         // 2. handle offset response
         for (final Map.Entry<TopicPartition, OffsetAndMetadata> entry : offsets.entrySet()) {
@@ -1037,6 +1037,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         }
 
         do {
+            // ** assign模式虽然不需要coordinator的member管理功能，但如果还需要 存储offset 的能力，那还是需要FindCoordinatorRequest的
             if (!ensureCoordinatorReady(timer)) return null;
 
             // contact coordinator to fetch committed offsets
@@ -1044,7 +1045,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             if (pendingCommittedOffsetRequest != null) {
                 future = pendingCommittedOffsetRequest.response;
             } else {
-                // Fetch the committed offsets for a set of partitions | OffsetFetchRequest
+                // 发送 OffsetFetchRequest：Fetch the committed offsets for a set of partitions
                 future = sendOffsetFetchRequest(partitions);
                 pendingCommittedOffsetRequest = new PendingCommittedOffsetRequest(partitions, generationForOffsetRequest, future);
             }
@@ -1063,7 +1064,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             } else {
                 return null;
             }
-        } while (timer.notExpired());
+        } while (timer.notExpired()); // 超时阻塞的模式
         return null;
     }
 
