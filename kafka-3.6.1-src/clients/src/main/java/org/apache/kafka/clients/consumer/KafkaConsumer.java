@@ -872,10 +872,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
             log.debug("Initializing the Kafka consumer");
 			// important time attach params setting
-            this.requestTimeoutMs = config.getInt(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG);
-            this.defaultApiTimeoutMs = config.getInt(ConsumerConfig.DEFAULT_API_TIMEOUT_MS_CONFIG);
-	        this.retryBackoffMs = config.getLong(ConsumerConfig.RETRY_BACKOFF_MS_CONFIG);
+            this.requestTimeoutMs = config.getInt(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG); // 30000
+            this.defaultApiTimeoutMs = config.getInt(ConsumerConfig.DEFAULT_API_TIMEOUT_MS_CONFIG); // 60000
+	        this.retryBackoffMs = config.getLong(ConsumerConfig.RETRY_BACKOFF_MS_CONFIG); // 100
 
+	        // Fetch过程中的相关Metrics
             this.time = Time.SYSTEM;
             this.metrics = createMetrics(config, time);
 	        FetchMetricsManager fetchMetricsManager = createFetchMetricsManager(metrics);
@@ -888,15 +889,17 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             this.keyDeserializer = createKeyDeserializer(config, keyDeserializer);
             this.valueDeserializer = createValueDeserializer(config, valueDeserializer);
 
-			// OffsetResetStrategy
-	        // 初始化SubscriptionState
+	        // 初始化SubscriptionState，包含后面需要的不少重要的信息：
+	        // subscriptionType
+	        // PartitionStates<TopicPartitionState> assignment
+	        // OffsetResetStrategy
             this.subscriptions = createSubscriptionState(config, logContext);
 
 			// clusterResourceListeners
             ClusterResourceListeners clusterResourceListeners = configureClusterResourceListeners(this.keyDeserializer,
                     this.valueDeserializer, metrics.reporters(), interceptorList);
 
-			// metadata
+			// *** metadata: 把上面的SubscriptionState 又包了一层
             this.metadata = new ConsumerMetadata(config, subscriptions, logContext, clusterResourceListeners);
 			// broker setting
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config);
@@ -906,7 +909,8 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             this.isolationLevel = createIsolationLevel(config);
 
             ApiVersions apiVersions = new ApiVersions();
-			// conusmerNetClient[init]
+
+			// conusmerNetClient[init]：初始化 网络通信层
             this.client = createConsumerNetworkClient(config,
                     metrics,
                     logContext,
@@ -916,7 +920,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     fetchMetricsManager.throttleTimeSensor(),
                     retryBackoffMs);
 
-			// Consumer partition allocation strategy
+			// Consumer partition allocation strategy，默认[ RangeAssignor + CooperativeStickyAssignor ]
             this.assignors = ConsumerPartitionAssignor.getAssignorInstances(
                     config.getList(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG),
                     config.originals(Collections.singletonMap(ConsumerConfig.CLIENT_ID_CONFIG, clientId))
@@ -928,7 +932,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 config.ignore(ConsumerConfig.THROW_ON_FETCH_STABLE_OFFSET_UNSUPPORTED);
                 this.coordinator = null;
             } else {
-				// consumer group coordinator
+				// consumer group coordinator: 最重要的一个部分，上面的组件，都是为了封装 ConsumerCoordinator
                 this.coordinator = new ConsumerCoordinator(groupRebalanceConfig,
                         logContext,
                         this.client,
@@ -945,7 +949,8 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                         config.getString(ConsumerConfig.CLIENT_RACK_CONFIG));
             }
 
-			// fetch: message
+			// 3类 fetch: message + offset + topicMetaData
+	        // FetchConfig{minBytes=1, maxBytes=52428800, maxWaitMs=500, fetchSize=1048576, maxPollRecords=500, ..., isolationLevel=READ_UNCOMMITTED}
             FetchConfig<K, V> fetchConfig = createFetchConfig(config, this.keyDeserializer, this.valueDeserializer);
             this.fetcher = new Fetcher<>(
                     logContext,

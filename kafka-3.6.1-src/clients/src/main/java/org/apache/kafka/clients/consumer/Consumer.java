@@ -37,15 +37,19 @@ import java.util.regex.Pattern;
 public interface Consumer<K, V> extends Closeable {
 
     /**
+     * 获取分配给该Consumer的TopicPartition
      * @see KafkaConsumer#assignment()
      */
     Set<TopicPartition> assignment();
 
     /**
+     * subscribe模式下：subscribe(Collection, ConsumerRebalanceListener)
+     * 即自己订阅的 Collection
      * @see KafkaConsumer#subscription()
      */
     Set<String> subscription();
 
+    // ------------------------------------------------ subscribe "订阅" 模式 ---------------------------------------
     /**
      * Subscribe to the given list of topics to get dynamically assigned partitions.
      * @see KafkaConsumer#subscribe(Collection)
@@ -53,16 +57,12 @@ public interface Consumer<K, V> extends Closeable {
     void subscribe(Collection<String> topics);
 
     /**
+     * subscribe模式下“订阅”方法：
      * Subscribe to the given list of topics to get dynamically assigned partitions.
      * The provided listener will be invoked first to indicate that the consumer's assignment has been revoked, and then again when the new assignment has been received.
      * @see KafkaConsumer#subscribe(Collection, ConsumerRebalanceListener)
      */
     void subscribe(Collection<String> topics, ConsumerRebalanceListener callback);
-
-    /**
-     * @see KafkaConsumer#assign(Collection)
-     */
-    void assign(Collection<TopicPartition> partitions);
 
     /**
     * @see KafkaConsumer#subscribe(Pattern, ConsumerRebalanceListener)
@@ -79,6 +79,15 @@ public interface Consumer<K, V> extends Closeable {
      */
     void unsubscribe();
 
+    // ------------------------------------------------ assign "订阅" 模式 ---------------------------------------
+    /**
+     * assign模式下“订阅”方法
+     * @see KafkaConsumer#assign(Collection)
+     */
+    void assign(Collection<TopicPartition> partitions);
+
+
+    // ------------------------------------------------ 消费的方法 ---------------------------------------
     /**
      * @see KafkaConsumer#poll(long)
      */
@@ -90,6 +99,7 @@ public interface Consumer<K, V> extends Closeable {
      */
     ConsumerRecords<K, V> poll(Duration timeout);
 
+    // ------------------------------------------------ consumed offset 提交的方法 ------------------------
     /**
      * @see KafkaConsumer#commitSync()
      */
@@ -124,6 +134,7 @@ public interface Consumer<K, V> extends Closeable {
      */
     void commitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, OffsetCommitCallback callback);
 
+    // ------------------------------------------------ seek 至某个offset的方法 ------------------------
     /**
      * @see KafkaConsumer#seek(TopicPartition, long)
      */
@@ -144,7 +155,9 @@ public interface Consumer<K, V> extends Closeable {
      */
     void seekToEnd(Collection<TopicPartition> partitions);
 
+    // --------------------------------------- 获取 要消费的TopicPartition 的下一个待消费/已提交的 offset ---------
     /**
+     * Get the offset of the <i>next record</i> that will be fetched
      * @see KafkaConsumer#position(TopicPartition)
      */
     long position(TopicPartition partition);
@@ -167,6 +180,7 @@ public interface Consumer<K, V> extends Closeable {
     OffsetAndMetadata committed(TopicPartition partition, final Duration timeout);
 
     /**
+     * Get the last committed offsets for the given partitions
      * @see KafkaConsumer#committed(Set)
      */
     Map<TopicPartition, OffsetAndMetadata> committed(Set<TopicPartition> partitions);
@@ -176,12 +190,16 @@ public interface Consumer<K, V> extends Closeable {
      */
     Map<TopicPartition, OffsetAndMetadata> committed(Set<TopicPartition> partitions, final Duration timeout);
 
+    // --------------------------------------- 获取 consumer 相关 Metric ---------
     /**
      * @see KafkaConsumer#metrics()
      */
     Map<MetricName, ? extends Metric> metrics();
 
+
+    // --------------------------------------- 获取 订阅的单个/全部 Topic的元数据 ---------
     /**
+     * 获取单个topic的元数据
      * @see KafkaConsumer#partitionsFor(String)
      */
     List<PartitionInfo> partitionsFor(String topic);
@@ -192,6 +210,7 @@ public interface Consumer<K, V> extends Closeable {
     List<PartitionInfo> partitionsFor(String topic, Duration timeout);
 
     /**
+     * 获取全部topic的元数据
      * @see KafkaConsumer#listTopics()
      */
     Map<String, List<PartitionInfo>> listTopics();
@@ -201,6 +220,7 @@ public interface Consumer<K, V> extends Closeable {
      */
     Map<String, List<PartitionInfo>> listTopics(Duration timeout);
 
+    // --------------------------------------- 暂停/重启 TopicPartitions 的消费 ---------
     /**
      * @see KafkaConsumer#paused()
      */
@@ -216,6 +236,7 @@ public interface Consumer<K, V> extends Closeable {
      */
     void resume(Collection<TopicPartition> partitions);
 
+    // --------------------------------------- 按不同维度查找 Offset ---------
     /**
      * @see KafkaConsumer#offsetsForTimes(Map)
      */
@@ -246,16 +267,19 @@ public interface Consumer<K, V> extends Closeable {
      */
     Map<TopicPartition, Long> endOffsets(Collection<TopicPartition> partitions, Duration timeout);
 
+    // --------------------------------------- 获取针对某TopicPartition的Lag ---------------------
     /**
      * @see KafkaConsumer#currentLag(TopicPartition)
      */
     OptionalLong currentLag(TopicPartition topicPartition);
 
+    // --------------------------------------- 获取 consumer 的元数据 ---------
     /**
      * @see KafkaConsumer#groupMetadata()
      */
     ConsumerGroupMetadata groupMetadata();
 
+    // --------------------------------------- 强制触发 Rebalance ---------
     /**
      * @see KafkaConsumer#enforceRebalance()
      */
@@ -266,6 +290,7 @@ public interface Consumer<K, V> extends Closeable {
      */
     void enforceRebalance(final String reason);
 
+    // --------------------------------------- 关闭KafkaConsumer ---------
     /**
      * @see KafkaConsumer#close()
      */
@@ -276,6 +301,7 @@ public interface Consumer<K, V> extends Closeable {
      */
     void close(Duration timeout);
 
+    // ---------------------- This method is thread-safe and is useful in particular to abort a long poll. ---------
     /**
      * @see KafkaConsumer#wakeup()
      */

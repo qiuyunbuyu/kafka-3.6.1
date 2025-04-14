@@ -209,7 +209,7 @@ public class MetadataCache {
 
     static MetadataCache bootstrap(List<InetSocketAddress> addresses) {
         Map<Integer, Node> nodes = new HashMap<>();
-        int nodeId = -1;
+        int nodeId = -1; // 第一次尝试连接时会赋值为-1，后续会按照实际情况更改-
         for (InetSocketAddress address : addresses) {
             nodes.put(nodeId, new Node(nodeId, address.getHostString(), address.getPort()));
             nodeId--;
