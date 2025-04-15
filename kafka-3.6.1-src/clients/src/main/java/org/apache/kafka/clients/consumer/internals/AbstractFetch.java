@@ -122,7 +122,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
 
     /**
      * Implements the core logic for a successful fetch request/response.
-     *
+     * FetchRequest 成功获取响应时的回调
      * @param fetchTarget {@link Node} from which the fetch data was requested
      * @param data {@link FetchSessionHandler.FetchRequestData} that represents the session data
      * @param resp {@link ClientResponse} from which the {@link FetchResponse} will be retrieved
@@ -131,9 +131,11 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                                        final FetchSessionHandler.FetchRequestData data,
                                        final ClientResponse resp) {
         try {
+            // 1. 获取 FetchResponse
             final FetchResponse response = (FetchResponse) resp.responseBody();
-            final FetchSessionHandler handler = sessionHandler(fetchTarget.id());
 
+            // 2. Fetch Session 的处理
+                final FetchSessionHandler handler = sessionHandler(fetchTarget.id());
             if (handler == null) {
                 log.error("Unable to find FetchSessionHandler for node {}. Ignoring fetch response.",
                         fetchTarget.id());
@@ -146,16 +148,18 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                 if (response.error() == Errors.FETCH_SESSION_TOPIC_ID_ERROR) {
                     metadata.requestUpdate();
                 }
-
                 return;
             }
-            // get data from response
+
+            // 3. 按照 TopicPartition 级别 “解构”出 PartitionData
             final Map<TopicPartition, FetchResponseData.PartitionData> responseData = response.responseData(handler.sessionTopicNames(), requestVersion);
             final Set<TopicPartition> partitions = new HashSet<>(responseData.keySet());
             final FetchMetricsAggregator metricAggregator = new FetchMetricsAggregator(metricsManager, partitions);
 
+            // 4. 遍历处理 <TopicPartition, PartitionData>
             for (Map.Entry<TopicPartition, FetchResponseData.PartitionData> entry : responseData.entrySet()) {
                 TopicPartition partition = entry.getKey();
+                // FetchRequest 中的 PartitionData
                 FetchRequest.PartitionData requestData = data.sessionPartitions().get(partition);
 
                 if (requestData == null) {
@@ -176,11 +180,14 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                 }
 
                 long fetchOffset = requestData.fetchOffset;
+                // FetchResponse 中 取出的 PartitionData
                 FetchResponseData.PartitionData partitionData = entry.getValue();
 
                 log.debug("Fetch {} at offset {} for partition {} returned fetch data {}",
                         fetchConfig.isolationLevel, fetchOffset, partition, partitionData);
 
+                // 构建 completedFetch：
+                // 所以从这里也可以看出completedFetch，存的是一个FetchResponse中TopicPartition的数据，且是没有序列化的
                 CompletedFetch<K, V> completedFetch = new CompletedFetch<>(
                         logContext,
                         subscriptions,
@@ -191,6 +198,8 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                         metricAggregator,
                         fetchOffset,
                         requestVersion);
+
+                // 将 completedFetch 纳入 completedFetches 集合中
                 completedFetches.add(completedFetch);
             }
 
@@ -279,12 +288,14 @@ public abstract class AbstractFetch<K, V> implements Closeable {
             while (recordsRemaining > 0) {
                 // [case1]: "nextInLineFetch" "Finished" : Initialize a "CompletedFetch" object to "nextInLineFetch"
                 if (nextInLineFetch == null || nextInLineFetch.isConsumed) {
+                    // 从 completedFetches 列表中 取出 一个 CompletedFetch
                     CompletedFetch<K, V> records = completedFetches.peek();
                     if (records == null) break;
 
                     if (!records.initialized) {
                         try {
-                            // *
+                            // * 从 CompletedFetch  -> nextInLineFetch
+                            // 为啥还对 CompletedFetch 做了一波转换。注意这波转换并没有做反序列化，那做了什么呢？
                             nextInLineFetch = initializeCompletedFetch(records);
                         } catch (Exception e) {
                             // Remove a completedFetch upon a parse with exception if (1) it contains no records, and
@@ -311,8 +322,15 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                 } else {
                 // [case3]: get records from "nextInLineFetch" and update fetchOffset
                 // ** contain deserializing the key / value **
+                    // 从 CompletedFetch(一堆byte) 中反序列化出 (一个个)Record
+                    // Fetch中有一字段：Map<TopicPartition, List<ConsumerRecord<K, V>>> records
+                    // Poll()方法返回的ConsumerRecords，就是由new ConsumerRecords<>(fetch.records())
                     Fetch<K, V> nextFetch = fetchRecords(recordsRemaining);
+
+                    // 更新 recordsRemaining
                     recordsRemaining -= nextFetch.numRecords();
+
+                    // 不断叠加剩余的Records：addRecords(fetch.records)
                     fetch.add(nextFetch);
                 }
             }
@@ -328,6 +346,13 @@ public abstract class AbstractFetch<K, V> implements Closeable {
         return fetch;
     }
 
+    /**
+     * 走到这里就一定证明是从 [ nextInLineFetch ] 中取 “Record” 了
+     * 1. 会从 nextInLineFetch 反序列出 maxRecords 条 List<ConsumerRecord<K, V>>
+     * 2. 封装出 Fetch<K, V>
+     * @param maxRecords
+     * @return Fetch<K, V>
+     */
     private Fetch<K, V> fetchRecords(final int maxRecords) {
         if (!subscriptions.isAssigned(nextInLineFetch.partition)) {
             // this can happen when a rebalance happened before fetched records are returned to the consumer's poll call
@@ -345,6 +370,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
             }
 
             if (nextInLineFetch.nextFetchOffset == position.offset) {
+                // 会从 nextInLineFetch 反序列出 maxRecords 条 List<ConsumerRecord<K, V>>
                 // deserializing the key / value | CompletedFetch<K, V> to List<ConsumerRecord<K, V>>
                 List<ConsumerRecord<K, V>> partRecords = nextInLineFetch.fetchRecords(maxRecords);
 
@@ -372,7 +398,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                 if (lead != null) {
                     metricsManager.recordPartitionLead(nextInLineFetch.partition, lead);
                 }
-
+                // 封装 Fetch<K, V> | Map<TopicPartition, List<ConsumerRecord<K, V>>> records
                 return Fetch.forPartition(nextInLineFetch.partition, partRecords, positionAdvanced);
             } else {
                 // these records aren't next in line based on the last consumed position, ignore them
@@ -388,14 +414,21 @@ public abstract class AbstractFetch<K, V> implements Closeable {
         return Fetch.empty();
     }
 
+    /**
+     * 获取要Fetch的TopicPartition
+     * @return 去 Fetch 的TopicPartition
+     */
     private List<TopicPartition> fetchablePartitions() {
         Set<TopicPartition> exclude = new HashSet<>();
+        // 排除 nextInLineFetch “还有的”
         if (nextInLineFetch != null && !nextInLineFetch.isConsumed) {
             exclude.add(nextInLineFetch.partition);
         }
+        // 排除 completedFetch “还有的”
         for (CompletedFetch<K, V> completedFetch : completedFetches) {
             exclude.add(completedFetch.partition);
         }
+        // 返回“fetchable” TopicPartition
         return subscriptions.fetchablePartitions(tp -> !exclude.contains(tp));
     }
 
@@ -454,7 +487,9 @@ public abstract class AbstractFetch<K, V> implements Closeable {
         long currentTimeMs = time.milliseconds();
         Map<String, Uuid> topicIds = metadata.topicIds();
 
+        // 遍历要Fetch的TopicPartition：fetchablePartitions会确定这个要Fetch 的TopicPArtition
         for (TopicPartition partition : fetchablePartitions()) {
+            // 获取要Fetch的位置
             SubscriptionState.FetchPosition position = subscriptions.position(partition);
 
             if (position == null)
@@ -486,6 +521,8 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                     return fetchSessionHandler.newBuilder();
                 });
                 Uuid topicId = topicIds.getOrDefault(partition.topic(), Uuid.ZERO_UUID);
+
+                // 构建FetchRequest中最重要的PartitionData部分
                 // prepare FetchRequest.PartitionData with partition+position.offset
                 FetchRequest.PartitionData partitionData = new FetchRequest.PartitionData(topicId,
                         position.offset,
@@ -500,6 +537,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
             }
         }
 
+        // Node <-> FetchRequestData
         Map<Node, FetchSessionHandler.FetchRequestData> reqs = new LinkedHashMap<>();
         for (Map.Entry<Node, FetchSessionHandler.Builder> entry : fetchable.entrySet()) {
             reqs.put(entry.getKey(), entry.getValue().build());
@@ -539,7 +577,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                 subscriptions.movePartitionToEnd(tp);
         }
     }
-
+    // 返回 completedFetch + 更新 subscriptions
     private CompletedFetch<K, V> handleInitializeCompletedFetchSuccess(final CompletedFetch<K, V> completedFetch) {
         final TopicPartition tp = completedFetch.partition;
         final long fetchOffset = completedFetch.nextFetchOffset;
@@ -552,7 +590,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                     "the expected offset {}", tp, fetchOffset, position);
             return null;
         }
-
+        // 校验 PartitionData
         final FetchResponseData.PartitionData partition = completedFetch.partitionData;
         log.trace("Preparing to read {} bytes of data for partition {} with offset {}",
                 FetchResponse.recordsSize(partition), tp, position);
@@ -599,7 +637,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                 return expireTimeMs;
             });
         }
-
+        // 标志
         completedFetch.initialized = true;
         return completedFetch;
     }

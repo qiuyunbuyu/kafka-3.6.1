@@ -103,6 +103,7 @@ public class Fetch<K, V> {
         return numRecords == 0 && !positionAdvanced;
     }
 
+    // 叠加 records | Map<TopicPartition, List<ConsumerRecord<K, V>>> records
     private void addRecords(Map<TopicPartition, List<ConsumerRecord<K, V>>> records) {
         records.forEach((partition, partRecords) -> {
             this.numRecords += partRecords.size();

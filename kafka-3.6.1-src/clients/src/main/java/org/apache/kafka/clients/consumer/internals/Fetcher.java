@@ -66,6 +66,9 @@ public class Fetcher<K, V> extends AbstractFetch<K, V> {
     /**
      * Set-up a fetch request for any node that we have assigned partitions for which doesn't already have
      * an in-flight fetch or pending fetch data.
+     * 1. 构建 FetchRequest
+     * 2. 预发送
+     * 3. 定义了 FetchResponse 成功处理时的回调： handleFetchResponse
      * @return number of fetches sent
      */
     public synchronized int sendFetches() {

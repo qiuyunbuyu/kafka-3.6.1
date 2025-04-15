@@ -1426,6 +1426,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     // wakeups or any other errors to be triggered prior to returning the fetched records.
                     if (sendFetches() > 0 || client.hasPendingRequests()) {
 						// will call client.poll(....)
+	                    // 进入用户处理逻辑之前，如果有PendingRequests，先执行一把client.poll(timeout:0)
                         client.transmitSends();
                     }
 
@@ -1434,6 +1435,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                                 + "since the consumer's position has advanced for at least one topic partition");
                     }
 					// *3 **use "interceptors" to modify consumer records**
+	                // 从 Fetch 往 ConsumerRecords 转, 进入用户处理逻辑
                     return this.interceptors.onConsume(new ConsumerRecords<>(fetch.records()));
                 }
             } while (timer.notExpired()); //timeout is "poll(final Duration timeout)"
