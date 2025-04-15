@@ -98,10 +98,13 @@ import java.util.concurrent.atomic.AtomicReference;
  *         processing.</li>
  * </ol>
  *
- * To leverage this protocol, an implementation must define the format of metadata provided by each
- * member for group registration in {@link #metadata()} and the format of the state assignment provided
- * by the leader in {@link #onLeaderElected(String, String, List, boolean)} and becomes available to members in
- * {@link #onJoinComplete(int, String, String, ByteBuffer)}.
+ * To leverage this protocol [每个 consumer member 下面都必须实现下面的方法 ]
+ * [1] consumer member 加入 group
+ * an implementation must define the format of metadata provided by each member for group registration in {@link #metadata()}
+ * [2] consumer member 被 broker 端的 Coordinator 确认成为了Leader -> 计算 Assignment Plan
+ * and the format of the state assignment provided by the leader in {@link #onLeaderElected(String, String, List, boolean)}
+ * [3] 获取属于自己的 Assignment
+ * and becomes available to members in {@link #onJoinComplete(int, String, String, ByteBuffer)}.
  *
  * Note on locking: this class shares state between the caller and a background thread which is
  * used for sending heartbeats after the client has joined the group. All mutable state as well as
@@ -114,6 +117,10 @@ public abstract class AbstractCoordinator implements Closeable {
     public static final int JOIN_GROUP_TIMEOUT_LAPSE = 5000;
 
     protected enum MemberState {
+        // Q: 有没有什么办法能实时观测到 Consumer 的 MemberState 呢？
+        //
+        // A: 在ConsumerCoordinator下面的poll()方法下面，打了一个 Log
+        //    log.debug("consumer member state is: " + this.state);
         UNJOINED,             // the client is not part of a group
         PREPARING_REBALANCE,  // the client has sent the join group request, but have not received response
         COMPLETING_REBALANCE, // the client has received join group response, but have not received assignment
@@ -408,7 +415,7 @@ public abstract class AbstractCoordinator implements Closeable {
         // 只有知道了consumer端的Coordinator是哪个Node之后（FindCoordinator成功响应之后），才会启动heartbeat线程
         startHeartbeatThreadIfNeeded();
         // 3. consumer truly try to joinGroup | ApiKeys.JOIN_GROUP
-        return joinGroupIfNeeded(timer);
+        return  joinGroupIfNeeded(timer);
     }
 
     private synchronized void startHeartbeatThreadIfNeeded() {
@@ -497,6 +504,7 @@ public abstract class AbstractCoordinator implements Closeable {
                 if (!hasGenerationReset(generationSnapshot) && stateSnapshot == MemberState.STABLE) {
                     // Duplicate the buffer in case `onJoinComplete` does not complete and needs to be retried.
                     ByteBuffer memberAssignment = future.value().duplicate();
+
                     // 3. **** if JOIN_GROUP success, then call onJoinComplete to get "Partition Allocation Plan"
                     onJoinComplete(generationSnapshot.generationId, generationSnapshot.memberId, generationSnapshot.protocolName, memberAssignment);
 
@@ -648,6 +656,7 @@ public abstract class AbstractCoordinator implements Closeable {
                             // the group. In this case, we do not want to continue with the sync group.
                             future.raise(new UnjoinedGroupException());
                         } else {
+                            // 从 PREPARING_REBALANCE -> COMPLETING_REBALANCE
                             state = MemberState.COMPLETING_REBALANCE;
 
                             // we only need to enable heartbeat thread whenever we transit to
@@ -842,6 +851,7 @@ public abstract class AbstractCoordinator implements Closeable {
                                 future.raise(Errors.INCONSISTENT_GROUP_PROTOCOL);
                             } else {
                                 log.info("Successfully synced group in generation {}", generation);
+                                // COMPLETING_REBALANCE ----(收到有效分区分配)---> STABLE
                                 state = MemberState.STABLE;
                                 rejoinReason = "";
                                 rejoinNeeded = false;
@@ -1436,6 +1446,7 @@ public abstract class AbstractCoordinator implements Closeable {
         }
     }
 
+    // HeartbeatThread --------------------------------------
     private class HeartbeatThread extends KafkaThread implements AutoCloseable {
         // is enable?
         private boolean enabled = false;

@@ -1462,7 +1462,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
 	/**
 	 * Consumer group initialization & partition assignment
-	 * 目标1：获取Metadata + 成组[ subscribe模式 ]
+	 * 目标1：获取想订阅的 TopicPartition 的 Metadata + 成组[ subscribe模式 ]
 	 * 目标2：知道从哪里开始 Fetch
 	 * @param timer
 	 * @param waitForJoinGroup

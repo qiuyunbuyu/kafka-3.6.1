@@ -97,7 +97,7 @@ public final class Heartbeat {
     }
 
     boolean shouldHeartbeat(long now) {
-        update(now); //更新相关时间为null，相当于推进时间
+        update(now); //更新相关时间为now，相当于推进时间
         return heartbeatTimer.isExpired(); // 判断是否expire
     }
     

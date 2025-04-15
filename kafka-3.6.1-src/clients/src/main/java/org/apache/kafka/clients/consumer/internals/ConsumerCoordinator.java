@@ -542,6 +542,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         invokeCompletedOffsetCommitCallbacks();
         // 3. hasAutoAssignedPartitions
         if (subscriptions.hasAutoAssignedPartitions()) { // 主分支1：--------subscribe模式下的处理
+            log.debug("consumer member state is: " + this.state);
             // 3.1 check RebalanceProtocol if null throw Exception
             if (protocol == null) {
                 throw new IllegalStateException("User configured " + ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG +
