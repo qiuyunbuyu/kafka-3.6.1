@@ -1073,7 +1073,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * <p>
      * As part of group management, the consumer will keep track of the list of consumers that belong to a particular
      * group and will trigger a rebalance operation if any one of the following events are triggered:
+     *
      * <ul>
+     * rebalance 触发的场景： TopicPartition的变动 / consumer member的变动
      * <li>Number of partitions change for any of the subscribed topics
      * <li>A subscribed topic is created or deleted
      * <li>An existing member of the consumer group is shutdown or fails
@@ -1082,6 +1084,8 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * <p>
      * When any of these events are triggered, the provided listener will be invoked first to indicate that
      * the consumer's assignment has been revoked, and then again when the new assignment has been received.
+     *
+     * consumer member 端 感知到 rebalance 并做出改变的时机
      * Note that rebalances will only occur during an active call to {@link #poll(Duration)}, so callbacks will
      * also only be invoked during that time.
      *
@@ -1115,14 +1119,18 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 }
 				// check Assignors
                 throwIfNoAssignorsConfigured();
+
 				// Considering the situation of multiple subscribe to different topics,
 	            // it is necessary to clear the data of "the topics that have been pulled but are not subscribed this time"
                 fetcher.clearBufferedDataForUnassignedTopics(topics);
 
                 log.info("Subscribed to topic(s): {}", Utils.join(topics, ", "));
+
 				// consumer以topic名来subscribe时对SubscriptionState调用，来更新“状态”
 				// Determine whether the subscribed topic needs to be updated
+	            // 有个最主要的点是设置了 SubscriptionType，确定了订阅模式是 subscribe 还是 assign 模式
                 if (this.subscriptions.subscribe(new HashSet<>(topics), listener))
+					// 标志元数据需要更新了
 					// If the topic subscribed this time is inconsistent with the last subscribed topic, the metadata needs to be updated.
                     metadata.requestUpdateForNewTopics();
             }
