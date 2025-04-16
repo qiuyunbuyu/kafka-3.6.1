@@ -6,6 +6,7 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -36,10 +37,11 @@ public class consumer_assign_sync {
 	public static void main(String[] args) {
 		Properties properties = initConfig();
 		KafkaConsumer<String, String> consumer = new KafkaConsumer<>(properties);
-		// 订阅topic
-//		consumer.subscribe(Arrays.asList(topic));
+		// subscribe 模式
+		consumer.subscribe(Arrays.asList(topic));
 
-		consumer.assign(Collections.singleton(new TopicPartition("EOC_ALERT_MESSAGE_TOPIC", 0)));
+		// assign 模式
+		// consumer.assign(Collections.singleton(new TopicPartition("EOC_ALERT_MESSAGE_TOPIC", 0)));
 
 		try {
 			while(isRunning.get()){

@@ -653,6 +653,8 @@ public class SubscriptionState {
 
     public synchronized Map<TopicPartition, OffsetAndMetadata> allConsumed() {
         Map<TopicPartition, OffsetAndMetadata> allConsumed = new HashMap<>();
+        // 从SubscriptionState中获取 partitionState.position.offset
+        // 那么更大的问题就是 维护的 partitionState.position 是什么时候更新的？
         assignment.forEach((topicPartition, partitionState) -> {
             if (partitionState.hasValidPosition())
                 allConsumed.put(topicPartition, new OffsetAndMetadata(partitionState.position.offset,

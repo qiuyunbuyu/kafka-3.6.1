@@ -379,6 +379,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
 
                 boolean positionAdvanced = false;
 
+                // 废了半天劲，终于找到，更新 SubscriptionState -> TopicPartitionState -> FetchPosition 的 地方了
                 if (nextInLineFetch.nextFetchOffset > position.offset) {
                     SubscriptionState.FetchPosition nextPosition = new SubscriptionState.FetchPosition(
                             nextInLineFetch.nextFetchOffset,
@@ -489,7 +490,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
 
         // 遍历要Fetch的TopicPartition：fetchablePartitions会确定这个要Fetch 的TopicPArtition
         for (TopicPartition partition : fetchablePartitions()) {
-            // 获取要Fetch的位置
+            // 构建FetchRequest时，也是需要从 SubscriptionState 获取要Fetch的位置：
             SubscriptionState.FetchPosition position = subscriptions.position(partition);
 
             if (position == null)

@@ -1603,6 +1603,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     @Override
     public void commitSync(Duration timeout) {
+		// 从 subscriptions 中获取 Map<TopicPartition, OffsetAndMetadata>
         commitSync(subscriptions.allConsumed(), timeout);
     }
 
