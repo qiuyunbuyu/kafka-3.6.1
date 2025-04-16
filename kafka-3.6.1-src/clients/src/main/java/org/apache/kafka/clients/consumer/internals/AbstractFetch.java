@@ -244,9 +244,11 @@ public abstract class AbstractFetch<K, V> implements Closeable {
         final short maxVersion = requestData.canUseTopicIds() ? ApiKeys.FETCH.latestVersion() : (short) 12;
 
         final FetchRequest.Builder request = FetchRequest.Builder
-                .forConsumer(maxVersion, fetchConfig.maxWaitMs, fetchConfig.minBytes, requestData.toSend())
+                .forConsumer(maxVersion, fetchConfig.maxWaitMs, // FetchRequest3 : 拉取“时间”的控制 DEFAULT_FETCH_MAX_WAIT_MS = 500
+                        fetchConfig.minBytes, // FetchRequest3 : 拉取“大小“的控制：Request整体级别 DEFAULT_FETCH_MIN_BYTES = 1;
+                        requestData.toSend())
                 .isolationLevel(fetchConfig.isolationLevel)
-                .setMaxBytes(fetchConfig.maxBytes)
+                .setMaxBytes(fetchConfig.maxBytes) // FetchRequest3 : 拉取“大小”的控制：Request整体级别 DEFAULT_FETCH_MAX_BYTES = 50 * 1024 * 1024
                 .metadata(requestData.metadata())
                 .removed(requestData.toForget())
                 .replaced(requestData.toReplace())
@@ -416,7 +418,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
     }
 
     /**
-     * 获取要Fetch的TopicPartition
+     * FetchRequest-1： 知道从哪些TopicPartition拉取？
      * @return 去 Fetch 的TopicPartition
      */
     private List<TopicPartition> fetchablePartitions() {
@@ -477,6 +479,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
     }
 
     /**
+     * consumer端构建 FetchRequest
      * Create fetch requests for all nodes for which we have assigned partitions
      * that have no existing requests in flight.
      */
@@ -490,7 +493,9 @@ public abstract class AbstractFetch<K, V> implements Closeable {
 
         // 遍历要Fetch的TopicPartition：fetchablePartitions会确定这个要Fetch 的TopicPArtition
         for (TopicPartition partition : fetchablePartitions()) {
+
             // 构建FetchRequest时，也是需要从 SubscriptionState 获取要Fetch的位置：
+            // FetchRequest-2 : 知道从这些TopicPartition哪个位置拉取？
             SubscriptionState.FetchPosition position = subscriptions.position(partition);
 
             if (position == null)
@@ -528,7 +533,7 @@ public abstract class AbstractFetch<K, V> implements Closeable {
                 FetchRequest.PartitionData partitionData = new FetchRequest.PartitionData(topicId,
                         position.offset,
                         FetchRequest.INVALID_LOG_START_OFFSET,
-                        fetchConfig.fetchSize,
+                        fetchConfig.fetchSize, // FetchRequest-3: ”拉取“大小的控制：TopicPartition级别 | DEFAULT_MAX_PARTITION_FETCH_BYTES = 1 * 1024 * 1024
                         position.currentLeader.epoch,
                         Optional.empty());
                 builder.add(partition, partitionData);
