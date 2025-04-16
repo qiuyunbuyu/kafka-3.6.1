@@ -974,7 +974,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             requestRejoinIfNecessary("subscription has changed", fullReason);
             return true;
         }
-
+        // return rejoinNeeded || joinFuture != null;
         return super.rejoinNeededOrPending();
     }
 

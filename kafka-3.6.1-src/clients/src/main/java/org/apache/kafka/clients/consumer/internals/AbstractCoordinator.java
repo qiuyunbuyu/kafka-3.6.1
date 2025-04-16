@@ -459,7 +459,10 @@ public abstract class AbstractCoordinator implements Closeable {
      * @return true iff the operation succeeded
      */
     boolean joinGroupIfNeeded(final Timer timer) {
+        // 循环 至 rejoinNeeded 不为 true
         while (rejoinNeededOrPending()) {
+
+            // join之前还是会判断 Coordinator 是 ok 的
             if (!ensureCoordinatorReady(timer)) {
                 return false;
             }
@@ -854,7 +857,7 @@ public abstract class AbstractCoordinator implements Closeable {
                                 // COMPLETING_REBALANCE ----(收到有效分区分配)---> STABLE
                                 state = MemberState.STABLE;
                                 rejoinReason = "";
-                                rejoinNeeded = false;
+                                rejoinNeeded = false; // 很重要的标志更新，成功走到这个环节，就代表不需要”rejoin“了
                                 // record rebalance latency
                                 lastRebalanceEndMs = time.milliseconds();
                                 sensors.successfulRebalanceSensor.record(lastRebalanceEndMs - lastRebalanceStartMs);
