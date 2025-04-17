@@ -423,7 +423,7 @@ private[group] class GroupCoordinator(
       }
     }
   }
-
+  // broker 端 consumer coordinator 面对 一个 MemeberId 不为空 的 JoinGroupRequest 会如何处理？
   private def doCurrentMemberJoinGroup(
     group: GroupMetadata,
     memberId: String,
@@ -941,6 +941,8 @@ private[group] class GroupCoordinator(
             case PreparingRebalance =>
                 val member = group.get(memberId)
                 completeAndScheduleNextHeartbeatExpiration(group, member)
+                // 通过心跳机制，以 HeartbeatResponse的形式：
+                // 告诉对应的Consumer Member-x，开始Rebalance了，快发JoinGroupRequest吧
                 Errors.REBALANCE_IN_PROGRESS
 
             case Stable =>
@@ -1550,12 +1552,12 @@ private[group] class GroupCoordinator(
         rebalancePurgatory,
         group,
         groupConfig.groupInitialRebalanceDelayMs,
-        groupConfig.groupInitialRebalanceDelayMs,
-        max(group.rebalanceTimeoutMs - groupConfig.groupInitialRebalanceDelayMs, 0))
+        groupConfig.groupInitialRebalanceDelayMs, // 延迟多久”收割“ - 3000Ms
+        max(group.rebalanceTimeoutMs - groupConfig.groupInitialRebalanceDelayMs, 0)) // 还剩多久收割
     else
       new DelayedJoin(this, group, group.rebalanceTimeoutMs)
 
-    // consumer group state -> PreparingRebalance
+    //  状态转换： consumer group state -> PreparingRebalance
     group.transitionTo(PreparingRebalance)
 
     info(s"Preparing to rebalance group ${group.groupId} in state ${group.currentState} with old generation " +
@@ -1598,7 +1600,7 @@ private[group] class GroupCoordinator(
       rebalancePurgatory.checkAndComplete(GroupJoinKey(group.groupId))
     }
   }
-
+  // 虽然 ”Delayed Join“ 窗口期是 5 分钟，但是，每接收到一个 JoinGroupRequest，都会尝试 try Complete
   def tryCompleteJoin(group: GroupMetadata, forceComplete: () => Boolean): Boolean = {
     group.inLock {
       if (group.hasAllMembersJoined)
@@ -1607,7 +1609,7 @@ private[group] class GroupCoordinator(
     }
   }
 
-  // DelayedOperation - DelayedJoin
+  // DelayedOperation - DelayedJoin - 尽情的收割吧----------
   def onCompleteJoin(group: GroupMetadata): Unit = {
     group.inLock {
       // 移除“一段时间内”还未加入 consumer group 的 consumer Member
@@ -1660,7 +1662,7 @@ private[group] class GroupCoordinator(
 
           // trigger the awaiting join group response callback for all the members after rebalancing
           for (member <- group.allMemberMetadata) {
-            // a. 构建JoinGroup Response
+            // a. **** 构建JoinGroup Response
             val joinResult = JoinGroupResult(
               // "对于 leader，会额外返回所有 consumer 的 member id，以便 leader 进行后续的 partition 分配工作。"
               members = if (group.isLeader(member.memberId)) {

@@ -164,7 +164,7 @@ object Defaults {
   /** ********* Group coordinator configuration ***********/
   val GroupMinSessionTimeoutMs = 6000
   val GroupMaxSessionTimeoutMs = 1800000
-  val GroupInitialRebalanceDelayMs = 3000
+  val GroupInitialRebalanceDelayMs = 3000 // 3秒内就会收割
   val GroupMaxSize: Int = Int.MaxValue
 
   /** New group coordinator configs */

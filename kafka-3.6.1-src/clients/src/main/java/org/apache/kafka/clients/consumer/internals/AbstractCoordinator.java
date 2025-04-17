@@ -612,12 +612,12 @@ public abstract class AbstractCoordinator implements Closeable {
         JoinGroupRequest.Builder requestBuilder = new JoinGroupRequest.Builder(
                 new JoinGroupRequestData()
                         .setGroupId(rebalanceConfig.groupId)
-                        .setSessionTimeoutMs(this.rebalanceConfig.sessionTimeoutMs)
+                        .setSessionTimeoutMs(this.rebalanceConfig.sessionTimeoutMs) // session.timeout.ms: 45000
                         .setMemberId(this.generation.memberId)
                         .setGroupInstanceId(this.rebalanceConfig.groupInstanceId.orElse(null))
                         .setProtocolType(protocolType())
                         .setProtocols(metadata())
-                        .setRebalanceTimeoutMs(this.rebalanceConfig.rebalanceTimeoutMs)
+                        .setRebalanceTimeoutMs(this.rebalanceConfig.rebalanceTimeoutMs) // max.poll.interval.ms: 300000
                         .setReason(JoinGroupRequest.maybeTruncateReason(this.rejoinReason))
         );
 
@@ -1266,6 +1266,7 @@ public abstract class AbstractCoordinator implements Closeable {
                 // this case and ignore the REBALANCE_IN_PROGRESS error
                 synchronized (AbstractCoordinator.this) {
                     if (state == MemberState.STABLE) {
+                        // 设置this.rejoinNeeded = true，下一轮 poll() 中 会发送 JoinGroupRequest
                         requestRejoin("group is already rebalancing");
                         future.raise(error);
                     } else {
