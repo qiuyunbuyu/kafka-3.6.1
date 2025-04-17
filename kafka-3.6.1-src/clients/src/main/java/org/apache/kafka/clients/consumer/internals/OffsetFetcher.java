@@ -223,10 +223,12 @@ public class OffsetFetcher {
             final Map<TopicPartition, ListOffsetsPartition> resetTimestamps = entry.getValue();
             subscriptions.setNextAllowedRetry(resetTimestamps.keySet(), time.milliseconds() + requestTimeoutMs);
 
+            // ListOffsetRequest ： 以 特定时间戳标志[earliest和latest] 来 ListOffset
             RequestFuture<ListOffsetResult> future = sendListOffsetRequest(node, resetTimestamps, false);
             future.addListener(new RequestFutureListener<ListOffsetResult>() {
                 @Override
                 public void onSuccess(ListOffsetResult result) {
+                    // 以ListOffsetRequest结果来，更新subscriptionState -> 已经知道从哪开始Fetch啦-
                     offsetFetcherUtils.onSuccessfulRequestForResettingPositions(resetTimestamps, result);
                 }
 

@@ -2698,7 +2698,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         cachedSubscriptionHasAllFetchPositions = subscriptions.hasAllFetchPositions();
         if (cachedSubscriptionHasAllFetchPositions) return true;
 
-        // 3. 尝试从 broker 端的 Coordinator 来获取 Committed Offset
+        // 3. 使用 【OffsetFetchRequest】 尝试从 broker 端的 Coordinator 来获取 Committed Offset
 	    // If there are any partitions which do not have a valid position and are not
         // awaiting reset, then we need to fetch committed offsets. We will only do a
         // coordinator lookup if there are partitions which have missing positions, so
@@ -2706,13 +2706,13 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         // by always ensuring that assigned partitions have an initial position.
         if (coordinator != null && !coordinator.refreshCommittedOffsetsIfNeeded(timer)) return false;
 
-        // 4. 也没能从Coordinator里面获取到从哪Fetch，那就根据 策略使用ListOffsetRequest来获取
+        // 4. 也没能从Coordinator里面获取到从哪Fetch，那就根据 策略来获取 LATEST, EARLIEST
 	    // If there are partitions still needing a position and a reset policy is defined,
         // request reset using the default policy. If no reset strategy is defined and there
         // are partitions with a missing position, then we will raise an exception.
         subscriptions.resetInitializingPositions();
 
-        // 5.
+        // 5. 以default policy(LATEST, EARLIEST), 构造 【ListOffsetRequest】结果来，最后更新了subscriptionState - TopicPartitionState - FetchPosition
 	    // Finally send an asynchronous request to look up and update the positions of any
         // partitions which are awaiting reset.
         offsetFetcher.resetPositionsIfNeeded();

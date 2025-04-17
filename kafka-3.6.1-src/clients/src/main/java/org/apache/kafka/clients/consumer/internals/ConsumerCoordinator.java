@@ -988,6 +988,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         final Set<TopicPartition> initializingPartitions = subscriptions.initializingPartitions();
 
         // ** 1. Fetch the current committed offsets from the coordinator for a set of partitions.**
+        // OffsetFetchRequest
         final Map<TopicPartition, OffsetAndMetadata> offsets = fetchCommittedOffsets(initializingPartitions, timer);
             if (offsets == null) return false;
 

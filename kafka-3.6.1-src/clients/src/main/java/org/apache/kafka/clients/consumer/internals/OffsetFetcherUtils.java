@@ -220,6 +220,7 @@ class OffsetFetcherUtils {
         Set<TopicPartition> partitions = subscriptionState.partitionsNeedingReset(time.milliseconds());
         final Map<TopicPartition, Long> offsetResetTimestamps = new HashMap<>();
         for (final TopicPartition partition : partitions) {
+            // 根据默认的策略，获取特定的时间戳标志 EARLIEST -2L / LATEST -1L
             Long timestamp = offsetResetStrategyTimestamp(partition);
             if (timestamp != null)
                 offsetResetTimestamps.put(partition, timestamp);
