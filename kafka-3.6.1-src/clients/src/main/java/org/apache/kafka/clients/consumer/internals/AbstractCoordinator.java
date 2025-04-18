@@ -414,6 +414,7 @@ public abstract class AbstractCoordinator implements Closeable {
         // 2. try to start Heartbeat connect with coordinator
         // 只有知道了consumer端的Coordinator是哪个Node之后（FindCoordinator成功响应之后），才会启动heartbeat线程
         startHeartbeatThreadIfNeeded();
+
         // 3. consumer truly try to joinGroup | ApiKeys.JOIN_GROUP
         return  joinGroupIfNeeded(timer);
     }
@@ -504,6 +505,7 @@ public abstract class AbstractCoordinator implements Closeable {
                     stateSnapshot = this.state;
                 }
 
+                // MemberState.STABLE， 意味着可以 取出 memberAssignment 了
                 if (!hasGenerationReset(generationSnapshot) && stateSnapshot == MemberState.STABLE) {
                     // Duplicate the buffer in case `onJoinComplete` does not complete and needs to be retried.
                     ByteBuffer memberAssignment = future.value().duplicate();
@@ -651,7 +653,6 @@ public abstract class AbstractCoordinator implements Closeable {
                 } else {
                     log.debug("Received successful JoinGroup response: {}", joinResponse);
                     sensors.joinSensor.record(response.requestLatencyMs());
-
                     synchronized (AbstractCoordinator.this) {
                         // change PREPARING_REBALANCE -> COMPLETING_REBALANCE
                         if (state != MemberState.PREPARING_REBALANCE) {
@@ -659,21 +660,24 @@ public abstract class AbstractCoordinator implements Closeable {
                             // the group. In this case, we do not want to continue with the sync group.
                             future.raise(new UnjoinedGroupException());
                         } else {
-                            // 从 PREPARING_REBALANCE -> COMPLETING_REBALANCE
+
+                            // 1. 更新Consumer Member 端的状态 | 从 PREPARING_REBALANCE -> COMPLETING_REBALANCE
                             state = MemberState.COMPLETING_REBALANCE;
 
                             // we only need to enable heartbeat thread whenever we transit to
                             // COMPLETING_REBALANCE state since we always transit from this state to STABLE
                             if (heartbeatThread != null)
-                                // Wake up the heartbeatThread thread
+                                // 2. Wake up the heartbeatThread thread
                                 heartbeatThread.enable();
 
                             AbstractCoordinator.this.generation = new Generation(
                                 joinResponse.data().generationId(),
                                 joinResponse.data().memberId(), joinResponse.data().protocolName());
-
+                            // 3. consumer member 端打印出 重要标志
+                            // Generation{generationId=5, memberId='b1f02e1d-02c1-42cc-a7fb-de2602068d85', protocol='range'}
                             log.info("Successfully joined group with generation {}", AbstractCoordinator.this.generation);
 
+                            // 4. consumer member 根据自己的身份来构建 SyncGroupRequest[ Leader的 Assignments 字段为 PartitionAssignor 计算得出]
                             if (joinResponse.isLeader()) {
                                 // is leader : count assign plan + send ApiKeys.SYNC_GROUP
                                 onLeaderElected(joinResponse).chain(future);
@@ -764,7 +768,7 @@ public abstract class AbstractCoordinator implements Closeable {
                                 .setProtocolName(generation.protocolName)
                                 .setGroupInstanceId(this.rebalanceConfig.groupInstanceId.orElse(null))
                                 .setGenerationId(generation.generationId)
-                                .setAssignments(Collections.emptyList())
+                                .setAssignments(Collections.emptyList()) // Follower的 Assignments 字段是空的
                 );
         log.debug("Sending follower SyncGroup to coordinator {}: {}", this.coordinator, requestBuilder);
         return sendSyncGroupRequest(requestBuilder);
@@ -799,7 +803,7 @@ public abstract class AbstractCoordinator implements Closeable {
                                     .setProtocolName(generation.protocolName)
                                     .setGroupInstanceId(this.rebalanceConfig.groupInstanceId.orElse(null))
                                     .setGenerationId(generation.generationId)
-                                    .setAssignments(groupAssignmentList)
+                                    .setAssignments(groupAssignmentList) // Leader的 Assignments 字段是根据 Assignor 算法算出来的
                     );
             log.debug("Sending leader SyncGroup to coordinator {}: {}", this.coordinator, requestBuilder);
             // 3. send | ApiKeys.SYNC_GROUP
@@ -862,7 +866,9 @@ public abstract class AbstractCoordinator implements Closeable {
                                 lastRebalanceEndMs = time.milliseconds();
                                 sensors.successfulRebalanceSensor.record(lastRebalanceEndMs - lastRebalanceStartMs);
                                 lastRebalanceStartMs = -1L;
-
+                                // 在干啥 ? -> 给 AtomicReference<Object> result 设置值
+                                // 按道理不是更新 SubscriptionState 里的 PartitionStates<TopicPartitionState> assignment 嘛
+                                // 怎么 整了个这 ？
                                 future.complete(ByteBuffer.wrap(syncResponse.data().assignment()));
                             }
                         } else {

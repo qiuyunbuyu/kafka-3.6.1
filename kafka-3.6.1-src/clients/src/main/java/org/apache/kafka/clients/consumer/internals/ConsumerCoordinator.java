@@ -426,6 +426,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 "or because static member is configured and the protocol is buggy hence did not get the assignment for this member");
 
         // get assign plan from assignmentBuffer
+        // 反序列化出 Assignment
         Assignment assignment = ConsumerProtocol.deserializeAssignment(assignmentBuffer);
 
         SortedSet<TopicPartition> assignedPartitions = new TreeSet<>(COMPARATOR);
@@ -487,6 +488,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             this.nextAutoCommitTimer.updateAndReset(autoCommitIntervalMs);
 
         // **** SubscriptionState save the "assign results"
+        // 最后还得是更新 subscriptions 呀
         subscriptions.assignFromSubscribed(assignedPartitions);
 
         // Add partitions that were not previously owned but are now assigned
@@ -693,7 +695,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                                                       String assignmentStrategy,
                                                       List<JoinGroupResponseData.JoinGroupResponseMember> allSubscriptions,
                                                       boolean skipAssignment) {
-        // 1. get PartitionAssignor
+        // 1. get PartitionAssignor：确定分区分配算法
         ConsumerPartitionAssignor assignor = lookupAssignor(assignmentStrategy);
         if (assignor == null)
             throw new IllegalStateException("Coordinator selected invalid assignment protocol: " + assignmentStrategy);
@@ -728,7 +730,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         log.debug("Performing assignment using strategy {} with subscriptions {}", assignorName, subscriptions);
 
-        // 2. Partition Allocation Plan: Calculate the "assign plan" based on the "assignor algorithm" and "metadata"
+        // 2. 计算环节：Partition Allocation Plan: Calculate the "assign plan" based on the "assignor algorithm" and "metadata"
         Map<String, Assignment> assignments = assignor.assign(metadata.fetch(), new GroupSubscription(subscriptions)).groupAssignment();
 
         // skip the validation for built-in cooperative sticky assignor since we've considered
@@ -748,6 +750,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         // 3. Serialize into Byte that can be transmitted over the network
         Map<String, ByteBuffer> groupAssignment = new HashMap<>();
         for (Map.Entry<String, Assignment> assignmentEntry : assignments.entrySet()) {
+            // 将Assignment，序列化成可以传输的 byte
             ByteBuffer buffer = ConsumerProtocol.serializeAssignment(assignmentEntry.getValue());
             groupAssignment.put(assignmentEntry.getKey(), buffer);
         }
