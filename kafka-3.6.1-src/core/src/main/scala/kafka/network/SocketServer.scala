@@ -613,19 +613,6 @@ class ControlPlaneAcceptor(socketServer: SocketServer,
 
 /**
  * Thread that accepts and configures new connections. There is one of these per endpoint.
- * @param socketServer
- * @param endPoint
- * @param config
- * @param nodeId
- * @param connectionQuotas
- * @param time
- * @param isPrivilegedListener
- * @param requestChannel
- * @param metrics
- * @param credentialProvider
- * @param logContext
- * @param memoryPool
- * @param apiVersionManager
  */
 private[kafka] abstract class Acceptor(val socketServer: SocketServer,
                                        val endPoint: EndPoint,
