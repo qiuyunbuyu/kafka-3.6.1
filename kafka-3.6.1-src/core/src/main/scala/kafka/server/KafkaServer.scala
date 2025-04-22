@@ -451,7 +451,7 @@ class KafkaServer(
         tokenManager = new DelegationTokenManagerZk(config, tokenCache, time , zkClient)
         tokenManager.startup()
 
-        /* 2.22 start kafka controller , only leader will build connection with zk*/
+        /* 2.22 start kafka controller */
         _kafkaController = new KafkaController(config, zkClient, time, metrics, brokerInfo, brokerEpoch, tokenManager, brokerFeatures, metadataCache, threadNamePrefix)
         kafkaController.startup()
 

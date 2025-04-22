@@ -343,7 +343,6 @@ class KafkaController(val config: KafkaConfig,
    * If it encounters any unexpected exception/error while becoming controller, it resigns as the current controller.
    * This ensures another controller election will be triggered and there will always be an actively serving controller
    *
-   * 处理 Controller 切换的方法
    */
   private def onControllerFailover(): Unit = {
     // 1. Used for adaptation between kafka brokers of different versions
@@ -2930,7 +2929,7 @@ class KafkaController(val config: KafkaConfig,
   }
 
   /**
-   * Controller处理Event的入口
+   * Controller处理Event的入口-
    * @param event
    */
   override def process(event: ControllerEvent): Unit = {
