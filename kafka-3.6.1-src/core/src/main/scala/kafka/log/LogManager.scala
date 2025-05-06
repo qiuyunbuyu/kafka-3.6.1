@@ -641,7 +641,7 @@ class LogManager(logDirs: Seq[File],
   // broker启动时，LogManager完成的事情, 3件事情
   // 1. loadlog
   // 2. 5个schedule任务
-  // 3. logCleaner
+  // 3. logCleaner线程启动
   private[log] def startupWithConfigOverrides(defaultConfig: LogConfig, topicConfigOverrides: Map[String, LogConfig]): Unit = {
     // load Logs when broker starting ...
     // *this could take a while if shutdown was not clean

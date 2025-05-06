@@ -364,9 +364,9 @@ class KafkaController(val config: KafkaConfig,
     nodeChangeHandlers.foreach(zkClient.registerZNodeChangeHandlerAndCheckExistence)
 
     // 3. Deletes all log dir event notifications. + Deletes all isr change notifications.
-    info("Deleting log dir event notifications")
+    info("Deleting log dir event notifications") // /log_dir_event_notification
     zkClient.deleteLogDirEventNotifications(controllerContext.epochZkVersion)
-    info("Deleting isr change notifications")
+    info("Deleting isr change notifications") // /isr_change_notification
     zkClient.deleteIsrChangeNotifications(controllerContext.epochZkVersion)
 
     // 4.Initializing controller context
@@ -1903,7 +1903,7 @@ class KafkaController(val config: KafkaConfig,
     deadBrokerIds.foreach(controllerChannelManager.removeBroker)
 
     // 处理阶段2： 实质broker上下线所需的动作
-    // 10. handle newBrokers
+    // 10. handle newBrokers | [ 成员上线 ]
     if (newBrokerIds.nonEmpty) {
       val (newCompatibleBrokerAndEpochs, newIncompatibleBrokerAndEpochs) =
         partitionOnFeatureCompatibility(newBrokerAndEpochs)
@@ -1915,6 +1915,7 @@ class KafkaController(val config: KafkaConfig,
       // 最核心的动作
       onBrokerStartup(newBrokerIdsSorted)
     }
+
     // 11. handle bouncedBrokers
     if (bouncedBrokerIds.nonEmpty) {
       controllerContext.removeLiveBrokers(bouncedBrokerIds)
@@ -1928,7 +1929,8 @@ class KafkaController(val config: KafkaConfig,
       controllerContext.addLiveBrokers(bouncedCompatibleBrokerAndEpochs)
       onBrokerStartup(bouncedBrokerIdsSorted)
     }
-    // 12. handle deadBrokers
+
+    // 12. handle deadBrokers [ 成员下线 ]
     if (deadBrokerIds.nonEmpty) {
       controllerContext.removeLiveBrokers(deadBrokerIds)
       onBrokerFailure(deadBrokerIdsSorted)
